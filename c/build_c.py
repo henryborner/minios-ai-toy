@@ -53,6 +53,9 @@ def main() -> int:
     boot = BUILD / "boot.bin"
     entry = BUILD / "entry.o"
     interrupts_o = BUILD / "interrupts.o"
+    user_bin = BUILD / "user.bin"
+    user_blob_o = BUILD / "user_blob.o"
+    usermode_o = BUILD / "usermode.o"
     gui_o = BUILD / "gui.o"
     kernel_o = BUILD / "kernel.o"
     kernel_elf = BUILD / "kernel.elf"
@@ -61,6 +64,9 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(boot), "boot.asm"])
     run([nasm, "-f", "elf32", "-o", str(entry), "entry.asm"])
     run([nasm, "-f", "elf32", "-o", str(interrupts_o), "interrupts.asm"])
+    run([nasm, "-f", "bin", "-o", str(user_bin), "user.asm"])
+    run([nasm, "-f", "elf32", "-o", str(user_blob_o), "user_blob.asm"])
+    run([nasm, "-f", "elf32", "-o", str(usermode_o), "usermode.asm"])
     run([
         clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
         "-ffreestanding", "-fno-pic", "-fno-pie", "-fno-stack-protector",
@@ -77,7 +83,8 @@ def main() -> int:
     ])
     run([
         ld, "-m", "elf_i386", "-T", "linker.ld",
-        "-o", str(kernel_elf), str(entry), str(interrupts_o), str(kernel_o), str(gui_o),
+        "-o", str(kernel_elf), str(entry), str(interrupts_o),
+        str(usermode_o), str(user_blob_o), str(kernel_o), str(gui_o),
     ])
     run([objcopy, "-O", "binary", str(kernel_elf), str(kernel_bin)])
 

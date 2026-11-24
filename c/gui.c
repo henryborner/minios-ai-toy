@@ -293,7 +293,7 @@ static void run_command(char *line) {
         term_puts("Commands:\n");
         term_puts("help ver cpu mem time date\n");
         term_puts("uptime clear echo sysinfo\n");
-        term_puts("about reboot halt\n");
+        term_puts("about ring3 reboot halt\n");
     } else if (streq(line, "ver")) {
         term_puts("MiniOS 2.0 C GUI (32-bit)\n");
     } else if (streq(line, "cpu")) {
@@ -333,6 +333,11 @@ static void run_command(char *line) {
     } else if (streq(line, "about")) {
         about_visible = 1;
         term_puts("About window opened.\n");
+    } else if (streq(line, "ring3")) {
+        extern void enter_ring3_demo(void);
+        term_puts("Entering Ring 3 (paging on)...\n");
+        gui_redraw();
+        enter_ring3_demo();
     } else if (streq(line, "reboot")) {
         term_puts("Rebooting...\n");
         machine_reboot();
@@ -699,6 +704,12 @@ void gui_special(int key) {
         console_visible = 1;
         menu_open = 0;
     }
+}
+
+void gui_sys_print(const char *s) {
+    while (*s)
+        term_putc(*s++);
+    gui_redraw();
 }
 
 void gui_init(void) {

@@ -10,6 +10,7 @@ void gui_redraw(void);
 void gui_key(char ch);
 void gui_special(int key);
 void gui_mouse_event(int x, int y, int buttons);
+void gui_sys_print(const char *s);
 
 extern volatile u32 ticks;
 extern char cpu[13];

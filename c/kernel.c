@@ -253,14 +253,22 @@ static struct idt_ptr idtp;
 extern void irq0_stub(void);
 extern void irq1_stub(void);
 extern void irq12_stub(void);
+extern void syscall_stub(void);
 extern void isr_default(void);
+extern void enter_user(u32 entry, u32 user_stack);
+extern const u8 user_blob_start[];
+extern const u8 user_blob_end[];
 
-static void idt_set(int n, u32 handler) {
+static void idt_set_flags(int n, u32 handler, u8 flags) {
     idt[n].base_lo = (u16)(handler & 0xFFFF);
     idt[n].selector = 0x08;
     idt[n].zero = 0;
-    idt[n].flags = 0x8E;
+    idt[n].flags = flags;
     idt[n].base_hi = (u16)(handler >> 16);
+}
+
+static void idt_set(int n, u32 handler) {
+    idt_set_flags(n, handler, 0x8E);
 }
 
 void irq0_handler(void) {
@@ -304,6 +312,151 @@ static void interrupts_setup(void) {
 
     pic_remap();
     pit_init();
+}
+
+/* -----------------------------------------------------------------------------
+ * GDT / TSS / Ring 3
+ * ----------------------------------------------------------------------------- */
+struct gdt_entry {
+    u16 limit_lo;
+    u16 base_lo;
+    u8  base_mid;
+    u8  access;
+    u8  gran;
+    u8  base_hi;
+} __attribute__((packed));
+
+struct gdt_ptr_t {
+    u16 limit;
+    u32 base;
+} __attribute__((packed));
+
+struct tss_entry {
+    u32 prev_tss;
+    u32 esp0;
+    u32 ss0;
+    u32 esp1;
+    u32 ss1;
+    u32 esp2;
+    u32 ss2;
+    u32 cr3;
+    u32 eip;
+    u32 eflags;
+    u32 eax, ecx, edx, ebx, esp, ebp, esi, edi;
+    u32 es, cs, ss, ds, fs, gs;
+    u32 ldt;
+    u16 trap;
+    u16 iomap_base;
+} __attribute__((packed));
+
+static struct gdt_entry gdt[6];
+static struct gdt_ptr_t gdtp;
+static struct tss_entry tss;
+
+static void gdt_set(int n, u32 base, u32 limit, u8 access, u8 gran) {
+    gdt[n].limit_lo = (u16)(limit & 0xFFFF);
+    gdt[n].base_lo = (u16)(base & 0xFFFF);
+    gdt[n].base_mid = (u8)((base >> 16) & 0xFF);
+    gdt[n].access = access;
+    gdt[n].gran = (u8)(((limit >> 16) & 0x0F) | (gran & 0xF0));
+    gdt[n].base_hi = (u8)((base >> 24) & 0xFF);
+}
+
+static void gdt_install(void) {
+    for (int i = 0; i < 6; i++) {
+        gdt[i].limit_lo = 0;
+        gdt[i].base_lo = 0;
+        gdt[i].base_mid = 0;
+        gdt[i].access = 0;
+        gdt[i].gran = 0;
+        gdt[i].base_hi = 0;
+    }
+    gdt_set(1, 0, 0xFFFFF, 0x9A, 0xCF);     /* kernel code */
+    gdt_set(2, 0, 0xFFFFF, 0x92, 0xCF);     /* kernel data */
+    gdt_set(3, 0, 0xFFFFF, 0xFA, 0xCF);     /* user code, DPL3 */
+    gdt_set(4, 0, 0xFFFFF, 0xF2, 0xCF);     /* user data, DPL3 */
+
+    u8 *p = (u8 *)&tss;
+    for (unsigned i = 0; i < sizeof(tss); i++)
+        p[i] = 0;
+    tss.ss0 = 0x10;
+    tss.esp0 = 0x00080000;                  /* separate ring0 stack */
+    tss.iomap_base = (u16)sizeof(tss);
+    gdt_set(5, (u32)&tss, (u32)(sizeof(tss) - 1), 0x89, 0x00);
+
+    gdtp.limit = (u16)(sizeof(gdt) - 1);
+    gdtp.base = (u32)&gdt;
+    __asm__ __volatile__("lgdt %0" : : "m"(gdtp));
+
+    u16 tr = 0x28;
+    __asm__ __volatile__("ltr %0" : : "rm"(tr));
+}
+
+/* -----------------------------------------------------------------------------
+ * Paging: identity-map the first 8 MB, mark the 4 MB user pages U/S.
+ * ----------------------------------------------------------------------------- */
+static u32 page_directory[1024] __attribute__((aligned(4096)));
+static u32 page_table0[1024] __attribute__((aligned(4096)));
+static u32 page_table1[1024] __attribute__((aligned(4096)));
+
+static void paging_install(void) {
+    for (int i = 0; i < 1024; i++) {
+        page_directory[i] = 0;
+        page_table0[i] = 0;
+        page_table1[i] = 0;
+    }
+
+    page_directory[0] = (u32)page_table0 | 0x003;   /* supervisor 0-4 MB */
+    page_directory[1] = (u32)page_table1 | 0x007;   /* user-capable 4-8 MB */
+
+    for (int i = 0; i < 1024; i++) {
+        page_table0[i] = (u32)(i * 0x1000) | 0x003;
+        page_table1[i] = (u32)(0x400000 + i * 0x1000) | 0x003;
+    }
+    for (int i = 0; i < 4; i++)
+        page_table1[i] |= 0x004;                    /* user code + stack */
+
+    u32 len = (u32)(user_blob_end - user_blob_start);
+    if (len > 4096)
+        len = 4096;
+    u8 *dst = (u8 *)0x400000;
+    for (u32 i = 0; i < len; i++)
+        dst[i] = user_blob_start[i];
+
+    __asm__ __volatile__("mov %0, %%cr3" : : "r"((u32)page_directory));
+    u32 cr0;
+    __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= 0x80000000u;
+    __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0));
+}
+
+void syscall_handler(u32 number, u32 arg, u32 cs) {
+    static u8 cpl_reported;
+    if (!cpl_reported) {
+        cpl_reported = 1;
+        if ((cs & 3) == 3)
+            gui_sys_print("[kernel] syscall from CPL=3 (CS=0x1B)\n");
+        else
+            gui_sys_print("[kernel] syscall from non-user CS!\n");
+    }
+
+    if (number == 1) {
+        gui_sys_print((const char *)arg);
+    } else if (number == 2) {
+        gui_sys_print("[ring3] exit syscall; halting.\n");
+        machine_halt();
+    } else {
+        gui_sys_print("[ring3] unknown syscall.\n");
+    }
+}
+
+void enter_ring3_demo(void) {
+    __asm__ __volatile__("cli");
+    gdt_install();
+    idt_set_flags(0x80, (u32)syscall_stub, 0xEE);   /* DPL3 interrupt gate */
+    paging_install();
+    enter_user(0x400000, 0x402000);
+    for (;;) {}
 }
 
 /* -----------------------------------------------------------------------------
