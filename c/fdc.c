@@ -82,7 +82,7 @@ static void fdc_sense(void) {
     (void)fdc_read_byte();
 }
 
-static void dma_prepare(u32 bytes) {
+static void dma_prepare(u32 bytes, int write) {
     u32 count = bytes - 1;
     outb(0x0A, 0x04);           /* mask channel 2 */
     outb(0x0C, 0xFF);           /* clear flip-flop */
@@ -92,7 +92,7 @@ static void dma_prepare(u32 bytes) {
     outb(0x0C, 0xFF);
     outb(0x05, (u8)(count & 0xFF));
     outb(0x05, (u8)((count >> 8) & 0xFF));
-    outb(0x0B, 0x46);           /* single, increment, memory write, ch2 */
+    outb(0x0B, write ? 0x4A : 0x46); /* memory read/write, single, ch2 */
     outb(0x0A, 0x00);           /* unmask all channels */
 }
 
@@ -156,7 +156,7 @@ static int fdc_read_track(u8 cyl, u8 head) {
     if (!fdc_seek(cyl, head))
         return 0;
 
-    dma_prepare(FDC_TRACK_SIZE);
+    dma_prepare(FDC_TRACK_SIZE, 0);
     fdc_irq_seen = 0;
 
     if (!fdc_write(0x46) ||       /* READ DATA, MT=0, multi-sector */
@@ -213,7 +213,7 @@ int fdc_read_sector(u32 lba, u8 *dst) {
     if (!fdc_seek(cyl, head))
         return 0;
 
-    dma_prepare(512);
+    dma_prepare(512, 0);
     fdc_irq_seen = 0;
 
     if (!fdc_write(0xE6) ||
@@ -245,6 +245,51 @@ int fdc_read_sector(u32 lba, u8 *dst) {
         dst[i] = src[i];
     return 1;
 }
+
+int fdc_write_sector(u32 lba, const u8 *src) {
+    if (lba >= 2880)
+        return 0;
+    if (!fdc_init())
+        return 0;
+
+    u32 track = lba / 18;
+    u8 cyl = (u8)(track / 2);
+    u8 head = (u8)(track % 2);
+    u8 sector = (u8)(lba % 18 + 1);
+    if (!fdc_seek(cyl, head))
+        return 0;
+
+    u8 *dma = (u8 *)FDC_DMA_BUF;
+    for (int i = 0; i < 512; i++)
+        dma[i] = src[i];
+    dma_prepare(512, 1);
+    fdc_irq_seen = 0;
+
+    if (!fdc_write(0x45) ||       /* WRITE DATA, MFM */
+        !fdc_write(head ? 0x04 : 0x00) ||
+        !fdc_write(cyl) ||
+        !fdc_write(head) ||
+        !fdc_write(sector) ||
+        !fdc_write(0x02) ||       /* 512-byte sector */
+        !fdc_write(sector) ||     /* EOT */
+        !fdc_write(0x1B) ||
+        !fdc_write(0xFF))
+        return 0;
+
+    if (!wait_irq(3000))
+        return 0;
+
+    u8 st0 = (u8)fdc_read_byte();
+    u8 st1 = (u8)fdc_read_byte();
+    (void)fdc_read_byte();
+    (void)fdc_read_byte();
+    (void)fdc_read_byte();
+    (void)fdc_read_byte();
+    (void)fdc_read_byte();
+    cache_valid = 0;
+    return (st0 & 0xC0) == 0 && (st1 & 0x20) == 0;
+}
+
 
 
 

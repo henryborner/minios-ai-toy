@@ -2148,6 +2148,159 @@ void serial_info(void) {
     serial_puts("MiniOS COM1 115200 8N1 ready\r\n");
 }
 
+/* -----------------------------------------------------------------------------
+ * SaveFS: snapshot RAMFS into the tail of the floppy.
+ * ----------------------------------------------------------------------------- */
+#define SAVE_HEADER_LBA  2560u
+#define SAVE_DATA_LBA    2561u
+#define SAVE_DATA_SECTORS 256u
+#define SAVE_MAGIC "MSV1"
+
+struct savefs_entry {
+    char name[16];
+    u32 size;
+    u32 start_lba;
+    u32 crc;
+} __attribute__((packed));
+
+struct savefs_header {
+    char magic[4];
+    u32 generation;
+    u32 count;
+    u32 header_crc;
+    struct savefs_entry entries[8];
+} __attribute__((packed));
+
+static u32 savefs_generation;
+
+static u32 crc32_bytes(u32 crc, const u8 *p, u32 len) {
+    for (u32 i = 0; i < len; i++) {
+        crc ^= p[i];
+        for (int b = 0; b < 8; b++)
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return crc;
+}
+
+static u32 crc32_finish(u32 crc) {
+    return ~crc;
+}
+
+static int savefs_sync(void) {
+    struct savefs_header h;
+    u8 *hp = (u8 *)&h;
+    for (u32 i = 0; i < sizeof(h); i++)
+        hp[i] = 0;
+    h.magic[0] = 'M'; h.magic[1] = 'S'; h.magic[2] = 'V'; h.magic[3] = '1';
+    h.generation = ++savefs_generation;
+
+    u32 lba = SAVE_DATA_LBA;
+    u32 count = 0;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used)
+            continue;
+        if (count >= 8 || ramfiles[i].size > RAMFILE_PAGES * 0x1000u)
+            return 0;
+        u32 sectors = (ramfiles[i].size + 511u) / 512u;
+        if (lba + sectors > SAVE_DATA_LBA + SAVE_DATA_SECTORS)
+            return 0;
+        const u8 *data = (const u8 *)direct_ptr(ramfiles[i].phys);
+        for (u32 s = 0; s < sectors; s++) {
+            for (int j = 0; j < 512; j++)
+                fs_sector[j] = 0;
+            u32 chunk = ramfiles[i].size - s * 512u;
+            if (chunk > 512) chunk = 512;
+            for (u32 j = 0; j < chunk; j++)
+                fs_sector[j] = data[s * 512u + j];
+            if (!fdc_write_sector(lba + s, fs_sector))
+                return 0;
+        }
+        for (int j = 0; j < 16; j++)
+            h.entries[count].name[j] = ramfiles[i].name[j];
+        h.entries[count].size = ramfiles[i].size;
+        h.entries[count].start_lba = lba;
+        h.entries[count].crc = crc32_finish(crc32_bytes(0xFFFFFFFFu, data, ramfiles[i].size));
+        count++;
+        lba += sectors;
+    }
+    h.count = count;
+    h.header_crc = crc32_finish(crc32_bytes(0xFFFFFFFFu, hp, sizeof(h)));
+    for (int j = 0; j < 512; j++)
+        fs_sector[j] = 0;
+    for (u32 j = 0; j < sizeof(h); j++)
+        fs_sector[j] = hp[j];
+    if (!fdc_write_sector(SAVE_HEADER_LBA, fs_sector))
+        return 0;
+    return 1;
+}
+
+static int savefs_restore(void) {
+    if (!fdc_read_sector(SAVE_HEADER_LBA, fs_sector))
+        return 0;
+    struct savefs_header h;
+    u8 *hp = (u8 *)&h;
+    for (u32 i = 0; i < sizeof(h); i++)
+        hp[i] = fs_sector[i];
+    if (h.magic[0] != 'M' || h.magic[1] != 'S' ||
+        h.magic[2] != 'V' || h.magic[3] != '1')
+        return 0;
+    u32 stored = h.header_crc;
+    h.header_crc = 0;
+    if (crc32_finish(crc32_bytes(0xFFFFFFFFu, hp, sizeof(h))) != stored)
+        return 0;
+    if (h.count > 8)
+        return 0;
+
+    for (u32 i = 0; i < h.count; i++) {
+        if (h.entries[i].size > RAMFILE_PAGES * 0x1000u)
+            return 0;
+        u32 sectors = (h.entries[i].size + 511u) / 512u;
+        if (h.entries[i].start_lba < SAVE_DATA_LBA ||
+            h.entries[i].start_lba + sectors > SAVE_DATA_LBA + SAVE_DATA_SECTORS)
+            return 0;
+    }
+
+    int made[8];
+    int made_count = 0;
+    for (u32 i = 0; i < h.count; i++) {
+        int idx = ramfile_create(h.entries[i].name);
+        if (idx < 0)
+            goto fail;
+        made[made_count++] = idx;
+        struct ramfile *r = &ramfiles[idx];
+        u8 *dst = (u8 *)direct_ptr(r->phys);
+        u32 sectors = (h.entries[i].size + 511u) / 512u;
+        u32 crc = 0xFFFFFFFFu;
+        u32 done = 0;
+        for (u32 s = 0; s < sectors; s++) {
+            if (!fdc_read_sector(h.entries[i].start_lba + s, fs_sector))
+                goto fail;
+            u32 chunk = h.entries[i].size - done;
+            if (chunk > 512) chunk = 512;
+            for (u32 j = 0; j < chunk; j++)
+                dst[done + j] = fs_sector[j];
+            crc = crc32_bytes(crc, fs_sector, chunk);
+            done += chunk;
+        }
+        if (crc32_finish(crc) != h.entries[i].crc)
+            goto fail;
+        r->size = h.entries[i].size;
+    }
+    return 1;
+
+fail:
+    for (int i = 0; i < made_count; i++)
+        ramfile_delete(made[i]);
+    return 0;
+}
+
+void sync_savefs(void) {
+    if (savefs_sync())
+        gui_sys_print("[savefs] snapshot written.\n");
+    else
+        gui_sys_print("[savefs] snapshot FAILED.\n");
+}
+
 void list_ram_files(void) {
     int any = 0;
     for (int i = 0; i < MAX_RAMFILES; i++) {
@@ -2617,6 +2770,11 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         if (out >= 0x400000 && out + sizeof(struct user_dirent) <= 0x800000)
             r = sys_readdir(index, (struct user_dirent *)out);
         ((u32 *)frame)[7] = (u32)r;
+    } else if (number == 23) {
+        __asm__ __volatile__("sti");
+        int r = savefs_sync();
+        __asm__ __volatile__("cli");
+        ((u32 *)frame)[7] = r ? 0 : 0xFFFFFFFFu;
     } else if (number == 29) {
         int cid = current_console_id();
         if (cid < 0 || cid >= KBD_CONSOLES)
@@ -2689,6 +2847,8 @@ void kmain(void) {
     mouse_init();
 
     interrupts_on();
+    task_system_init();
+    savefs_restore();
     gui_redraw();
 
     u32 last_draw = ticks;

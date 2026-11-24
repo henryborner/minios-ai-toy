@@ -58,6 +58,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Native desktop controls**: left-click/drag windows, minimize buttons,
   right-click context menus on the desktop and consoles (scroll/clear/
   minimize/close, launch consoles/system/about), usable while a task runs.
+- **Stage 5 SaveFS persistence**: `sync` / Python `os.sync()` writes a
+  CRC32-checked RAMFS snapshot to LBA 2560–2819; boot restores it
+  automatically. MiniFS remains read-only.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -161,6 +164,10 @@ Screenshots:
 - [`../screenshots/c-gui-context-task.png`](../screenshots/c-gui-context-task.png)
 - [`../screenshots/c-gui-minimized.png`](../screenshots/c-gui-minimized.png)
 - [`../screenshots/c-gui-minimized-list.png`](../screenshots/c-gui-minimized-list.png)
+- [`../screenshots/c-savefs-osync.png`](../screenshots/c-savefs-osync.png)
+- [`../screenshots/c-savefs-sync.png`](../screenshots/c-savefs-sync.png)
+- [`../screenshots/c-savefs-restored2.png`](../screenshots/c-savefs-restored2.png)
+- [`../screenshots/c-savefs-persisted.png`](../screenshots/c-savefs-persisted.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -293,9 +300,23 @@ directory and a saved kernel ESP. It exits back to the GUI shell.
 | Keyboard | focused console shell input |
 
 Shell commands: `help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`,
-`echo`, `console 1|2|3`, `windows`, `serial`, `upload NAME`, `download NAME`,
-`sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ls`, `exec NAME`,
-`disktest`, `ring3`, `modtest`, `mod NAME`, `utest`, `reboot`, `halt`.
+`echo`, `console 1|2|3`, `windows`, `sync`, `serial`, `upload NAME`,
+`download NAME`, `sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ls`,
+`exec NAME`, `disktest`, `ring3`, `modtest`, `mod NAME`, `utest`, `reboot`,
+`halt`.
+
+Persistence test (QEMU drive must be writable — omit `readonly=on`):
+
+```powershell
+python c/build_c.py
+qemu-system-i386 -drive "file=MiniOS-C.img,if=floppy,format=raw" -boot a -m 128
+# in MiniOS:
+py
+f=open('SAVED.PY','w'); f.write('print(42)'); f.close()
+import os; os.sync()
+# Ctrl-D, then restart QEMU and run:
+py SAVED.PY
+```
 
 Serial QEMU example:
 
@@ -358,7 +379,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~40.1 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~42.2 KB (64 KB loader limit)
 - `c/build/mpy.bin` — **181,696 bytes** (177.4 KB, image+BSS 182,256 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
@@ -430,8 +451,10 @@ qemu-system-i386 `
   console; task/FDC/serial/reboot commands are refused with `[busy]`.
 - There is no kernel task-kill/foreground-control UI yet; Python must exit via
   `Ctrl-C`/`Ctrl-D` or its own prompt.
-- RAMFS is session-only; serial upload/download is the current host bridge,
-  not persistent storage.
+- RAMFS is persistent only after `sync`/`os.sync()`; the SaveFS snapshot is
+  CRC32-checked and restored at boot. The whole sync is blocking and has no
+  power-loss journal.
+- Serial upload/download is a host bridge, independent of SaveFS.
 - FDC is still read-only; there is no writable MiniFS/FAT12.
 - The 64 KB loader is enough for current growth, but the next large subsystem
   will need another loader/memory-layout revision.

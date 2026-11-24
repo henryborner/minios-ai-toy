@@ -734,7 +734,7 @@ static void run_command(struct console *c, char *line) {
          streq(line, "py") || streq(line, "python") ||
          streq(line, "modtest") || streq(line, "uargs") ||
          streq(line, "big512") || streq(line, "serial") ||
-         streq(line, "reboot") ||
+         streq(line, "sync") || streq(line, "reboot") ||
          streq(line, "halt") ||
          starts_with(line, "py ") || starts_with(line, "python ") ||
          starts_with(line, "exec ") || starts_with(line, "run ") ||
@@ -748,7 +748,7 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
         term_puts(c, "py python clear echo console windows\n");
-        term_puts(c, "serial upload NAME download NAME\n");
+        term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR ps kill PID\n");
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
@@ -826,6 +826,10 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Large task argv test...\n");
         if (!run_user_module_args("BIGARG.BIN", 2, args))
             term_puts(c, "uargs failed.\n");
+    } else if (streq(line, "sync")) {
+        extern void sync_savefs(void);
+        term_puts(c, "Saving RAMFS to floppy...\n");
+        sync_savefs();
     } else if (streq(line, "serial")) {
         extern void serial_info(void);
         serial_info();

@@ -142,16 +142,16 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 5：特色王牌 ② —— 单软盘双区快照持久化（`SaveFS` + `sync`）
 **目标**：用最精简可靠的设计实现“平时纯内存零延迟读写，一句 `sync` 真实落盘软盘，断电重启自动恢复”。
 
-- [ ] **5.1 补齐 FDC 写扇区驱动**（`c/fdc.c`、`c/fdc.h`）
+- [x] **5.1 补齐 FDC 写扇区驱动**（`c/fdc.c`、`c/fdc.h`）
   - 实现 `int fdc_write_sector(u32 lba, const u8 *src)`：拷贝 512 字节至 `0x8000`，配置 8237 DMA 通道 2 读内存模式（`0x4A`），发送 FDC `WRITE DATA`（`0xC5`）命令等待 IRQ6 并校验状态字节，同时同步更新或失效磁道缓存。
   - 更新启动脚本与文档中的 QEMU 参数，去掉软盘驱动器的 `readonly=on`。
-- [ ] **5.2 建立软盘尾部 `SaveFS` 快照区（LBA 2560–2819，130 KB）**（`c/kernel.c`、`c/build_c.py`）
+- [x] **5.2 建立软盘尾部 `SaveFS` 快照区（LBA 2560–2819，130 KB）**（`c/kernel.c`、`c/build_c.py`）
   - 在 `c/build_c.py` 中将 `FS_MAX_BYTES` 调整为 `(2560 - 200) * 512`（约 1.15 MB），确保 `MiniFS` 绝不侵入 `LBA 2560+`；首次构建镜像时若保留现有快照可选支持，默认新镜像尾部清零。
   - 定义 `LBA 2560` 为 `MSV1` 超块扇区：包含魔数 `"MSV1"`、代数序号、文件计数、8 项 `{ char name[16]; u32 size; u32 sector_offset; u32 crc32; }` 与头部 CRC32；`LBA 2561–2816` 仅连续写入非空文件的有效扇区（写 1 KB 脚本仅需刷写 1+2=3 个扇区，耗时极短）。
-- [ ] **5.3 开机自动挂载恢复与 `sync` 接口**
+- [x] **5.3 开机自动挂载恢复与 `sync` 接口**
   - 内核启动初始化时自动读取 `LBA 2560`，若 `"MSV1"` 魔数与各文件 CRC32 校验通过，自动分配物理页恢复进 `ramfiles[]`。
   - 新增 `syscall 23` (`sync`)、Shell `sync` 命令及 Python `os.sync()`。
-- [ ] **Stage 5 验收**：在 Python 中写出 `SAVED.PY` 并执行 `os.sync()`，**彻底退出并重启新的 QEMU 进程**，开机直接运行 `ls` 与 `py SAVED.PY`，验证跨重启持久化成功并截图。
+- [x] **Stage 5 验收**：Python 写 `SAVED.PY` 并执行 `os.sync()`，Shell `sync` 显示 `[savefs] snapshot written`；退出并启动新的 QEMU 进程后 `ls` 显示 `SAVED.PY`，`py SAVED.PY` 输出 `42`。截图 `c-savefs-osync.png`、`c-savefs-sync.png`、`c-savefs-restored2.png`、`c-savefs-persisted.png`。
 
 ---
 

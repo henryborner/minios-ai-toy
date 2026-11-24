@@ -22,7 +22,7 @@ PACK_BYTES = PACK_SECTORS * 512
 PACK_OFFSET = (1 + KERNEL_SECTORS) * 512
 FS_LBA = 200
 FS_OFFSET = FS_LBA * 512
-FS_MAX_BYTES = 1024 * 1024
+FS_MAX_BYTES = (2560 - FS_LBA) * 512
 
 
 def build_minifs(files: list[tuple[str, Path]]) -> bytes:
@@ -263,6 +263,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 
