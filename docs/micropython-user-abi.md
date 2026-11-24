@@ -8,7 +8,7 @@ port.
 
 | Virtual | Size | Use |
 |---:|---:|---|
-| `0x00400000` | 256 KB max | module code/rodata/data + `UMP1` header |
+| `0x00400000` | 512 KB max | module code/rodata/data + `UMP1` header |
 | `0x00480000` | 64 KB | user stack (`ESP` starts at `0x00490000`) |
 | `0x00500000` | 1 MB | user heap for MicroPython GC |
 | `0x00400000–0x007FFFFF` | 4 MB | user page-table window (U/S=1 for mapped pages) |
@@ -54,8 +54,8 @@ The loader reads `UMTEST.BIN` from MiniFS through the FDC, copies it to
 with:
 
 - EIP = `0x400000 + entry_offset`
-- ESP = `0x490000`
-- heap = `0x500000`, 1 MB
+- ESP = `0x490000` (or lower when `argv` is supplied)
+- heap = `0x500000`, 1 MB initially (expandable with `brk`)
 
 ## Syscalls
 
@@ -84,11 +84,18 @@ by replacing the saved EAX, so the user sees it in EAX after `int 0x80`.
 | 18 | unlink | EBX = name | EAX = 0 or -1 |
 | 19 | spawn_args | EBX = name, ECX = argv, EDX = argc | EAX = child PID or 0 |
 | 20 | brk | EBX = new break (0 = query) | EAX = break or -1 |
+| 21 | stat | EBX = name, ECX = user_stat | EAX = 0 or -1 |
+| 22 | readdir | EBX = index, ECX = user_dirent | EAX = 1 or 0 |
 
 Notes:
 
-- Syscalls 4/5/6/7/12/13/14/15 require pointers in the user window
+- Syscalls 1/4/5/6/7/12/13/14/15/21/22 require pointers in the user window
   `0x400000–0x7FFFFF`.
+- Syscall 4 accepts up to `BIG_HEAP_SIZE` (1 MB) per call; invalid pointers
+  or lengths return `-1`.
+- `stat` writes `{ u32 size; u32 kind; }`, kind 1 = MiniFS, 2 = RAMFS.
+- `readdir` writes `{ char name[16]; u32 size; u32 kind; }`, returns 0 at end;
+  RAMFS entries come first and shadow MiniFS entries with the same name.
 - Syscall 5 enables interrupts while waiting; keyboard IRQs feed it.
 - Syscall 7 reads a whole MiniFS file into the user buffer.
 - Syscalls 12–15 are the read-only FD API. FDs are per-task (8 per task),
@@ -155,6 +162,12 @@ exec FD.BIN        # open/read/close TEST.TXT
 exec RAMFS.BIN     # RAMFS create/write/seek/read
 exec ARGS.BIN      # argv child
 exec HEAP.BIN      # brk grow/write/read/shrink
+exec BIGWRITE.BIN  # 5000-byte syscall 4 write
+exec DIR.BIN       # stat/readdir merge
+uargs              # large UMP1 task argc/argv
+big512             # 300 KB UMP1 payload
+ps                 # active task table
+kill PID           # terminate a task
 ```
 
 Expected output includes:
@@ -170,14 +183,15 @@ Heap, read_file, getchar and ticks_ms OK.
 ## Limitations
 
 - One big task only (slot 7).
-- Physical frames are dynamically allocated, but there is no demand paging,
-  `mmap` or `brk`; the big heap is a fixed 1 MB region.
+- Physical frames are dynamically allocated, but there is no demand paging
+  or `mmap`; `brk` grows the heap within `0x500000–0x700000`.
 - MiniFS is read-only; only RAMFS (8 × 16 KB, non-persistent) is writable.
-- `spawn`/`spawn_args` support flat programs ≤4 KB; no fork/replace-exec.
-- `brk` is the heap interface; there is no `mmap`/demand paging.
+- `spawn`/`spawn_args` support flat programs ≤4 KB; large UMP1 tasks support
+  argv up to 512 KB code, but there is no fork/replace-exec.
+- `ps`/`kill` are shell commands; there is no foreground-control UI.
 - Kernel syscall stack is 8 KB for the big task; deep MicroPython C recursion
   needs auditing.
-- `0x00100000` remains a temporary image load address; don't run the kernel
-  module and a large user image at the same instant.
+- `0x00100000–0x0017FFFF` is the temporary large-image load window; don't run
+  the kernel module and a large user image at the same instant.
 - Ring 3 isolation is real for the user task; the kernel/user boundary is
-  syscalls 1–15.
+  syscalls 1–22.

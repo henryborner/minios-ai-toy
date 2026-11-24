@@ -978,7 +978,7 @@ int run_module(const char *name) {
 /* One large Ring 3 task for the MicroPython-class layout. */
 #define BIG_TASK_SLOT    7
 #define BIG_CODE_PHYS    0x00100000u
-#define BIG_CODE_MAX     0x00040000u
+#define BIG_CODE_MAX     0x00080000u
 #define BIG_USER_CODE    0x00400000u
 #define BIG_USER_STACK   0x00480000u
 #define BIG_USER_HEAP    0x00500000u
@@ -1015,6 +1015,7 @@ struct task {
     u32 sleep_until;
     u32 exit_code;
     u8 console_id;
+    u8 kill_pending;
 };
 
 static struct task tasks[NTASKS];
@@ -1218,6 +1219,7 @@ static void task_clear_all(void) {
         tasks[t].sleep_until = 0;
         tasks[t].exit_code = 0;
         tasks[t].console_id = 0;
+        tasks[t].kill_pending = 0;
         for (int f = 0; f < MAX_FDS; f++)
             fd_table[t][f].used = 0;
     }
@@ -1304,6 +1306,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
+    tasks[slot].kill_pending = 0;
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
     task_set_name(slot, name);
@@ -1378,6 +1381,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
+    tasks[slot].kill_pending = 0;
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
     task_set_name(slot, name);
@@ -1453,9 +1457,17 @@ static void wake_parent(int child_slot) {
     }
 }
 
+static void task_exit(u32 status);
+
 static void sched_timer_tick(u32 *frame) {
     if (!scheduler_active)
         return;
+
+    if (current_task >= 0 && current_task < NTASKS &&
+        tasks[current_task].kill_pending) {
+        tasks[current_task].kill_pending = 0;
+        task_exit(0xFFFFu);
+    }
 
     for (int t = 0; t < NTASKS; t++) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].sleep_until != 0 &&
@@ -1546,6 +1558,78 @@ void exception_handler(u32 *frame) {
         __asm__ __volatile__("cli");
         __asm__ __volatile__("hlt");
     }
+}
+
+static char *ps_u32(char *p, u32 v) {
+    char b[12];
+    int n = 0;
+    if (v == 0)
+        b[n++] = '0';
+    while (v) {
+        b[n++] = (char)('0' + v % 10);
+        v /= 10;
+    }
+    while (n)
+        *p++ = b[--n];
+    return p;
+}
+
+static char *ps_str(char *p, const char *s) {
+    while (*s)
+        *p++ = *s++;
+    return p;
+}
+
+void task_ps(void) {
+    gui_sys_print("PID CON STATE PAGES NAME\n");
+    for (int t = 0; t < NTASKS; t++) {
+        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+            continue;
+        char line[80];
+        char *p = line;
+        p = ps_u32(p, tasks[t].pid);
+        *p++ = ' ';
+        p = ps_u32(p, (u32)tasks[t].console_id + 1);
+        *p++ = ' ';
+        const char *state = "?";
+        if (tasks[t].state == TASK_READY) state = "READY";
+        else if (tasks[t].state == TASK_RUNNING) state = "RUN";
+        else if (tasks[t].state == TASK_BLOCKED) state = "BLOCK";
+        p = ps_str(p, state);
+        *p++ = ' ';
+        p = ps_u32(p, (u32)tasks[t].code_pages + tasks[t].stack_pages +
+                         tasks[t].heap_pages);
+        *p++ = ' ';
+        p = ps_str(p, tasks[t].name);
+        *p = 0;
+        gui_sys_print(line);
+        gui_sys_print("\n");
+    }
+}
+
+int task_kill_pid(u32 pid) {
+    int target = -1;
+    for (int t = 0; t < NTASKS; t++) {
+        if (tasks[t].state != TASK_FREE && tasks[t].state != TASK_DONE &&
+            tasks[t].pid == pid) {
+            target = t;
+            break;
+        }
+    }
+    if (target < 0)
+        return 0;
+
+    if (target == current_task) {
+        tasks[target].kill_pending = 1;
+        return 2;
+    }
+
+    tasks[target].kill_pending = 0;
+    tasks[target].exit_code = 0xFFFFu;
+    wake_parent(target);
+    task_free_frames(target);
+    tasks[target].state = TASK_DONE;
+    return 1;
 }
 
 static int task_spawn_user(const char *name) {
@@ -1742,7 +1826,48 @@ void run_task_demo(void) {
     start_tasks(a);
 }
 
-int run_user_module(const char *name) {
+static int build_args_on_stack(int slot, u32 argc, const char *const *argv,
+                               u32 stack_base, u32 stack_top) {
+    if (argc > 8 || tasks[slot].stack_phys == 0)
+        return 0;
+    u8 *stackv = (u8 *)direct_ptr(tasks[slot].stack_phys);
+    u32 sp = stack_top;
+    u32 ptrs[8];
+
+    for (u32 i = 0; i < argc; i++) {
+        const char *s = argv[i];
+        if (!s)
+            return 0;
+        int len = 0;
+        while (len < 64 && s[len])
+            len++;
+        if (len == 64)
+            return 0;
+        sp -= (u32)len + 1;
+        if (sp < stack_base + 64)
+            return 0;
+        u8 *dst = stackv + (sp - stack_base);
+        for (int j = 0; j <= len; j++)
+            dst[j] = (u8)s[j];
+        ptrs[i] = sp;
+    }
+    sp &= ~3u;
+    sp -= 4;
+    *(u32 *)(stackv + (sp - stack_base)) = 0;
+    for (int i = (int)argc - 1; i >= 0; i--) {
+        sp -= 4;
+        *(u32 *)(stackv + (sp - stack_base)) = ptrs[i];
+    }
+    sp -= 4;
+    if (sp < stack_base + 64)
+        return 0;
+    *(u32 *)(stackv + (sp - stack_base)) = argc;
+    ((u32 *)tasks[slot].esp)[11] = sp;
+    return 1;
+}
+
+static int run_user_module_ex(const char *name, int argc,
+                              const char *const *argv) {
     u32 size = 0;
     if (!fs_load_file_to(name, (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size)) {
         gui_sys_print("[user-mod] load failed.\n");
@@ -1773,8 +1898,25 @@ int run_user_module(const char *name) {
         __asm__ __volatile__("sti");
         return 0;
     }
+    if (argc > 0 &&
+        !build_args_on_stack(slot, (u32)argc, argv, BIG_USER_STACK,
+                             BIG_USER_STACK + BIG_STACK_SIZE)) {
+        tasks[slot].state = TASK_FREE;
+        task_free_frames(slot);
+        gui_sys_print("[user-mod] argv does not fit.\n");
+        __asm__ __volatile__("sti");
+        return 0;
+    }
     start_tasks(slot);
     return 1;
+}
+
+int run_user_module(const char *name) {
+    return run_user_module_ex(name, 0, 0);
+}
+
+int run_user_module_args(const char *name, int argc, const char *const *argv) {
+    return run_user_module_ex(name, argc, argv);
 }
 
 int exec_disk(const char *name) {
@@ -2097,6 +2239,79 @@ static int fd_write(int fd, const u8 *buf, u32 len) {
     return (int)len;
 }
 
+struct user_stat {
+    u32 size;
+    u32 kind;
+};
+
+struct user_dirent {
+    char name[16];
+    u32 size;
+    u32 kind;
+};
+
+static int sys_stat(const char *name, struct user_stat *out) {
+    int ri = ramfile_find(name);
+    if (ri >= 0) {
+        out->size = ramfiles[ri].size;
+        out->kind = 2;
+        return 0;
+    }
+
+    __asm__ __volatile__("sti");
+    int ok = fs_load_dir();
+    __asm__ __volatile__("cli");
+    if (!ok)
+        return -1;
+    struct fs_header *h = (struct fs_header *)fs_dir;
+    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+    for (int i = 0; i < h->count; i++) {
+        if (fs_name_eq(&entries[i], name)) {
+            out->size = entries[i].size;
+            out->kind = 1;
+            return 0;
+        }
+    }
+    return -1;
+}
+
+static int sys_readdir(u32 index, struct user_dirent *out) {
+    u32 pos = 0;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used)
+            continue;
+        if (pos == index) {
+            for (int j = 0; j < 16; j++)
+                out->name[j] = ramfiles[i].name[j];
+            out->size = ramfiles[i].size;
+            out->kind = 2;
+            return 1;
+        }
+        pos++;
+    }
+
+    __asm__ __volatile__("sti");
+    int ok = fs_load_dir();
+    __asm__ __volatile__("cli");
+    if (!ok)
+        return 0;
+    struct fs_header *h = (struct fs_header *)fs_dir;
+    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+    for (int i = 0; i < h->count; i++) {
+        if (ramfile_find(entries[i].name) >= 0)
+            continue;
+        if (pos == index) {
+            for (int j = 0; j < 16; j++)
+                out->name[j] = entries[i].name[j];
+            out->size = entries[i].size;
+            out->kind = 1;
+            return 1;
+        }
+        pos++;
+    }
+    return 0;
+}
+
 static u32 task_brk(u32 addr) {
     if (current_task < 0 || current_task >= NTASKS)
         return 0xFFFFFFFFu;
@@ -2201,10 +2416,11 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else if (number == 4) {
         u32 ptr = ((u32 *)frame)[4];
         u32 len = ((u32 *)frame)[6];
-        if (ptr >= 0x400000 && ptr < 0x800000 && len <= 4096 &&
-            ptr + len <= 0x800000)
+        int ok = (ptr >= 0x400000 && ptr < 0x800000 &&
+                  len <= BIG_HEAP_SIZE && ptr + len <= 0x800000);
+        if (ok)
             gui_sys_write_console(current_console_id(), (const char *)ptr, len);
-        ((u32 *)frame)[7] = len;
+        ((u32 *)frame)[7] = ok ? len : 0xFFFFFFFFu;
     } else if (number == 5) {
         ((u32 *)frame)[7] = (u32)module_getchar();
     } else if (number == 6) {
@@ -2293,6 +2509,21 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         ((u32 *)frame)[7] = (u32)pid;
     } else if (number == 20) {
         ((u32 *)frame)[7] = task_brk(((u32 *)frame)[4]);
+    } else if (number == 21) {
+        u32 name = ((u32 *)frame)[4];
+        u32 out = ((u32 *)frame)[6];
+        int r = -1;
+        if (name >= 0x400000 && name < 0x800000 &&
+            out >= 0x400000 && out + sizeof(struct user_stat) <= 0x800000)
+            r = sys_stat((const char *)name, (struct user_stat *)out);
+        ((u32 *)frame)[7] = (u32)r;
+    } else if (number == 22) {
+        u32 index = ((u32 *)frame)[4];
+        u32 out = ((u32 *)frame)[6];
+        int r = 0;
+        if (out >= 0x400000 && out + sizeof(struct user_dirent) <= 0x800000)
+            r = sys_readdir(index, (struct user_dirent *)out);
+        ((u32 *)frame)[7] = (u32)r;
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }

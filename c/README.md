@@ -42,6 +42,8 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - Ring 3 entry via `iret`; DPL3 `int 0x80` syscall gate; CPL=3 verified
 - **Dynamic task table with 8 slots**, task creation/reuse and per-task
   page directories/user page tables/kernel stacks
+- **Stage 1 ABI**: big Ring 3 code window 512 KB, `run_user_module_args()`
+  argc/argv, syscall 4 long writes, `stat`/`readdir`, and `ps`/`kill`
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -70,8 +72,8 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   - API: puts, putc, write(len), getchar, ticks_ms, heap
   - test command `modtest` / `mod NAME`
 - **Ring 3 large-module layout**:
-  - `UMP1` code at `0x400000` (256 KB), stack at `0x480000` (64 KB),
-    heap at `0x500000` (1 MB)
+  - `UMP1` code at `0x400000` (512 KB), stack at `0x480000` (64 KB),
+    heap at `0x500000` (1 MB initial, `brk` up to 2 MB)
   - one big task slot (slot 3)
   - syscalls: write bytes (4), blocking getchar (5), ticks_ms (6),
     whole-file read (7), plus write-string/exit/yield
@@ -122,6 +124,12 @@ Screenshots:
 - [`../screenshots/c-stage0-time.png`](../screenshots/c-stage0-time.png)
 - [`../screenshots/c-stage0-cursor-fresh.png`](../screenshots/c-stage0-cursor-fresh.png)
 - [`../screenshots/c-stage0-track-utest.png`](../screenshots/c-stage0-track-utest.png)
+- [`../screenshots/c-stage1-uargs.png`](../screenshots/c-stage1-uargs.png)
+- [`../screenshots/c-stage1-bigwrite.png`](../screenshots/c-stage1-bigwrite.png)
+- [`../screenshots/c-stage1-dir2.png`](../screenshots/c-stage1-dir2.png)
+- [`../screenshots/c-stage1-ps.png`](../screenshots/c-stage1-ps.png)
+- [`../screenshots/c-stage1-kill-con1.png`](../screenshots/c-stage1-kill-con1.png)
+- [`../screenshots/c-stage1-big512.png`](../screenshots/c-stage1-big512.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -278,6 +286,12 @@ exec FD.BIN        # open/read/close TEST.TXT
 exec RAMFS.BIN     # create/write/seek/read a RAMFS file
 exec ARGS.BIN      # spawn ARG.BIN with argv
 exec HEAP.BIN      # brk heap grow/write/read/shrink
+exec BIGWRITE.BIN  # 5000-byte syscall 4 write
+exec DIR.BIN       # stat/readdir merged RAMFS + MiniFS
+uargs              # large UMP1 task argc/argv
+big512             # 300 KB UMP1 payload (> old 256 KB limit)
+ps                 # list active tasks
+kill PID           # terminate a task, including a runaway one
 ```
 
 ## Window manager
@@ -308,8 +322,8 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~32.5 KB (64 KB loader limit)
-- Stage 0 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
+- `c/build/kernel.bin` — currently ~34.8 KB (64 KB loader limit)
+- Stage 0/1 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
@@ -361,8 +375,11 @@ qemu-system-i386 `
 - Dynamic table has **8 slots**; 7 small slots + 1 big Ring 3 slot.
 - Scheduler is timer-preemptive with a fixed 10 ms slice; no priorities.
 - Task code/stack/heap pages come from a frame allocator (5–16 MB).
-- `spawn`/`spawn_args` support flat MiniFS programs ≤4 KB; no fork/replace-exec.
+- `spawn`/`spawn_args` support flat MiniFS programs ≤4 KB; big UMP1 tasks
+  support up to 512 KB code and argv, but no fork/replace-exec.
 - `wait` is parent/child only; exit status is available through syscall 11.
+- `kill` terminates the target; killing the current task is deferred to the
+  scheduler. There is still no foreground control UI.
 - FDs can write only RAMFS; MiniFS remains read-only.
 - RAMFS is 8 files × 16 KB and non-persistent.
 - Program pack is read-only and boot-loaded; MiniFS is read-only at runtime.

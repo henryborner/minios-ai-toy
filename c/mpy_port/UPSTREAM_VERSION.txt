@@ -1,0 +1,4 @@
+upstream_repo=https://github.com/micropython/micropython.git
+upstream_tag=v1.24.1
+upstream_commit=ecfdd5d6f9be971852003c2049600dc7b3e2a838
+local_source_dir=tools/micropython

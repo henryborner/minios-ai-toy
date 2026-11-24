@@ -129,6 +129,11 @@ def main() -> int:
     parent_args_bin = BUILD / "parent_args.bin"
     heap_test_bin = BUILD / "heap_test.bin"
     term_test_bin = BUILD / "term_test.bin"
+    bigarg_bin = BUILD / "bigarg.bin"
+    bigwrite_bin = BUILD / "bigwrite.bin"
+    dir_test_bin = BUILD / "dir_test.bin"
+    spin_test_bin = BUILD / "spin_test.bin"
+    big512_bin = BUILD / "big512.bin"
     crash_test_bin = BUILD / "crash_test.bin"
     div0_test_bin = BUILD / "div0_test.bin"
     sched_o = BUILD / "sched.o"
@@ -160,6 +165,11 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(parent_args_bin), "parent_args.asm"])
     run([nasm, "-f", "bin", "-o", str(heap_test_bin), "heap_test.asm"])
     run([nasm, "-f", "bin", "-o", str(term_test_bin), "term_test.asm"])
+    run([nasm, "-f", "bin", "-o", str(bigarg_bin), "bigarg.asm"])
+    run([nasm, "-f", "bin", "-o", str(bigwrite_bin), "bigwrite.asm"])
+    run([nasm, "-f", "bin", "-o", str(dir_test_bin), "dir_test.asm"])
+    run([nasm, "-f", "bin", "-o", str(spin_test_bin), "spin_test.asm"])
+    run([nasm, "-f", "bin", "-o", str(big512_bin), "big512.asm"])
     run([nasm, "-f", "bin", "-o", str(crash_test_bin), "crash_test.asm"])
     run([nasm, "-f", "bin", "-o", str(div0_test_bin), "div0_test.asm"])
     run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
@@ -224,6 +234,11 @@ def main() -> int:
         ("ARGS.BIN", parent_args_bin),
         ("HEAP.BIN", heap_test_bin),
         ("TERM.BIN", term_test_bin),
+        ("BIGARG.BIN", bigarg_bin),
+        ("BIGWRITE.BIN", bigwrite_bin),
+        ("DIR.BIN", dir_test_bin),
+        ("SPIN.BIN", spin_test_bin),
+        ("BIG512.BIN", big512_bin),
         ("CRASH.BIN", crash_test_bin),
         ("DIV0.BIN", div0_test_bin),
         ("TEST.TXT", CDIR / "test.txt"),
@@ -244,6 +259,11 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
+
+
 
 
 

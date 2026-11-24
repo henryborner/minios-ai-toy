@@ -518,8 +518,10 @@ static void run_command(struct console *c, char *line) {
         (streq(line, "ls") || streq(line, "disktest") ||
          streq(line, "ring3") || streq(line, "tasks") ||
          streq(line, "progs") || streq(line, "utest") ||
-         streq(line, "modtest") || streq(line, "serial") ||
-         streq(line, "reboot") || streq(line, "halt") ||
+         streq(line, "modtest") || streq(line, "uargs") ||
+         streq(line, "big512") || streq(line, "serial") ||
+         streq(line, "reboot") ||
+         streq(line, "halt") ||
          starts_with(line, "exec ") || starts_with(line, "run ") ||
          starts_with(line, "mod ") || starts_with(line, "upload ") ||
          starts_with(line, "download "))) {
@@ -581,6 +583,33 @@ static void run_command(struct console *c, char *line) {
         } else {
             term_puts(c, "Usage: console 1|2|3\n");
         }
+    } else if (streq(line, "ps")) {
+        extern void task_ps(void);
+        task_ps();
+    } else if (starts_with(line, "kill ")) {
+        extern int task_kill_pid(u32 pid);
+        u32 pid = 0;
+        const char *p = line + 5;
+        while (*p >= '0' && *p <= '9') {
+            pid = pid * 10 + (u32)(*p - '0');
+            p++;
+        }
+        int r = task_kill_pid(pid);
+        if (r == 1) term_puts(c, "killed.\n");
+        else if (r == 2) term_puts(c, "kill pending; scheduler will reap it.\n");
+        else term_puts(c, "no such task.\n");
+    } else if (streq(line, "big512")) {
+        extern int run_user_module(const char *name);
+        term_puts(c, "Large UMP1 payload test...\n");
+        if (!run_user_module("BIG512.BIN"))
+            term_puts(c, "big512 failed.\n");
+    } else if (streq(line, "uargs")) {
+        extern int run_user_module_args(const char *name, int argc,
+                                        const char *const *argv);
+        static const char *args[2] = { "alpha", "beta" };
+        term_puts(c, "Large task argv test...\n");
+        if (!run_user_module_args("BIGARG.BIN", 2, args))
+            term_puts(c, "uargs failed.\n");
     } else if (streq(line, "serial")) {
         extern void serial_info(void);
         serial_info();

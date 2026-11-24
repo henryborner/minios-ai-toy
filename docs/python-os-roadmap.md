@@ -71,18 +71,18 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 1：补齐用户态 ABI 最后拼图（大任务扩容、参数、目录枚举与进程控制）
 **目标**：为完整功能的 Python 解释器准备好 512 KB 代码空间、`argc/argv`、无损长输出、`stat`/`readdir` 与 `ps`/`kill`。
 
-- [ ] **1.1 扩容大任务代码窗至 512 KB 并支持 `argc/argv`**（`c/kernel.c`）
+- [x] **1.1 扩容大任务代码窗至 512 KB 并支持 `argc/argv`**（`c/kernel.c`）
   - 将 `BIG_CODE_MAX` 从 `0x00040000u`（256 KB）提升至 **`0x00080000u`（512 KB）**（`BIG_USER_STACK` 位于 `0x00480000`，虚拟空间天然预留了 512 KB）。
   - 实现 `int run_user_module_args(const char *name, int argc, const char *const *argv)`：在 `task_create_big()` 中将参数字符串与 `argv[]` 指针表压入大任务用户栈顶（`0x00490000` 向下生长），使入口处 `[esp] = argc, [esp+4] = argv[0]...` 与 `task_spawn_args` 约定一致。
-- [ ] **1.2 解除 `syscall 4` 的 4096 字节截断限制**（`c/kernel.c`）
+- [x] **1.2 解除 `syscall 4` 的 4096 字节截断限制**（`c/kernel.c`）
   - 允许 `syscall 4` (`write bytes`) 写入任意位于用户合法映射区间内（单次上限放宽至 `BIG_HEAP_SIZE`）的字节流，完整输出并返回实际长度，越界指针返回 `-1`。
-- [ ] **1.3 新增 `stat` 与 `readdir` 系统调用（`syscalls 21–22`）**（`c/kernel.c`、`docs/micropython-user-abi.md`）
+- [x] **1.3 新增 `stat` 与 `readdir` 系统调用（`syscalls 21–22`）**（`c/kernel.c`、`docs/micropython-user-abi.md`）
   - `syscall 21` (`stat`)：`EBX = name`, `ECX = user_stat_ptr`（写入 `{ u32 size; u32 kind; }`，`1=MiniFS`, `2=RAMFS`，优先查 RAMFS 再查 MiniFS；不存在返回 `-1`，成功返回 `0`）。
   - `syscall 22` (`readdir`)：`EBX = index`, `ECX = user_dirent_ptr`（写入 `{ char name[16]; u32 size; u32 kind; }`），按序枚举合并去重后的 RAMFS + MiniFS 文件列表（同名以 RAMFS 覆盖为准），成功返回 `1`，遍历结束返回 `0`。
-- [ ] **1.4 新增运行期进程查看 `ps` 与强制终止 `kill`**（`c/kernel.c`、`c/gui.c`）
+- [x] **1.4 新增运行期进程查看 `ps` 与强制终止 `kill`**（`c/kernel.c`、`c/gui.c`）
   - Shell 新增安全命令 `ps`（即使有任务在跑也可从空闲 Console 执行）：打印活动任务槽的 `PID / Console / State / Pages / Name`。
   - Shell 新增 `kill <PID>` 命令（可在另一 Console 执行）及全局紧急热键（如 `Ctrl+Pause` 或 `Ctrl+\` 视情况设计）：安全回收目标 Ring 3 任务页帧、唤醒等待它的父进程，若无剩余活动任务则干净退出调度器回到桌面。
-- [ ] **Stage 1 验收**：编写测试验证大任务读取 `argc/argv`、>4 KB 输出、`stat`/`readdir` 合并枚举，以及在 Console 2 用 `ps` 查看并用 `kill` 终止 Console 1 中的死循环任务，截图留档。
+- [x] **Stage 1 验收**：`uargs` 验证 512 KB 大任务 `argc/argv`；`BIGWRITE.BIN` 验证 5000 字节输出；`DIR.BIN` 验证 RAMFS 覆盖 MiniFS 的 stat/readdir；`SPIN.BIN` + Console 2 `ps`/`kill 1` 验证死循环任务回收；`BIG512.BIN` 加载 300 KB UMP1 载荷成功。
 
 ---
 
