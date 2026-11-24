@@ -1765,6 +1765,25 @@ void task_ps(void) {
     }
 }
 
+int kernel_task_snapshot(int index, u32 *pid, int *console, u32 *state,
+                         u32 *pages, char *name) {
+    int n = 0;
+    for (int t = 0; t < NTASKS; t++) {
+        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+            continue;
+        if (n++ != index)
+            continue;
+        *pid = tasks[t].pid;
+        *console = tasks[t].console_id + 1;
+        *state = tasks[t].state;
+        *pages = tasks[t].code_pages + tasks[t].stack_pages + tasks[t].heap_pages;
+        for (int j = 0; j < 16; j++)
+            name[j] = tasks[t].name[j];
+        return 1;
+    }
+    return 0;
+}
+
 int task_kill_pid(u32 pid) {
     int target = -1;
     for (int t = 0; t < NTASKS; t++) {

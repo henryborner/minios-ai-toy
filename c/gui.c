@@ -60,6 +60,9 @@
 #define HIT_MAX_BASE 900
 #define HIT_CTX_BASE 1000
 #define HIT_RESIZE_BASE 1500
+#define HIT_SYS_TAB_BASE 1600
+#define HIT_SYS_ROW_BASE 1700
+#define HIT_SYS_KILL 1800
 #define CANVAS_MAX_W 600
 #define CANVAS_MAX_H 420
 
@@ -124,6 +127,8 @@ static int term_dark;
 static int canvas_open;
 static int files_scroll;
 static int files_sel;
+static int sys_tab;
+static int sys_task_sel;
 static char clipboard[256];
 static int clipboard_len;
 static int sel_id = -1;
@@ -467,7 +472,7 @@ static void init_windows(void) {
         wins[WIN_C1].x = 28;  wins[WIN_C1].y = 198;
         wins[WIN_C2].x = 20;  wins[WIN_C2].y = 110;
 
-        wins[WIN_SYS].x = 388; wins[WIN_SYS].y = 256;
+        wins[WIN_SYS].x = 300; wins[WIN_SYS].y = 260;
         wins[WIN_ABOUT].x = (scr_w - ABOUT_W) / 2;
         wins[WIN_ABOUT].y = (TASKBAR_Y - ABOUT_H) / 2;
         wins[WIN_APP].x = scr_w - (canvas_w + 4) - 12;
@@ -499,7 +504,8 @@ static void init_windows(void) {
     wins[WIN_C1].title = "Console 2 - MiniOS";
     wins[WIN_C2].title = "Console 3 - MiniOS";
 
-    wins[WIN_SYS].w = SYS_W; wins[WIN_SYS].h = SYS_H;
+    wins[WIN_SYS].w = (scr_w >= 640) ? 320 : SYS_W;
+    wins[WIN_SYS].h = (scr_w >= 640) ? 190 : SYS_H;
     wins[WIN_SYS].visible = 0;
     wins[WIN_SYS].minimized = 0;
     wins[WIN_SYS].title = "System Information";
@@ -1566,37 +1572,70 @@ static void draw_files(void) {
     text(x + 6, y + w->h - 11, "files: wheel/scroll  [RW]=green", 8);
 }
 
+static void num_text(int x, int y, u32 v, u8 col) {
+    char b[12];
+    int n = 0;
+    do { b[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n) {
+        n--;
+        draw_char(x + n * 8, y, b[n], col, 1);
+    }
+}
+
 static void draw_system(void) {
     struct window *w = &wins[WIN_SYS];
     window_frame(WIN_SYS);
     int x = w->x, y = w->y;
-    text(x + 6, y + 14, "MiniOS 2.0 - System Info", 1);
-    text(x + 6, y + 23, "CPU:", 0);
-    text(x + 46, y + 23, cpu, 0);
-    text(x + 6, y + 32, "Heap:", 0);
-    char tmp[16];
-    int n = 0;
-    u32 v = heap_used;
-    if (!v)
-        tmp[n++] = '0';
-    while (v) {
-        tmp[n++] = (char)('0' + v % 10);
-        v /= 10;
+    const char *tabs[3] = { "Overview", "Tasks", "Memory" };
+    for (int i = 0; i < 3; i++) {
+        int tx = x + 6 + i * 66;
+        fill_rect(tx, y + 13, 62, 13, sys_tab == i ? 1 : 8);
+        text(tx + 4, y + 15, tabs[i], 15);
     }
-    int p = 0;
-    while (n)
-        tmp[p++] = tmp[--n];
-    tmp[p] = 0;
-    text(x + 46, y + 32, tmp, 0);
-    text(x + 6, y + 41,
-         vbe_active ? "Video: VBE 640x480x256 LFB" : "Video: VGA 320x200x256",
-         0);
-    text(x + 6, y + 50, "Boot: 1.44MB floppy", 0);
-    text(x + 6, y + 59, "Mode: 32-bit Ring0+Ring3", 0);
-    text(x + 6, y + 68, "Uptime:", 0);
-    text(x + 70, y + 68, uptime_str, 0);
-    text(x + 6, y + 77, "Date:", 0);
-    text(x + 54, y + 77, date_str, 0);
+    if (sys_tab == 0) {
+        text(x + 6, y + 30, "MiniOS 2.0 - System Info", 1);
+        text(x + 6, y + 41, "CPU:", 0); text(x + 46, y + 41, cpu, 0);
+        text(x + 6, y + 50, "Heap:", 0); num_text(x + 46, y + 50, heap_used, 0);
+        text(x + 6, y + 59,
+             vbe_active ? "Video: VBE 640x480x256 LFB" : "Video: VGA 320x200x256", 0);
+        text(x + 6, y + 68, "Boot: 1.44MB floppy", 0);
+        text(x + 6, y + 76, "Uptime:", 0);
+        text(x + 70, y + 76, uptime_str, 0);
+    } else if (sys_tab == 1) {
+        text(x + 6, y + 30, "PID CON ST PGS NAME", 8);
+        extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
+        for (int i = 0; i < 8; i++) {
+            u32 pid, state, pages;
+            int con;
+            char name[16];
+            if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
+                break;
+            int ry = y + 40 + i * 9;
+            if (i == sys_task_sel) fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
+            num_text(x + 6, ry, pid, 0);
+            num_text(x + 40, ry, (u32)con, 0);
+            text(x + 58, ry, state == 2 ? "R" : (state == 4 ? "B" : "S"), 0);
+            num_text(x + 76, ry, pages, 0);
+            text(x + 100, ry, name, 0);
+        }
+        fill_rect(x + w->w - 74, y + w->h - 18, 68, 12, 7);
+        text(x + w->w - 62, y + w->h - 16, "Kill Task", 0);
+    } else {
+        extern u32 kernel_free_frames(void);
+        extern u32 kernel_total_frames(void);
+        text(x + 6, y + 34, "Frame pool:", 0);
+        num_text(x + 94, y + 34, kernel_free_frames(), 0);
+        text(x + 130, y + 34, "/", 0);
+        num_text(x + 140, y + 34, kernel_total_frames(), 0);
+        int bw = w->w - 16;
+        fill_rect(x + 6, y + 48, bw, 12, 0);
+        u32 ft = kernel_total_frames();
+        u32 used = ft ? (ft - kernel_free_frames()) * (u32)(bw - 2) / ft : 0;
+        fill_rect(x + 7, y + 49, used, 10, 2);
+        text(x + 6, y + 70, "Kernel heap:", 0);
+        num_text(x + 110, y + 70, heap_used, 0);
+        text(x + 6, y + 82, "RAMFS lives in the frame pool.", 8);
+    }
 }
 
 static void draw_canvas(void) {
@@ -2180,6 +2219,18 @@ static int hit_test(int x, int y) {
             return HIT_CLOSE_BASE + id;
         if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 77, 48, 19))
             return HIT_OK;
+        if (id == WIN_SYS) {
+            for (int t = 0; t < 3; t++)
+                if (inside(x, y, w->x + 6 + t * 66, w->y + 13, 62, 13))
+                    return HIT_SYS_TAB_BASE + t;
+            if (sys_tab == 1) {
+                for (int r = 0; r < 8; r++)
+                    if (inside(x, y, w->x + 2, w->y + 39 + r * 9, w->w - 4, 9))
+                        return HIT_SYS_ROW_BASE + r;
+                if (inside(x, y, w->x + w->w - 74, w->y + w->h - 18, 68, 12))
+                    return HIT_SYS_KILL;
+            }
+        }
         if (!w->maximized) {
             int edge = 4;
             int n = (y >= w->y - edge && y <= w->y + edge);
@@ -2422,6 +2473,28 @@ static void activate_hit(int hit) {
     if (hit == HIT_TB_C3) { taskbar_window(WIN_C2); return; }
     if (hit == HIT_TB_APP) { taskbar_window(WIN_APP); return; }
     if (hit == HIT_TB_FILES) { taskbar_window(WIN_FILES); return; }
+    if (hit >= HIT_SYS_TAB_BASE && hit < HIT_SYS_TAB_BASE + 3) {
+        sys_tab = hit - HIT_SYS_TAB_BASE;
+        focus_window(WIN_SYS);
+        gui_dirty = 1;
+        return;
+    }
+    if (hit >= HIT_SYS_ROW_BASE && hit < HIT_SYS_ROW_BASE + 8) {
+        sys_task_sel = hit - HIT_SYS_ROW_BASE;
+        gui_dirty = 1;
+        return;
+    }
+    if (hit == HIT_SYS_KILL) {
+        extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
+        extern int task_kill_pid(u32 pid);
+        u32 pid, state, pages;
+        int con;
+        char name[16];
+        if (kernel_task_snapshot(sys_task_sel, &pid, &con, &state, &pages, name))
+            task_kill_pid(pid);
+        gui_dirty = 1;
+        return;
+    }
     if (hit == HIT_TB_SYS) { taskbar_window(WIN_SYS); return; }
     if (hit == HIT_TB_WIN) {
         list_open = !list_open;
@@ -2842,6 +2915,8 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
+
 
 
 

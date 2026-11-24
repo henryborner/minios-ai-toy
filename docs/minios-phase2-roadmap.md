@@ -124,7 +124,7 @@
 **目标**：不用敲命令，纯靠鼠标点击就能浏览运行文件、查看内存热力图、强杀后台任务。
 *(提示：注意精简 C 绘制代码体积，单阶段新增 `kernel.bin` 控制在 `< 4 KB` 以内！)*
 
-- [ ] **12.1 多标签页升级 `System Information` 窗口（`Overview` | `Tasks` | `Memory`）**（`c/gui.c`、`c/kernel.c`）
+- [x] **12.1 多标签页升级 `System Information` 窗口（`Overview` | `Tasks` | `Memory`）**（`c/gui.c`、`c/kernel.c`）
   - 复用 `WIN_SYS` 窗口槽，在窗口顶部绘制 3 个可点击切换的标签页：
     - `Overview`：硬件、显示模式（VBE LFB 物理地址）、RTC 时间与运行时间；
     - `Tasks`：实时列出活跃任务槽（PID、所属终端、状态、占用页数、名称），鼠标点选某行后点击底部 `[Kill Task]` 按钮可直接调用 `task_kill_pid()` 终止任务（即使某个终端正在跑死循环脚本也能在 GUI 里一键杀掉！）；
@@ -225,6 +225,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 
