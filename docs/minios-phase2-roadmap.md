@@ -130,6 +130,7 @@
     - `Tasks`：实时列出活跃任务槽（PID、所属终端、状态、占用页数、名称），鼠标点选某行后点击底部 `[Kill Task]` 按钮可直接调用 `task_kill_pid()` 终止任务（即使某个终端正在跑死循环脚本也能在 GUI 里一键杀掉！）；
     - `Memory`：用彩色网格直观绘制 `5–16 MB` 页帧池的分配地图与 `RAMFS` / `Kernel Heap` 水位条。
 - [ ] **12.2 原生图形文件浏览器窗口 `WIN_FILES`（Explorer Lite）**（`c/gui.c`、`c/kernel.c`）
+  - 部分完成：新增 `WIN_FILES`、Shell `files`、任务栏 Files、RAMFS/MiniFS 彩色列表、滚轮滚动与大小显示；Open/Edit/Hex/Delete/Sync 按钮和行选择动作未做。
   - 将 `WIN_COUNT` 从 6 扩至 7，新增 `Files - MiniOS` 窗口（可通过 Start 菜单、任务栏或 `files` 命令打开）：
     - 列表展示所有 `RAMFS`（`[RW]` 高亮）与 `MiniFS`（`[RO]`）文件名称及字节大小，支持滚动条与滚轮翻页；
     - 顶部操作按钮栏：`[Open/Run]`、`[Edit]`、`[Hex]`、`[Delete]`、`[Sync]`——选中 `.PY` 点 `Open`（或双击）自动在空闲 Console 启动 `py <FILE>`，选中 `.BIN` 启动 `exec <FILE>`，选中 `.TXT`/`.PY` 点 `Edit` 直接打开编辑器！
@@ -224,6 +225,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 

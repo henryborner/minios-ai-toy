@@ -25,7 +25,8 @@
 #define WIN_SYS 3
 #define WIN_ABOUT 4
 #define WIN_APP 5
-#define WIN_COUNT 6
+#define WIN_FILES 6
+#define WIN_COUNT 7
 
 #define MENU_X 2
 #define MENU_W 120
@@ -47,6 +48,7 @@
 #define HIT_TB_WIN 5
 #define HIT_TB_C3 6
 #define HIT_TB_APP 7
+#define HIT_TB_FILES 8
 #define HIT_MENU_BASE 100
 #define HIT_CLOSE_BASE 200
 #define HIT_OK 300
@@ -120,6 +122,8 @@ static u8 *term_attrs;
 static u8 term_default_attr = 0xF0;
 static int term_dark;
 static int canvas_open;
+static int files_scroll;
+static int files_sel;
 static char clipboard[256];
 static int clipboard_len;
 static int sel_id = -1;
@@ -510,6 +514,14 @@ static void init_windows(void) {
     wins[WIN_APP].visible = 0;
     wins[WIN_APP].minimized = 0;
     wins[WIN_APP].title = canvas_title;
+
+    wins[WIN_FILES].x = (scr_w >= 640) ? 24 : 20;
+    wins[WIN_FILES].y = (scr_w >= 640) ? 286 : 104;
+    wins[WIN_FILES].w = (scr_w >= 640) ? 380 : 272;
+    wins[WIN_FILES].h = (scr_w >= 640) ? 160 : 82;
+    wins[WIN_FILES].visible = 0;
+    wins[WIN_FILES].minimized = 0;
+    wins[WIN_FILES].title = "Files - MiniOS";
 
     for (int i = 0; i < WIN_COUNT; i++)
         zorder[i] = i;
@@ -1111,6 +1123,9 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Uptime: ");
         term_puts(c, uptime_str);
         term_puts(c, "\n");
+    } else if (streq(line, "files")) {
+        focus_window(WIN_FILES);
+        term_puts(c, "Files window opened.\n");
     } else if (streq(line, "theme light")) {
         extern void gui_theme(int dark);
         gui_theme(0);
@@ -1446,6 +1461,7 @@ static void draw_taskbar(void) {
     if (scr_w >= 640) {
         taskbar_button(258, ty + 2, 50, "Con3", HIT_TB_C3, focus_win == WIN_C2);
         taskbar_button(310, ty + 2, 58, "Canvas", HIT_TB_APP, focus_win == WIN_APP);
+        taskbar_button(372, ty + 2, 48, "Files", HIT_TB_FILES, focus_win == WIN_FILES);
     }
 
     int cx = scr_w - 56;
@@ -1519,6 +1535,35 @@ static void draw_console(int id) {
         if (row >= 0 && row < c->rows)
             fill_rect(c->x + 4 + c->col * 8, c->y + 14 + row * 9, 1, 8, 0);
     }
+}
+
+static void draw_files(void) {
+    struct window *w = &wins[WIN_FILES];
+    window_frame(WIN_FILES);
+    int x = w->x, y = w->y;
+    extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
+    int rows = (w->h - 26) / 9;
+    for (int r = 0; r < rows; r++) {
+        char name[17];
+        u32 size = 0, kind = 0;
+        if (!kernel_readdir_gui((u32)(files_scroll + r), name, &size, &kind))
+            break;
+        int ry = y + 22 + r * 9;
+        if (r == files_sel)
+            fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
+        int c = (kind == 2) ? 10 : 3;
+        text(x + 6, ry, name, c);
+        int n = 0;
+        char sz[16];
+        u32 v = size;
+        do { sz[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+        int sx = x + w->w - 8 - n * 8;
+        while (n) {
+            n--;
+            draw_char(sx + n * 8, ry, sz[n], 8, 1);
+        }
+    }
+    text(x + 6, y + w->h - 11, "files: wheel/scroll  [RW]=green", 8);
 }
 
 static void draw_system(void) {
@@ -2050,6 +2095,8 @@ void gui_redraw(void) {
             draw_about();
         else if (id == WIN_APP)
             draw_canvas();
+        else if (id == WIN_FILES)
+            draw_files();
     }
     draw_snap_preview();
     draw_menu();
@@ -2115,6 +2162,7 @@ static int hit_test(int x, int y) {
         if (scr_w >= 640) {
             if (inside(x, y, 258, TASKBAR_Y, 50, 14)) return HIT_TB_C3;
             if (inside(x, y, 310, TASKBAR_Y, 58, 14)) return HIT_TB_APP;
+            if (inside(x, y, 372, TASKBAR_Y, 48, 14)) return HIT_TB_FILES;
         }
         return HIT_NONE;
     }
@@ -2373,6 +2421,7 @@ static void activate_hit(int hit) {
     if (hit == HIT_TB_C2) { taskbar_window(WIN_C1); return; }
     if (hit == HIT_TB_C3) { taskbar_window(WIN_C2); return; }
     if (hit == HIT_TB_APP) { taskbar_window(WIN_APP); return; }
+    if (hit == HIT_TB_FILES) { taskbar_window(WIN_FILES); return; }
     if (hit == HIT_TB_SYS) { taskbar_window(WIN_SYS); return; }
     if (hit == HIT_TB_WIN) {
         list_open = !list_open;
@@ -2438,6 +2487,11 @@ void gui_mouse_wheel(int dz) {
     }
     if (focus_win >= WIN_C0 && focus_win <= WIN_C2) {
         term_scroll_by(&consoles[focus_win], dz * 3);
+        gui_dirty = 1;
+    } else if (focus_win == WIN_FILES) {
+        files_scroll -= dz;
+        if (files_scroll < 0) files_scroll = 0;
+        if (files_scroll > 24) files_scroll = 24;
         gui_dirty = 1;
     }
 }

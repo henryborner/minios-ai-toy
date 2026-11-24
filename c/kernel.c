@@ -2734,6 +2734,17 @@ static int sys_readdir(u32 index, struct user_dirent *out) {
     return 0;
 }
 
+int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind) {
+    struct user_dirent d;
+    if (!sys_readdir(index, &d))
+        return 0;
+    for (int j = 0; j < 16; j++)
+        name[j] = d.name[j];
+    *size = d.size;
+    *kind = d.kind;
+    return 1;
+}
+
 static void pc_beep(u32 freq, u32 ms) {
     if (freq < 20)
         return;
