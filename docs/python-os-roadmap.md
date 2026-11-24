@@ -214,3 +214,11 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
   - **实测速度成绩单**：`MPY.BIN` 首次冷加载 `20 ms`（2 ticks），**二次热驻留启动 `< 10 ms`（0 ticks）**；60,000 次整数循环 `~171–206 Kops/s`；10,000 次硬件 x87 `sin*sqrt` 浮点运算 `~55–62 Kops/s`；12,000 次元组 GC 分配 `~20 K/s`（1.5 MB 用户堆）；`2**1000`（302 位大整数）瞬时通过。
   - **Stage 8 验收**：QEMU 默认 `stdvga` `640×480` VBE LFB 模式与 `force_vga=1` 强制 `320×200` VGA 回退模式（含跨重启 `SaveFS` 持久化恢复）双路径实测通过，产出截图 `c-stage8-bench.png`、`c-stage8-desktop-640x480.png`、`c-stage8-fallback-320x200.png`。
 
+---
+
+## 🚀 下一阶段：Phase II 进阶总路线图（Stage 9 – Stage 18）
+
+Stage 0–8 已全部验收收官！后续长线改进任务清单与 **「六大铁律与避坑圣经」** 请直接参阅并在此勾选推进：
+
+👉 **[`docs/minios-phase2-roadmap.md`](./minios-phase2-roadmap.md)**（涵盖：键鼠同源防串包与滚轮、跨行命令与历史、窗口最大化/拖拽缩放/左右平铺、ANSI 16 色终端与剪贴板、原生图形文件管理器与任务管理器、`Canvas 2.0` 双缓冲与事件队列、全屏 Nano 编辑器 `ed.py`、像素画板 `paint.py` 与贪吃蛇/生命游戏、`RAMFS` 16 槽动态扩容与串口秒传、管道 IPC、`AUTOEXEC.PY`、桌面图标与多主题换肤、全自动防泄漏回归测试）。
+
