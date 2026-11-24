@@ -19,6 +19,8 @@ BUILD = PORT_DIR / "build"
 GENHDR = BUILD / "genhdr"
 OUT_ELF = BUILD / "mpy.elf"
 OUT_BIN = BUILD / "mpy.bin"
+FROZEN_DIR = BUILD / "frozen"
+FROZEN_C = BUILD / "frozen_content.c"
 
 BIG_CODE_MAX = 0x00080000  # 512 KB virtual window (0x400000..0x480000)
 
@@ -226,6 +228,9 @@ def build_mpy(stage_to_c_build: bool = False) -> Path:
         Path("C:/msys64/ucrt64/bin/objcopy.exe"),
         Path("C:/msys64/usr/bin/objcopy.exe"),
     ])
+    mpy_cross = find_tool(["mpy-cross"], [
+        Path("C:/Users/Henry/AppData/Local/Programs/Python/Python313/Scripts/mpy-cross.exe"),
+    ])
 
     BUILD.mkdir(parents=True, exist_ok=True)
 
@@ -279,6 +284,22 @@ def build_mpy(stage_to_c_build: bool = False) -> Path:
     print("[mpy] generating QSTR and module headers...")
     generate_headers(clang, base_cflags, qstr_sources)
 
+    print("[mpy] freezing c/pylib tools...")
+    FROZEN_DIR.mkdir(parents=True, exist_ok=True)
+    frozen_names = ["calc", "top", "demos", "xxd", "ed", "futil"]
+    frozen_mpys = []
+    for name in frozen_names:
+        src = CDIR / "pylib" / (name + ".py")
+        out = FROZEN_DIR / (name + ".mpy")
+        run_cmd([mpy_cross, src.name, "-o", str(out)], cwd=src.parent)
+        frozen_mpys.append(out)
+    FROZEN_C.unlink(missing_ok=True)
+    frozen_c = run_cmd([sys.executable, str(MPY_TOP / "tools" / "mpy-tool.py"),
+                        "-f", "-q", str(GENHDR / "qstrdefs.preprocessed.h"),
+                        *[p.name for p in frozen_mpys]],
+                       cwd=FROZEN_DIR, capture=True)
+    FROZEN_C.write_bytes(frozen_c)
+
     # Assemble start.asm
     start_o = BUILD / "start.o"
     run_cmd([nasm, "-f", "elf32", "-o", str(start_o), str(PORT_DIR / "start.asm")])
@@ -298,6 +319,7 @@ def build_mpy(stage_to_c_build: bool = False) -> Path:
     for src in port_sources:
         obj = BUILD / "port" / src.with_suffix(".o").name
         all_c_sources.append((src, obj, []))
+    all_c_sources.append((FROZEN_C, BUILD / "frozen_content.o", []))
 
     def compile_one(item: tuple[Path, Path, list[str]]) -> Path:
         src, obj, extra = item
@@ -362,4 +384,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+
+
+
+
+
 

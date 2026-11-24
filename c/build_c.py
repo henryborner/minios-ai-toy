@@ -243,12 +243,6 @@ def main() -> int:
         ("DIR.BIN", dir_test_bin),
         ("SPIN.BIN", spin_test_bin),
         ("BIG512.BIN", big512_bin),
-        ("CALC.PY", CDIR / "pylib" / "calc.py"),
-        ("TOP.PY", CDIR / "pylib" / "top.py"),
-        ("DEMOS.PY", CDIR / "pylib" / "demos.py"),
-        ("XXD.PY", CDIR / "pylib" / "xxd.py"),
-        ("ED.PY", CDIR / "pylib" / "ed.py"),
-        ("FUTIL.PY", CDIR / "pylib" / "futil.py"),
         ("CRASH.BIN", crash_test_bin),
         ("DIV0.BIN", div0_test_bin),
         ("TEST.TXT", CDIR / "test.txt"),
@@ -269,6 +263,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 

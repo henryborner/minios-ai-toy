@@ -13,6 +13,9 @@
 
 // Compiler, GC & REPL
 #define MICROPY_ENABLE_COMPILER             (1)
+#define MICROPY_MODULE_FROZEN               (1)
+#define MICROPY_MODULE_FROZEN_MPY           (1)
+#define MICROPY_QSTR_EXTRA_POOL              mp_qstr_frozen_const_pool
 #define MICROPY_ENABLE_GC                   (1)
 #define MICROPY_HELPER_REPL                 (1)
 #define MICROPY_REPL_AUTO_INDENT            (1)
@@ -103,3 +106,6 @@ typedef int32_t mp_off_t;
     } while (0);
 
 #endif
+
+
+

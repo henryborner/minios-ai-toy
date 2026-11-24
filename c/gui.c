@@ -789,7 +789,7 @@ static void run_command(struct console *c, char *line) {
          streq(line, "modtest") || streq(line, "uargs") ||
          streq(line, "big512") || streq(line, "serial") ||
          streq(line, "calc") || streq(line, "top") ||
-         streq(line, "demos") || streq(line, "futil") ||
+         streq(line, "demos") || streq(line, "plot") || streq(line, "futil") ||
          streq(line, "xxd") || streq(line, "edit") ||
          starts_with(line, "calc ") || starts_with(line, "xxd ") ||
          starts_with(line, "edit ") || streq(line, "sync") ||
@@ -936,19 +936,19 @@ static void run_command(struct console *c, char *line) {
         gui_redraw();
         run_module(line + 4);
     } else if (streq(line, "calc")) {
-        launch_tool(c, "CALC.PY", "");
+        launch_tool(c, "-m calc", "");
     } else if (starts_with(line, "calc ")) {
-        launch_tool(c, "CALC.PY", line + 5);
+        launch_tool(c, "-m calc", line + 5);
     } else if (streq(line, "top")) {
-        launch_tool(c, "TOP.PY", "");
-    } else if (streq(line, "demos")) {
-        launch_tool(c, "DEMOS.PY", "");
+        launch_tool(c, "-m top", "");
+    } else if (streq(line, "demos") || streq(line, "plot")) {
+        launch_tool(c, "-m demos", "");
     } else if (streq(line, "futil")) {
-        launch_tool(c, "FUTIL.PY", "");
+        launch_tool(c, "-m futil", "");
     } else if (starts_with(line, "xxd ")) {
-        launch_tool(c, "XXD.PY", line + 4);
+        launch_tool(c, "-m xxd", line + 4);
     } else if (starts_with(line, "edit ")) {
-        launch_tool(c, "ED.PY", line + 5);
+        launch_tool(c, "-m ed", line + 5);
     } else if (*line == '=') {
         run_python_expr(c, line + 1);
     } else if (streq(line, "pystat")) {
@@ -1953,6 +1953,8 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
+
 
 
 

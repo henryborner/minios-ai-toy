@@ -89,6 +89,7 @@ int mpy_main(int argc, char **argv) {
     /* Configure sys.path = ['', '.'] and sys.argv */
     mp_obj_list_init(MP_OBJ_TO_PTR(mp_sys_path), 0);
     mp_obj_list_append(mp_sys_path, MP_OBJ_NEW_QSTR(MP_QSTR_));
+    mp_obj_list_append(mp_sys_path, mp_obj_new_str(".frozen", 7));
     mp_obj_list_init(MP_OBJ_TO_PTR(mp_sys_argv), 0);
 
     mp_hal_set_interrupt_char(3); /* Ctrl-C */
@@ -123,3 +124,4 @@ int mpy_main(int argc, char **argv) {
     mp_deinit();
     return status;
 }
+

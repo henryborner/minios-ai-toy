@@ -67,9 +67,10 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Dynamic Canvas buffer**: the 21.6 KB pixel buffer is allocated from the
   frame pool through `kernel_alloc_pages_zero(6)`; kernel BSS dropped from
   `0x6dde3` to `0x68987`.
-- **Stage 7 tools (partial)**: `calc`, `top`, `demos`, `xxd`, `edit`, `futil`
-  Python tools in MiniFS with native Shell shortcuts. Frozen-bytecode
-  integration with `mpy-cross` is not done yet.
+- **Stage 7 tools**: `calc`, `top`, `demos`, `xxd`, `edit`, `futil` are
+  frozen to `.mpy` bytecode with `mpy-cross 1.24.1`, linked into MPY.BIN,
+  and loaded through `.frozen/` on `sys.path`; native Shell shortcuts use
+  `-m <module>`. No tool source is stored in MiniFS.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -180,10 +181,11 @@ Screenshots:
 - [`../screenshots/c-stage6-canvas3.png`](../screenshots/c-stage6-canvas3.png)
 - [`../screenshots/c-stage6-event2.png`](../screenshots/c-stage6-event2.png)
 - [`../screenshots/c-stage6-sysinfo.png`](../screenshots/c-stage6-sysinfo.png)
-- [`../screenshots/c-stage7-calc.png`](../screenshots/c-stage7-calc.png)
-- [`../screenshots/c-stage7-top2.png`](../screenshots/c-stage7-top2.png)
-- [`../screenshots/c-stage7-xxd2.png`](../screenshots/c-stage7-xxd2.png)
-- [`../screenshots/c-stage7-demos2.png`](../screenshots/c-stage7-demos2.png)
+- [`../screenshots/c-stage7-frozen2-calc.png`](../screenshots/c-stage7-frozen2-calc.png)
+- [`../screenshots/c-stage7-frozen2-top.png`](../screenshots/c-stage7-frozen2-top.png)
+- [`../screenshots/c-stage7-frozen2-xxd.png`](../screenshots/c-stage7-frozen2-xxd.png)
+- [`../screenshots/c-stage7-frozen2-demos.png`](../screenshots/c-stage7-frozen2-demos.png)
+- [`../screenshots/c-stage7-frozen2-edfile.png`](../screenshots/c-stage7-frozen2-edfile.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -420,7 +422,7 @@ Outputs:
 
 - `c/build/boot.bin` — 512 bytes
 - `c/build/kernel.bin` — currently ~45.2 KB (64 KB loader limit)
-- `c/build/mpy.bin` — **183,488 bytes** (179.2 KB, image+BSS 184,048 B)
+- `c/build/mpy.bin` — **186,064 bytes** (181.7 KB, image+BSS 186,624 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs

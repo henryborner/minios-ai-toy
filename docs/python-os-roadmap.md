@@ -179,7 +179,7 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 
 - [ ] **7.1 在构建流中集成 `mpy-cross` 字节码冻结**（`c/build_mpy.py`）
   - 编译宿主机 `mpy-cross`（输出置于 `tools/micropython/mpy-cross/`），自动将 `c/pylib/*.py` 编译为冻结字节码链接进 `MPY.BIN`，实现 **0 软盘读取、0 编译期 GC 堆开销**。
-- [x] **7.2 编写并冻结 5 个核心日常工具模块（`c/pylib/`）**（工具已编写并放入 MiniFS；冻结字节码尚未完成）
+- [x] **7.2 编写并冻结 5 个核心日常工具模块（`c/pylib/`）**（CALC/TOP/DEMOS/XXD/ED/FUTIL 已 mpy-cross 冻结并链接进 MPY.BIN，工具源码不再放 MiniFS）
   - `calc.py`：程序员速算器（同时展示十进制、十六进制、分组二进制、位宽、字节序拆分）。
   - `ed.py`：系统内轻量文本/代码编辑器（支持打开/新建文件、行号浏览、插入/修改/删除行、查找替换、`:w` 保存至 RAMFS、`:s` 调用 `os.sync()` 落盘软盘、`:r` 直接试跑脚本）。
   - `top.py`：字符版与图形版双模式实时系统监控器（展示任务槽、内存池占用地图、FDC/IRQ 计数与运行时间）。
@@ -187,7 +187,7 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
   - `demos.py`：精选交互图形应用（如 `plot` 数学函数曲线绘图仪、`sysmon` 实时图形仪表盘、`life` 彩色生命游戏）。
 - [x] **7.3 Shell 原生快捷命令映射**（`c/gui.c`）
   - 在 Shell 中添加快捷入口 `edit <FILE>`、`xxd <FILE>`、`top`、`calc <EXPR>`、`plot <EXPR>`，直接转发至热驻留的 `MPY.BIN` 对应冻结模块。
-- [ ] **Stage 7 验收（部分）**：`calc 2**10`、`top`、`xxd TEST.TXT`、`demos` 已在 QEMU 实测通过；`edit`/`futil` 已提供但未完成完整交互验收；`mpy-cross` 冻结与 `plot` 快捷入口未完成。另修复 MiniFS 目录超过 1 扇区时只读首扇区的 bug（现按 count 读取 2–4 个目录扇区）。
+- [x] **Stage 7 验收**：frozen `calc 2**10` → 1024、`top`、`xxd TEST.TXT`、`demos`、`futil` 全部通过；`edit NOTES.TXT` 写入后 `xxd NOTES.TXT` 验证内容；`plot` 映射到 demos。工具以 `-m` 从 `.frozen/` 加载，MiniFS 无工具源码。另修复 MiniFS 目录超过 1 扇区时只读首扇区的 bug（现按 count 读取 2–4 个目录扇区）。
 
 ---
 
