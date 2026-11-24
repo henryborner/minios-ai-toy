@@ -644,6 +644,139 @@ void list_disk_files(void) {
 }
 
 /* -----------------------------------------------------------------------------
+ * Kernel-module ABI for the MicroPython bring-up.
+ * Module is linked at 0x100000; heap at 0x200000; size max 1 MB.
+ * ----------------------------------------------------------------------------- */
+#define MODULE_BASE 0x00100000u
+#define MODULE_MAX  0x00100000u
+#define MODULE_HEAP 0x00200000u
+#define MODULE_HEAP_SIZE 0x00100000u
+
+struct module_header {
+    u8 magic[4];
+    u32 entry_offset;
+    u32 image_size;
+    u32 bss_size;
+    u32 heap_size;
+} __attribute__((packed));
+
+struct minios_api {
+    u32 version;
+    void (*puts)(const char *s);
+    void (*putc)(char c);
+    u32 (*ticks_ms)(void);
+    int (*getchar)(void);
+    u8 *heap;
+    u32 heap_size;
+    void (*write)(const char *s, u32 len);
+};
+
+static int fs_load_file_to(const char *name, u8 *dst, u32 max, u32 *out_size) {
+    if (!fs_load_dir())
+        return 0;
+    struct fs_header *h = (struct fs_header *)fs_dir;
+    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+    for (int i = 0; i < h->count; i++) {
+        struct fs_entry *e = &entries[i];
+        if (!fs_name_eq(e, name))
+            continue;
+        if (e->size > max)
+            return 0;
+        u32 sectors = (e->size + 511) / 512;
+        u32 done = 0;
+        for (u32 s = 0; s < sectors; s++) {
+            if (!fdc_read_sector(e->start_lba + s, fs_sector))
+                return 0;
+            u32 chunk = e->size - done;
+            if (chunk > 512)
+                chunk = 512;
+            for (u32 j = 0; j < chunk; j++)
+                dst[done + j] = fs_sector[j];
+            done += chunk;
+        }
+        *out_size = e->size;
+        return 1;
+    }
+    return 0;
+}
+
+static void module_puts(const char *s) {
+    gui_sys_print(s);
+}
+
+static void module_write(const char *s, u32 len) {
+    gui_sys_write(s, len);
+}
+
+static void module_putc(char c) {
+    char b[2];
+    b[0] = c;
+    b[1] = 0;
+    gui_sys_print(b);
+}
+
+static u32 module_ticks_ms(void) {
+    return ticks * 10;
+}
+
+static int module_getchar(void) {
+    for (;;) {
+        while (kbd_tail != kbd_head) {
+            u8 ch = kbd_buf[kbd_tail];
+            kbd_tail = (u8)((kbd_tail + 1) & 63);
+            if (ch >= 0xF1 && ch <= 0xF3)
+                continue;
+            return (int)ch;
+        }
+        __asm__ __volatile__("sti; hlt");
+    }
+}
+
+int run_module(const char *name) {
+    u32 size = 0;
+    if (!fs_load_file_to(name, (u8 *)MODULE_BASE, MODULE_MAX, &size)) {
+        gui_sys_print("[mod] load failed.\n");
+        return 0;
+    }
+
+    struct module_header *h = (struct module_header *)MODULE_BASE;
+    if (h->magic[0] != 'M' || h->magic[1] != 'P' ||
+        h->magic[2] != 'M' || h->magic[3] != '1') {
+        gui_sys_print("[mod] bad header.\n");
+        return 0;
+    }
+    if (h->image_size > size || h->entry_offset >= h->image_size ||
+        h->image_size > MODULE_MAX || h->bss_size > MODULE_MAX - h->image_size) {
+        gui_sys_print("[mod] bad sizes.\n");
+        return 0;
+    }
+
+    u8 *bss = (u8 *)(MODULE_BASE + h->image_size);
+    for (u32 i = 0; i < h->bss_size; i++)
+        bss[i] = 0;
+
+    u32 heap_size = h->heap_size;
+    if (heap_size == 0 || heap_size > MODULE_HEAP_SIZE)
+        heap_size = MODULE_HEAP_SIZE;
+
+    struct minios_api api;
+    api.version = 1;
+    api.puts = module_puts;
+    api.putc = module_putc;
+    api.ticks_ms = module_ticks_ms;
+    api.getchar = module_getchar;
+    api.heap = (u8 *)MODULE_HEAP;
+    api.heap_size = heap_size;
+    api.write = module_write;
+
+    void (*entry)(struct minios_api *) =
+        (void (*)(struct minios_api *))(MODULE_BASE + h->entry_offset);
+    entry(&api);
+    gui_sys_print("[mod] returned to kernel.\n");
+    return 1;
+}
+
+/* -----------------------------------------------------------------------------
  * Tasks: up to four slots, each with its own page directory.
  * ----------------------------------------------------------------------------- */
 #define NTASKS 4

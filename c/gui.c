@@ -294,7 +294,8 @@ static void run_command(char *line) {
         term_puts("help ver cpu mem time date\n");
         term_puts("uptime clear echo sysinfo\n");
         term_puts("about ring3 tasks progs run ls exec\n");
-        term_puts("disktest reboot halt\n");
+        term_puts("modtest mod NAME disktest reboot\n");
+        term_puts("halt\n");
     } else if (streq(line, "ver")) {
         term_puts("MiniOS 2.0 C GUI (32-bit)\n");
     } else if (streq(line, "cpu")) {
@@ -350,6 +351,16 @@ static void run_command(char *line) {
     } else if (streq(line, "disktest")) {
         extern void disk_test(void);
         disk_test();
+    } else if (streq(line, "modtest")) {
+        extern int run_module(const char *name);
+        term_puts("Loading kernel module from MiniFS...\n");
+        gui_redraw();
+        run_module("MODTEST.BIN");
+    } else if (starts_with(line, "mod ")) {
+        extern int run_module(const char *name);
+        term_puts("Loading kernel module from MiniFS...\n");
+        gui_redraw();
+        run_module(line + 4);
     } else if (streq(line, "ls")) {
         extern void list_disk_files(void);
         list_disk_files();
@@ -731,6 +742,12 @@ void gui_special(int key) {
         console_visible = 1;
         menu_open = 0;
     }
+}
+
+void gui_sys_write(const char *s, u32 len) {
+    for (u32 i = 0; i < len; i++)
+        term_putc(s[i]);
+    gui_redraw();
 }
 
 void gui_sys_print(const char *s) {

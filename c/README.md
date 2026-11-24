@@ -28,6 +28,12 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Read-only MiniFS at LBA 200**: `ls` reads the directory from floppy,
   `exec NAME` reads file sectors through the FDC and creates a Ring 3 task
 - `disktest` reads the boot sector at runtime and verifies `0x55AA`
+- **Kernel-module ABI v1 for MicroPython bring-up**:
+  - MiniFS module loaded at `0x00100000` (up to 1 MB)
+  - fixed 1 MB GC heap at `0x00200000`
+  - `MPM1` header (entry/image/BSS/heap), BSS zeroing
+  - API: puts, putc, write(len), getchar, ticks_ms, heap
+  - test command `modtest` / `mod NAME`
 
 Screenshots:
 
@@ -102,6 +108,26 @@ exec HELLO.BIN
 
 This is a custom read-only filesystem, not FAT12. There is no write support.
 
+## MicroPython bring-up ABI
+
+The first MicroPython target is a **kernel-mode module**, not a Ring 3 task:
+
+- module linked at `0x00100000`, loaded from MiniFS via the FDC at runtime
+- module header `MPM1` + BSS size + heap request
+- API table passed to `entry(struct minios_api *)`
+- 1 MB static heap at `0x00200000`
+- console input/output and PIT milliseconds through the API
+- test module: `MODTEST.BIN`, command `modtest`
+
+Docs:
+
+- [`../docs/micropython-feasibility.md`](../docs/micropython-feasibility.md)
+- [`../docs/micropython-module-abi.md`](../docs/micropython-module-abi.md)
+- [`../c/module_api.h`](../c/module_api.h)
+
+This is a Ring 0 bring-up: a module crash kills the OS. Ring 3 isolation and
+user-mode memory/syscalls are the hardening phase.
+
 ## Preemptive task demo
 
 `tasks` creates A, B and C from the pack, each in its own page directory.
@@ -147,7 +173,7 @@ directory and a saved kernel ESP. It exits back to the GUI shell.
 
 Shell commands: `help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`,
 `echo`, `sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ls`, `exec NAME`,
-`disktest`, `ring3`, `reboot`, `halt`.
+`disktest`, `ring3`, `modtest`, `mod NAME`, `reboot`, `halt`.
 
 ## Build
 
@@ -165,10 +191,11 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~16.4 KB
+- `c/build/kernel.bin` — currently ~17.3 KB
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
+- `c/build/modtest.bin` — kernel-module ABI test
 - `MiniOS-C.img` — 1,474,560 bytes (pack at 33280, MiniFS at 102400)
 
 ## Run
@@ -192,8 +219,12 @@ qemu-system-i386 `
 | `user_blob.asm` | embeds `user.bin` for the `ring3` command |
 | `task_a.asm`, `task_b.asm`, `task_c.asm` | pack task programs |
 | `disk_task.asm` | Ring 3 task stored in MiniFS |
+| `modtest.asm` | kernel-module ABI test at `0x100000` |
+| `module_api.h` | MicroPython module header/API layout |
 | `fdc.c`, `fdc.h` | IRQ6/DMA/CHS floppy sector driver |
-| `kernel.c` | IDT/PIC/PIT, keyboard/mouse, GDT/TSS, paging, tasks, pack, MiniFS, syscalls |
+| `kernel.c` | IDT/PIC/PIT, keyboard/mouse, GDT/TSS, paging, tasks, pack, MiniFS, module loader, syscalls |
+| `../docs/micropython-feasibility.md` | MicroPython feasibility, gaps and handoff checklist |
+| `../docs/micropython-module-abi.md` | exact module/API ABI |
 | `gui.c` | VGA framebuffer, font, windows, shell, mouse UI |
 | `gui.h` | GUI API and kernel/GUI globals |
 | `linker.ld` | kernel at `0x10000`, BSS NOLOAD |
@@ -208,13 +239,15 @@ qemu-system-i386 `
 - MiniFS is custom, not FAT12; no write support or directory updates.
 - FDC driver reads one 512-byte sector per command (seeks between tracks).
 - `exec` supports flat programs ≤4 KB; no arguments, fork/exec or per-task heap.
+- Module loader supports ≤1 MB images and 1 MB static heap, but runs in **Ring 0**.
+- No VFS/import API for modules yet; frozen modules are the path.
 - Single `ring3` demo still uses a separate page-directory scheme.
 - Boot loader loads 64 kernel + 64 pack sectors; MiniFS is read on demand.
 
 ## Next milestones
 
-1. Write support / FAT12 compatibility (or a larger MiniFS).
-2. More than four tasks, priorities and blocking.
-3. More syscalls (keyboard input, window/VGA drawing, file I/O).
-4. Per-task heap and cleanup.
-5. On-device interpreter for applications.
+1. Build the minimal i386 MicroPython port against the module ABI (adaptation).
+2. Ring 3 MicroPython: user heap, multi-page code/data, read/write/time syscalls.
+3. VFS/import API and writable temp (optional).
+4. More than four tasks, priorities and blocking.
+5. Write support / FAT12 compatibility.

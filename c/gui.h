@@ -11,6 +11,7 @@ void gui_key(char ch);
 void gui_special(int key);
 void gui_mouse_event(int x, int y, int buttons);
 void gui_sys_print(const char *s);
+void gui_sys_write(const char *s, u32 len);
 
 extern volatile u32 ticks;
 extern char cpu[13];
