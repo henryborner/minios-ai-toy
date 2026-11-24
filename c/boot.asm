@@ -1,7 +1,10 @@
 ; =============================================================================
-;  MiniOS C-kernel boot sector
-;  Loads 64 sectors (32 KB) from the floppy to 0000:10000, enables A20,
-;  installs a flat GDT and enters 32-bit protected mode at 0x10000.
+;  MiniOS C-kernel boot sector (LBA 0)
+;  Loads:
+;    - 128 sectors (64 KB) kernel from LBA 1..128   -> 0x1000:0x0000 (0x10000)
+;    -  64 sectors (32 KB) MPK1   from LBA 129..192 -> 0x7000:0x0000 (0x70000)
+;    -   1 sector  (512 B) stage2 from LBA 193      -> 0x0000:0x7E00 (0x07E00)
+;  Then transfers control to stage2 for VBE 640x480x8 LFB setup + 32-bit PM.
 ; =============================================================================
         BITS 16
         ORG 0x7C00
@@ -10,6 +13,7 @@ KERNEL_SEG      equ 0x1000       ; ES for 0x10000
 KERNEL_SECTORS  equ 128
 PACK_SEG        equ 0x7000       ; ES for 0x70000
 PACK_SECTORS    equ 64
+STAGE2_OFFSET   equ 0x7E00       ; 0x0000:0x7E00 (outside 0x8000 FDC DMA buf)
 
 start:
         cli
@@ -31,7 +35,7 @@ start:
         int     0x13
         jc      fail
 
-        ; Kernel: sectors 2-65, loaded to 0x10000.
+        ; Kernel: LBA 1..128 (CHS 0/0/2), loaded to 0x10000.
         mov     ax, KERNEL_SEG
         mov     es, ax
         xor     bx, bx
@@ -41,7 +45,7 @@ start:
         mov     byte [left], KERNEL_SECTORS
         call    load_sectors
 
-        ; Program pack: sectors 130-193, loaded to 0x70000.
+        ; Program pack: LBA 129..192 (CHS 3/1/4), loaded to 0x70000.
         mov     ax, PACK_SEG
         mov     es, ax
         xor     bx, bx
@@ -51,21 +55,19 @@ start:
         mov     byte [left], PACK_SECTORS
         call    load_sectors
 
-        mov     ax, 0x0013       ; VGA 320x200x256 graphics mode
-        int     0x10
+        ; Stage 2 VBE/PM trampoline: LBA 193 (CHS 5/0/14), loaded to 0x0000:0x7E00.
+        xor     ax, ax
+        mov     es, ax
+        mov     bx, STAGE2_OFFSET
+        mov     byte [cyl], 5
+        mov     byte [head], 0
+        mov     byte [sect], 14
+        mov     byte [left], 1
+        call    load_sectors
 
-        cli
-        ; Fast A20 gate
-        in      al, 0x92
-        or      al, 0x02
-        and     al, 0xFE
-        out     0x92, al
-
-        lgdt    [gdt_ptr]
-        mov     eax, cr0
-        or      eax, 1
-        mov     cr0, eax
-        jmp     0x08:pm_entry
+        cmp     word [STAGE2_OFFSET + 510], 0xAA55
+        jne     fail
+        jmp     0x0000:STAGE2_OFFSET
 
 ; -----------------------------------------------------------------------------
 ; In: ES:BX = destination, cyl/head/sect = CHS, left = sector count.
@@ -130,37 +132,14 @@ fail:
         jmp     $
 
 ; -----------------------------------------------------------------------------
-        BITS 32
-pm_entry:
-        mov     ax, 0x10
-        mov     ds, ax
-        mov     es, ax
-        mov     fs, ax
-        mov     gs, ax
-        mov     ss, ax
-        mov     esp, 0x90000
-        jmp     0x10000
-
-; -----------------------------------------------------------------------------
-        BITS 16
 boot_drive      db 0
 cyl             db 0
 head            db 0
 sect            db 0
 left            db 0
 retry           db 0
-msg_loading     db 'Loading MiniOS C kernel...', 13, 10, 0
+msg_loading     db 'Loading MiniOS 2.0...', 13, 10, 0
 msg_fail        db 'Floppy read error.', 13, 10, 0
-
-        align 8
-gdt_start:
-        dq      0
-        dq      0x00CF9A000000FFFF     ; flat 32-bit code, DPL0
-        dq      0x00CF92000000FFFF     ; flat 32-bit data
-gdt_end:
-gdt_ptr:
-        dw      gdt_end - gdt_start - 1
-        dd      gdt_start
 
         times 510 - ($ - $$) db 0
         dw 0xAA55

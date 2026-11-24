@@ -64,16 +64,28 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Stage 6 Canvas/minios**: 256-color palette, draggable 180×120 Canvas
   window, Python `minios.Canvas` with clear/pixel/rect/line/text/event,
   `minios.sysinfo()` and PC-speaker beep; syscalls 24–28.
-- **Dynamic Canvas buffer**: the 21.6 KB pixel buffer is allocated from the
-  frame pool through `kernel_alloc_pages_zero(6)`; kernel BSS dropped from
-  `0x6dde3` to `0x68987`.
-- **Dynamic desktop framebuffer (Stage 8 foundation)**: the 320×200 `fb`
-  (64 KB) is also allocated from the frame pool; BSS is now `0x58f87`,
-  leaving ~92 KB before `PACK_BASE`. VBE 640×480 LFB setup is still pending.
-- **Stage 7 tools**: `calc`, `top`, `demos`, `xxd`, `edit`, `futil` are
-  frozen to `.mpy` bytecode with `mpy-cross 1.24.1`, linked into MPY.BIN,
-  and loaded through `.frozen/` on `sys.path`; native Shell shortcuts use
-  `-m <module>`. No tool source is stored in MiniFS.
+- **Dynamic Canvas buffer**: the pixel buffer (`300×200` = 15 pages in VBE
+  `640×480`, `180×120` = 6 pages in VGA `320×200`) is allocated on demand from
+  the frame pool through `kernel_alloc_pages_zero()`.
+- **Stage 8 VBE `640×480×8bpp` HD desktop + seamless `320×200` fallback**:
+  - `stage2.asm` (loaded at `0x7E00` from LBA 193, outside the `0x8000` FDC DMA
+    buffer) negotiates VBE 2.0 `640×480×8bpp` LFB via BIOS `int 0x10`
+    (`0x4F00/0x4F01/0x4F02`) and writes a 16-byte handoff descriptor at
+    `0x00000500` (`"VBE1"`), or automatically falls back to VGA Mode `0x13`
+    (`320×200×256`, `"VGA1"`) if VBE LFB is absent, `Shift` is held at boot, or
+    `force_vga=1`.
+  - Early `gdt_install()` in `kmain()` locks in the permanent kernel GDT/TSS
+    before interrupts/DMA start; `vbe_init()` maps the physical LFB
+    (`0xFD000000` on QEMU `stdvga`) via a 4 MB PSE supervisor PDE at
+    `0xE0000000` across `sched_safe_pd`, `task_pd[]` and `page_directory`.
+  - Native adaptive GUI: `72×26` consoles (`80×96` scrollback), `300×200`
+    256-color Canvas window, taskbar `Con3`/`Canvas` buttons, dynamic PS/2 mouse
+    bounds, and pure LFB blitting (never touching the `0xA0000` alias window in
+    VBE mode). Kernel `.bss` ends at `0x0005CC94` (~76.8 KB below `0x70000`).
+- **Stage 7–8 frozen suite**: `calc`, `top`, `demos` (`plot`), `xxd`, `edit`,
+  `futil`, and `bench` are frozen to `.mpy` bytecode with `mpy-cross 1.24.1`,
+  linked into `MPY.BIN` (`189,616` bytes), and launched via Shell shortcuts with
+  `< 10 ms` (0-tick) warm-cache startup.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -191,6 +203,34 @@ Screenshots:
 - [`../screenshots/c-stage7-frozen2-edfile.png`](../screenshots/c-stage7-frozen2-edfile.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
+- [`../screenshots/c-stage8-desktop-640x480.png`](../screenshots/c-stage8-desktop-640x480.png)
+- [`../screenshots/c-stage8-bench.png`](../screenshots/c-stage8-bench.png)
+- [`../screenshots/c-stage8-fallback-320x200.png`](../screenshots/c-stage8-fallback-320x200.png)
+
+## 1.44 MB Floppy Space & Speed Ledger
+
+Exact sector/byte accounting for `MiniOS-C.img` (`1,474,560` bytes = `2,880` sectors):
+
+| Region | LBA Range | Sectors | Bytes | Notes |
+|---|---|---:|---:|---|
+| Boot sector (`boot.bin`) | `0` | `1` | `512` | Loads kernel, `MPK1` pack, and `stage2` |
+| 32-bit C kernel (`kernel.bin`) | `1–128` | `128` | `48,860` / `65,536` | `16.3 KB` loader headroom; `.bss` ends at `0x5CC94` |
+| Program pack (`MPK1`) | `129–192` | `64` | `32,768` | Boot-loaded at `0x70000` (`A/B/C/HELLO.BIN`) |
+| Stage 2 VBE/PM (`stage2.bin`) | `193` (`194–199` pad) | `1` (+`6`) | `512` (+`3,072`) | Loaded at `0x7E00`; VBE `640×480×8` LFB + `320×200` fallback |
+| Read-only `MiniFS` (`MFS1`) | `200–1203` | `1,004` | `514,048` | `MPY.BIN` (`189,616 B`, 7 frozen tools) + Ring 3/0 test suite |
+| `MiniFS` free expansion space | `1204–2559` | `1,356` | `694,272` | Unused `MiniFS` capacity (`678.0 KB`) |
+| `SaveFS` snapshot (`MSV1`) | `2560–2819` | `260` | `133,120` | CRC32-verified persistent RAMFS (`sync` / `os.sync()`) |
+| Tail slack | `2820–2879` | `60` | `30,720` | Reserved tail slack |
+| **Total** | **`0–2879`** | **`2,880`** | **`1,474,560`** | **`1,416` free sectors (`724,992 B`, `49.2%` free)** |
+
+Measured performance (`bench` / `pystat` on QEMU i386):
+
+- **Cold `MPY.BIN` load (FDC track cache)**: `20 ms` (`2 ticks`)
+- **Warm `MPY.BIN` launch (RAM-resident, 0 disk I/O)**: **`< 10 ms` (`0 ticks`)**
+- **Integer loop (`60,000` iterations)**: `~290–350 ms` (`~171–206 Kops/s`)
+- **Hardware x87 float (`10,000` `sin * sqrt`)**: `~160–180 ms` (`~55–62 Kops/s`)
+- **GC allocation (`12,000` tuples on `1.5 MB` user heap)**: `~580 ms` (`~20 K/s`)
+- **Arbitrary-precision `mpz`**: `2**1000` (`302` digits) `< 10 ms`
 
 ## Program pack
 
@@ -389,8 +429,10 @@ Tools:
 
 ```text
 calc 2**10        # eval expression
-top               # sysinfo
-demos             # Canvas drawing demo
+top               # sysinfo + video mode
+bench             # cold/warm MPY load + CPU/FPU/GC benchmark
+demos             # 256-color Canvas curve & palette demo
+plot sin(x)*x     # plot custom expression on Canvas
 xxd TEST.TXT      # hex/ASCII dump
 edit NOTES.TXT    # line editor to RAMFS
 futil             # list/stat files
@@ -423,30 +465,34 @@ python c/build_c.py
 
 Outputs:
 
-- `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~45.4 KB (64 KB loader limit)
-- `c/build/mpy.bin` — **186,064 bytes** (181.7 KB, image+BSS 186,624 B)
-- Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
+- `c/build/boot.bin` — 512 bytes (LBA 0)
+- `c/build/stage2.bin` — 512 bytes (LBA 193, loaded at `0x7E00`)
+- `c/build/kernel.bin` — 48,860 bytes (~47.7 KB, 64 KB loader limit; `.bss` ends at `0x5CC94`)
+- `c/build/mpy.bin` — **189,616 bytes** (185.2 KB, image+BSS 190,176 B, 7 frozen tools)
+- Stage 0–8 master roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
 - `c/build/modtest.bin` — kernel-module ABI test
 - `c/build/umtest.bin` — large Ring 3 user-module test
-- `MiniOS-C.img` — 1,474,560 bytes (pack at 66048/LBA 129, MiniFS at 102400)
+- `MiniOS-C.img` — 1,474,560 bytes (pack at LBA 129, stage2 at LBA 193, MiniFS at LBA 200, SaveFS at LBA 2560)
 
 ## Run
 
 ```powershell
 qemu-system-i386 `
-  -drive "file=MiniOS-C.img,if=floppy,format=raw,readonly=on" `
+  -drive "file=MiniOS-C.img,if=floppy,format=raw" `
   -boot a -m 128 -rtc base=localtime
 ```
+
+(Hold `Shift` during boot to force the `320×200` VGA Mode `0x13` fallback path.)
 
 ## Source layout
 
 | File | Role |
 |---|---|
-| `boot.asm` | real-mode loader: kernel + pack, A20, flat GDT, protected mode, mode 13h |
+| `boot.asm` | real-mode sector 0 loader: kernel + pack + `stage2` |
+| `stage2.asm` | real-mode VBE `640×480×8` LFB setup (`0x500` handoff), VGA fallback, A20, GDT, 32-bit PM |
 | `entry.asm` | 32-bit entry, stack, BSS zero, `kmain` |
 | `interrupts.asm` | IRQ0/IRQ1/IRQ6/IRQ12 stubs + `int 0x80` syscall stub |
 | `usermode.asm` | Ring 3 entry and exit-to-kernel context restore |

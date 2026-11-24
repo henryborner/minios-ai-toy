@@ -20,9 +20,13 @@ KERNEL_MAX = KERNEL_SECTORS * 512
 PACK_SECTORS = 64
 PACK_BYTES = PACK_SECTORS * 512
 PACK_OFFSET = (1 + KERNEL_SECTORS) * 512
+STAGE2_LBA = 193
+STAGE2_OFFSET = STAGE2_LBA * 512
+STAGE2_SIZE = 512
 FS_LBA = 200
 FS_OFFSET = FS_LBA * 512
-FS_MAX_BYTES = (2560 - FS_LBA) * 512
+SAVEFS_LBA = 2560
+FS_MAX_BYTES = (SAVEFS_LBA - FS_LBA) * 512
 
 
 def build_minifs(files: list[tuple[str, Path]]) -> bytes:
@@ -108,6 +112,7 @@ def main() -> int:
     ])
 
     boot = BUILD / "boot.bin"
+    stage2 = BUILD / "stage2.bin"
     entry = BUILD / "entry.o"
     interrupts_o = BUILD / "interrupts.o"
     user_bin = BUILD / "user.bin"
@@ -144,6 +149,7 @@ def main() -> int:
     kernel_bin = BUILD / "kernel.bin"
 
     run([nasm, "-f", "bin", "-o", str(boot), "boot.asm"])
+    run([nasm, "-f", "bin", "-o", str(stage2), "stage2.asm"])
     run([nasm, "-f", "elf32", "-o", str(entry), "entry.asm"])
     run([nasm, "-f", "elf32", "-o", str(interrupts_o), "interrupts.asm"])
     run([nasm, "-f", "bin", "-o", str(user_bin), "user.asm"])
@@ -203,9 +209,12 @@ def main() -> int:
     run([objcopy, "-O", "binary", str(kernel_elf), str(kernel_bin)])
 
     boot_data = boot.read_bytes()
+    stage2_data = stage2.read_bytes()
     kernel_data = kernel_bin.read_bytes()
     if len(boot_data) != BOOT_SIZE:
         raise SystemExit(f"boot sector is {len(boot_data)} bytes, expected 512")
+    if len(stage2_data) != STAGE2_SIZE:
+        raise SystemExit(f"stage2 sector is {len(stage2_data)} bytes, expected 512")
     if len(kernel_data) > KERNEL_MAX:
         raise SystemExit(f"kernel too large: {len(kernel_data)} > {KERNEL_MAX}")
 
@@ -248,14 +257,17 @@ def main() -> int:
         ("TEST.TXT", CDIR / "test.txt"),
     ])
     image[PACK_OFFSET:PACK_OFFSET + len(pack)] = pack
+    image[STAGE2_OFFSET:STAGE2_OFFSET + STAGE2_SIZE] = stage2_data
     image[FS_OFFSET:FS_OFFSET + len(fs)] = fs
     IMAGE.write_bytes(image)
 
     digest = hashlib.sha256(image).hexdigest()
-    print(f"[boot]   {len(boot_data):>6} bytes")
-    print(f"[kernel] {len(kernel_data):>6} bytes")
-    print(f"[pack]   {len(pack):>6} bytes at offset {PACK_OFFSET}")
-    print(f"[minifs] {len(fs):>6} bytes at offset {FS_OFFSET}")
+    print(f"[boot]   {len(boot_data):>6} bytes (LBA 0)")
+    print(f"[kernel] {len(kernel_data):>6} bytes (LBA 1..128, max {KERNEL_MAX})")
+    print(f"[pack]   {len(pack):>6} bytes at offset {PACK_OFFSET} (LBA 129..192)")
+    print(f"[stage2] {len(stage2_data):>6} bytes at offset {STAGE2_OFFSET} (LBA {STAGE2_LBA})")
+    print(f"[minifs] {len(fs):>6} bytes at offset {FS_OFFSET} (LBA {FS_LBA}..{FS_LBA + len(fs)//512 - 1})")
+    print(f"[savefs] {260*512:>6} bytes reserved at LBA {SAVEFS_LBA}..2819")
     print(f"[image]  {IMAGE.name}: {len(image):,} bytes")
     print(f"[sha256] {digest}")
     return 0

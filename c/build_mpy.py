@@ -286,7 +286,7 @@ def build_mpy(stage_to_c_build: bool = False) -> Path:
 
     print("[mpy] freezing c/pylib tools...")
     FROZEN_DIR.mkdir(parents=True, exist_ok=True)
-    frozen_names = ["calc", "top", "demos", "xxd", "ed", "futil"]
+    frozen_names = ["calc", "top", "demos", "xxd", "ed", "futil", "bench"]
     frozen_mpys = []
     for name in frozen_names:
         src = CDIR / "pylib" / (name + ".py")

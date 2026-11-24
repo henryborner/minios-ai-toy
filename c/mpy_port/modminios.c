@@ -129,6 +129,32 @@ static mp_obj_t minios_beep(mp_obj_t freq_in, mp_obj_t ms_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_2(minios_beep_obj, minios_beep);
 
+static mp_obj_t minios_video(void) {
+    uint32_t csz = (uint32_t)sys_canvas_ctl(2, NULL);
+    uint32_t ssz = (uint32_t)sys_canvas_ctl(3, NULL);
+    uint32_t phys = (uint32_t)sys_canvas_ctl(4, NULL);
+    mp_obj_t items[6] = {
+        mp_obj_new_int_from_uint(ssz >> 16),
+        mp_obj_new_int_from_uint(ssz & 0xFFFFu),
+        mp_obj_new_int_from_uint(csz >> 16),
+        mp_obj_new_int_from_uint(csz & 0xFFFFu),
+        mp_obj_new_int_from_uint(phys >= 0x00100000u ? 1u : 0u),
+        mp_obj_new_int_from_uint(phys),
+    };
+    return mp_obj_new_tuple(6, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(minios_video_obj, minios_video);
+
+static mp_obj_t minios_mpy_ticks(void) {
+    uint32_t cw = (uint32_t)sys_canvas_ctl(5, NULL);
+    mp_obj_t items[2] = {
+        mp_obj_new_int_from_uint(cw >> 16),
+        mp_obj_new_int_from_uint(cw & 0xFFFFu),
+    };
+    return mp_obj_new_tuple(2, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(minios_mpy_ticks_obj, minios_mpy_ticks);
+
 typedef struct _minios_canvas_obj_t {
     mp_obj_base_t base;
 } minios_canvas_obj_t;
@@ -178,6 +204,17 @@ static mp_obj_t canvas_m_beep(mp_obj_t self, mp_obj_t freq, mp_obj_t ms) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_3(canvas_m_beep_obj, canvas_m_beep);
 
+static mp_obj_t canvas_m_size(mp_obj_t self) {
+    (void)self;
+    uint32_t csz = (uint32_t)sys_canvas_ctl(2, NULL);
+    mp_obj_t items[2] = {
+        mp_obj_new_int_from_uint(csz >> 16),
+        mp_obj_new_int_from_uint(csz & 0xFFFFu),
+    };
+    return mp_obj_new_tuple(2, items);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(canvas_m_size_obj, canvas_m_size);
+
 static const mp_rom_map_elem_t canvas_locals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_clear), MP_ROM_PTR(&canvas_m_clear_obj) },
     { MP_ROM_QSTR(MP_QSTR_pixel), MP_ROM_PTR(&canvas_m_pixel_obj) },
@@ -187,6 +224,7 @@ static const mp_rom_map_elem_t canvas_locals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&canvas_m_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&canvas_m_close_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&canvas_m_beep_obj) },
+    { MP_ROM_QSTR(MP_QSTR_size), MP_ROM_PTR(&canvas_m_size_obj) },
 };
 static MP_DEFINE_CONST_DICT(canvas_locals, canvas_locals_table);
 
@@ -219,6 +257,8 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_text), MP_ROM_PTR(&minios_text_obj) },
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&minios_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_sysinfo), MP_ROM_PTR(&minios_sysinfo_obj) },
+    { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
+    { MP_ROM_QSTR(MP_QSTR_mpy_ticks), MP_ROM_PTR(&minios_mpy_ticks_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&minios_beep_obj) },
 };
 static MP_DEFINE_CONST_DICT(minios_module_globals, minios_module_globals_table);

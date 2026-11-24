@@ -38,9 +38,17 @@ struct gui_canvas_event {
 
 void gui_canvas_open(const char *title);
 void gui_canvas_close(void);
+int gui_canvas_w(void);
+int gui_canvas_h(void);
 int gui_canvas_cmd(const struct gui_canvas_cmd *cmd);
 int gui_canvas_event(struct gui_canvas_event *out);
 
+extern int scr_w;
+extern int scr_h;
+extern u8 vbe_active;
+extern volatile u8 *vbe_lfb;
+extern u32 vbe_pitch;
+extern u32 vbe_phys_base;
 extern volatile u32 ticks;
 extern char cpu[13];
 extern u32 heap_used;

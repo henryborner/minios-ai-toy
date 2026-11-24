@@ -194,16 +194,23 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 8：VBE `640×480` 高清大桌面升级与「轻快账本」全面收官
 **目标**：解锁高清大视野多窗口同屏工作流（同时保留 `320×200` 自动回退兼容），并产出完整的性能与体积量化报告。
 
-- [ ] **8.1 Bochs/VESA VBE 2.0 `640×480×8bpp` 线性帧缓冲自适应**（`c/boot.asm`、`c/kernel.c`、`c/gui.c`）
-  - 部分完成：320×200 `fb` 已改为页帧池动态分配（`gui_alloc_fb`），BSS `0x68987 → 0x58f87`，余量约 92KB。VBE 模式设置/BIOS 探测/LFB 页表映射尚未实现。
-  - 在 `c/boot.asm` 实模式阶段通过 `int 0x10 (AX=0x4F01/0x4F02)` 探测并启用 **`640×480×8bpp`（LFB 线性帧缓冲模式，带 `0x4000` LFB 标志）**，将 `{ magic, width, height, pitch, bpp, phys_base }` 写入 `0x00000500` 传给 32 位内核；若当前环境不支持 VBE 2.0，则自动无缝回退至 VGA `320×200` mode 13h。
-  - 在内核页表初始化与任务页目录模板（`page_directory`、`sched_safe_pd`、`task_pd[]`）中为 VBE LFB 物理地址（如 QEMU 默认 `0xFD000000` 附近的 1 个 4 MB 页目录项）建立 Supervisor 直映。
-  - 将后备帧缓冲 `fb`（`640×480` = 300 KB）改为从动态物理页帧池（`5–16 MB`）分配并通过 `direct_ptr` 访问——**不仅支撑高清分辨率，还顺带让低端内核 `.bss` 立即瘦身 64 KB！**
-- [ ] **8.2 高清窗口布局与大尺寸终端适配**（`c/gui.c`）
-  - 根据运行时屏幕宽高自适应布局：在 `640×480` 模式下，Console 窗口默认扩展至 **`72 列 × 26 行`**（可舒适并排摆放 Console 1 编辑器、Console 2 Python REPL 与右上角 `300×200` 彩色画布窗口），鼠标边界、任务栏、开始菜单与窗口列表坐标全部按屏幕宽高动态适配。
-- [ ] **8.3 内置基准跑分 `bench.py` 与最终文档/账本收官**
-  - 在 `c/pylib/bench.py` 中实现一键自检跑分，并在 `README.md` / `c/README.md` 更新完整量化成绩单与高清桌面全家福截图：
-    - **1.44 MB 软盘镜像精确空间账单**（Boot / Kernel / Pack / MiniFS + `MPY.BIN` / SaveFS / 剩余空闲扇区）；
-    - **速度指标**：冷启动耗时、首次冷加载 `MPY.BIN` 耗时、**二次热驻留启动耗时（`< 2 ms`）**、Python 算力与 GC 吞吐、高清桌面合成帧率；
-    - 实测验证 VBE `640×480` 高清模式与强制回退 `320×200` 模式双路径均完美工作。
+- [x] **8.1 Bochs/VESA VBE 2.0 `640×480×8bpp` 线性帧缓冲自适应**（`c/boot.asm`、`c/stage2.asm`、`c/kernel.c`、`c/gui.c`）
+  - 新增位于 `LBA 193`、加载至 `0x0000:0x7E00`（严格避开 `0x8000–0xA3FF` FDC DMA 磁道缓存）的实模式二级跳板 `c/stage2.asm`：通过 `int 0x10 (AX=0x4F00/0x4F01/0x4F02)` 探测并启用 **`640×480×8bpp`（带 `0x4000` LFB 标志）**，将 `{ magic="VBE1", width, height, pitch, bpp, active, phys_base }` 写入 `0x00000500` 传给 32 位内核；若硬件不支持 VBE LFB、启动时按住 `Shift` 或 `force_vga=1`，则自动无缝回退至标准 VGA `320×200` mode 13h（`"VGA1"`）。
+  - `kmain()` 最早期即调用幂等 `gdt_install()` 固化内核永久 GDT/TSS，并在 `sched_safe_pd`、`task_pd[]` 与 `page_directory` 的 `0xE0000000`（PDE 896）建立 4 MB PSE Supervisor LFB 页映射（兼容 `0xFD000000` PCI BAR0 与 `0xE0000000` ISA-VBE 地址）。
+  - 后备帧缓冲 `fb`（`640×480` = 75 页 / 300 KB；`320×200` = 16 页 / 64 KB）按实际分辨率从 `5–16 MB` 物理页帧池动态分配，内核 `.bss` 结束于 `0x0005CC94`（距 `0x70000` 留有约 76.8 KB 安全余量）；VBE 激活时 `blit()` 与 `blit_rect()` 纯走 LFB 步幅写入，彻底隔离 `0xA0000` 旧 VGA 窗口别名区。
+- [x] **8.2 高清窗口布局与大尺寸终端适配**（`c/gui.c`）
+  - 根据运行时 `scr_w × scr_h` 原生自适应布局（非像素放大）：在 `640×480` 模式下，3 个独立 Console 均扩展为 **`72 列 × 26 行`**（96 行 × 80 列回滚缓冲），`WIN_APP` 彩色画布窗口扩展为 **`300×200`**（6-bit 线性 6×6×6 RGB 立方体 + 24 级灰度调色板），并支持四窗口同屏（Console 1 + Console 2 + `300×200` Canvas 曲线绘图 + System Information）；PS/2 鼠标边界、任务栏（含 `Con3`/`Canvas` 快捷钮）、开始菜单、右键菜单与窗口列表坐标全部动态适配。
+- [x] **8.3 内置基准跑分 `bench.py` 与最终文档/账本收官**
+  - 新增并 `mpy-cross` 冻结 `c/pylib/bench.py`（Shell 原生快捷命令 `bench`），扩展 `minios.video()` / `minios.mpy_ticks()` / `Canvas.size()`，升级自适应 `demos.py`（`plot [EXPR]`）。
+  - **1.44 MB（`1,474,560` B / `2,880` 扇区）精确空间账单**：
+    - `LBA 0`：`boot.bin`（`512 B`，1 扇区）
+    - `LBA 1–128`：`kernel.bin`（实占 `48,860 B` / 上限 `65,536 B`，128 扇区）
+    - `LBA 129–192`：`MPK1` 启动程序包（`32,768 B`，64 扇区）
+    - `LBA 193`：`stage2.bin` VBE/PM 跳板（`512 B`，1 扇区；`LBA 194–199` 预留 6 扇区）
+    - `LBA 200–1203`：`MiniFS` 只读文件系统（`514,048 B` = `502.0 KB`，1,004 扇区；含 `MPY.BIN` `189,616 B` + 7 个冻结工具）
+    - `LBA 1204–2559`：`MiniFS` 剩余可扩展空闲区（`694,272 B` = `678.0 KB`，1,356 扇区）
+    - `LBA 2560–2819`：`SaveFS` CRC32 快照持久化区（`133,120 B` = `130.0 KB`，260 扇区）
+    - `LBA 2820–2879`：尾部空闲扇区（`30,720 B`，60 扇区）——全盘合计空闲扇区 `1,416` 个（`724,992 B`，空闲率 `49.2%`）。
+  - **实测速度成绩单**：`MPY.BIN` 首次冷加载 `20 ms`（2 ticks），**二次热驻留启动 `< 10 ms`（0 ticks）**；60,000 次整数循环 `~171–206 Kops/s`；10,000 次硬件 x87 `sin*sqrt` 浮点运算 `~55–62 Kops/s`；12,000 次元组 GC 分配 `~20 K/s`（1.5 MB 用户堆）；`2**1000`（302 位大整数）瞬时通过。
+  - **Stage 8 验收**：QEMU 默认 `stdvga` `640×480` VBE LFB 模式与 `force_vga=1` 强制 `320×200` VGA 回退模式（含跨重启 `SaveFS` 持久化恢复）双路径实测通过，产出截图 `c-stage8-bench.png`、`c-stage8-desktop-640x480.png`、`c-stage8-fallback-320x200.png`。
 

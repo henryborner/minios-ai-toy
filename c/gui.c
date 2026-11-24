@@ -1,15 +1,9 @@
 #include "gui.h"
 
-#define W 320
-#define H 200
-#define TASKBAR_Y 186
+#define TASKBAR_Y (scr_h - 14)
 
-#define CON_W 296
-#define CON_H 144
 #define TERM_ROWS 96
-#define TERM_COLS 40
-#define TERM_VIS 14
-#define TERM_WIDTH 35
+#define TERM_COLS 80
 #define GUI_KEY_PGUP 0xFE
 #define GUI_KEY_PGDN 0xFF
 #define GUI_KEY_UP 0xF7
@@ -19,9 +13,9 @@
 #define GUI_KEY_HOME 0xFB
 #define GUI_KEY_END 0xFC
 #define GUI_KEY_DEL 0xFD
-#define SYS_W 224
-#define SYS_H 96
-#define ABOUT_W 200
+#define SYS_W 236
+#define SYS_H 98
+#define ABOUT_W 208
 #define ABOUT_H 104
 
 #define NCONS 3
@@ -33,22 +27,17 @@
 #define WIN_APP 5
 #define WIN_COUNT 6
 
-#define CANVAS_W 180
-#define CANVAS_H 120
-#define CANVAS_BUF_W (CANVAS_W + 4)
-#define CANVAS_BUF_H (CANVAS_H + 12)
-
 #define MENU_X 2
-#define MENU_Y 94
 #define MENU_W 120
 #define MENU_ITEM_H 12
 #define MENU_ITEMS 7
 #define MENU_H (MENU_ITEMS * MENU_ITEM_H + 4)
+#define MENU_Y (TASKBAR_Y - MENU_H - 4)
 
-#define LIST_W 180
+#define LIST_W 188
 #define LIST_H 112
-#define LIST_X ((W - LIST_W) / 2)
-#define LIST_Y 36
+#define LIST_X ((scr_w - LIST_W) / 2)
+#define LIST_Y ((TASKBAR_Y - LIST_H) / 2)
 
 #define HIT_NONE 0
 #define HIT_START 1
@@ -56,6 +45,8 @@
 #define HIT_TB_C2 3
 #define HIT_TB_SYS 4
 #define HIT_TB_WIN 5
+#define HIT_TB_C3 6
+#define HIT_TB_APP 7
 #define HIT_MENU_BASE 100
 #define HIT_CLOSE_BASE 200
 #define HIT_OK 300
@@ -85,6 +76,13 @@ struct window {
 
 static u8 *fb;
 static const u8 *const FONT = (const u8 *)0x000FFA6E;
+
+static int con_w = 296;
+static int con_h = 144;
+static int term_vis = 14;
+static int term_width = 35;
+static int canvas_w = 180;
+static int canvas_h = 120;
 
 static struct window wins[WIN_COUNT];
 static struct console consoles[NCONS];
@@ -160,15 +158,14 @@ static void set_palette(void) {
         for (int g = 0; g < 6; g++) {
             for (int b = 0; b < 6; b++) {
                 int i = 16 + r * 36 + g * 6 + b;
-                pal[i * 3 + 0] = (u8)(r * 51);
-                pal[i * 3 + 1] = (u8)(g * 51);
-                pal[i * 3 + 2] = (u8)(b * 51);
+                pal[i * 3 + 0] = (u8)((r * 63 + 2) / 5);
+                pal[i * 3 + 1] = (u8)((g * 63 + 2) / 5);
+                pal[i * 3 + 2] = (u8)((b * 63 + 2) / 5);
             }
         }
     }
     for (int i = 232; i < 256; i++) {
-        int v = 8 + (i - 232) * 10;
-        if (v > 255) v = 255;
+        int v = 2 + ((i - 232) * 61 + 11) / 23;
         pal[i * 3 + 0] = (u8)v;
         pal[i * 3 + 1] = (u8)v;
         pal[i * 3 + 2] = (u8)v;
@@ -179,8 +176,8 @@ static void set_palette(void) {
 }
 
 static void plot(int x, int y, u8 color) {
-    if ((unsigned)x < W && (unsigned)y < H)
-        fb[y * W + x] = color;
+    if ((unsigned)x < (unsigned)scr_w && (unsigned)y < (unsigned)scr_h)
+        fb[y * scr_w + x] = color;
 }
 
 static void fill_rect(int x, int y, int w, int h, u8 color) {
@@ -188,12 +185,12 @@ static void fill_rect(int x, int y, int w, int h, u8 color) {
         return;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
-    if (x + w > W) w = W - x;
-    if (y + h > H) h = H - y;
+    if (x + w > scr_w) w = scr_w - x;
+    if (y + h > scr_h) h = scr_h - y;
     if (w <= 0 || h <= 0)
         return;
     for (int yy = 0; yy < h; yy++) {
-        u8 *p = &fb[(y + yy) * W + x];
+        u8 *p = &fb[(y + yy) * scr_w + x];
         for (int xx = 0; xx < w; xx++)
             p[xx] = color;
     }
@@ -217,7 +214,7 @@ static void text(int x, int y, const char *s, u8 color) {
     while (*s) {
         draw_char(x, y, *s++, color, 1);
         x += 8;
-        if (x >= W)
+        if (x >= scr_w)
             break;
     }
 }
@@ -226,7 +223,7 @@ static void text2(int x, int y, const char *s, u8 color) {
     while (*s) {
         draw_char(x, y, *s++, color, 2);
         x += 16;
-        if (x >= W)
+        if (x >= scr_w)
             break;
     }
 }
@@ -256,23 +253,41 @@ static void sunken_box(int x, int y, int w, int h) {
 }
 
 static void blit(void) {
+    if (vbe_active && vbe_lfb) {
+        for (int y = 0; y < scr_h; y++) {
+            volatile u32 *dst = (volatile u32 *)(vbe_lfb + (u32)y * vbe_pitch);
+            const u32 *src = (const u32 *)(fb + (u32)y * (u32)scr_w);
+            for (int i = 0; i < scr_w / 4; i++)
+                dst[i] = src[i];
+        }
+        return;
+    }
     u32 *dst = (u32 *)0x000A0000;
     const u32 *src = (const u32 *)fb;
-    for (int i = 0; i < (W * H) / 4; i++)
+    for (int i = 0; i < (scr_w * scr_h) / 4; i++)
         dst[i] = src[i];
 }
 
 static void blit_rect(int x, int y, int w, int h) {
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
-    if (x + w > W) w = W - x;
-    if (y + h > H) h = H - y;
+    if (x + w > scr_w) w = scr_w - x;
+    if (y + h > scr_h) h = scr_h - y;
     if (w <= 0 || h <= 0)
         return;
+    if (vbe_active && vbe_lfb) {
+        for (int yy = 0; yy < h; yy++) {
+            volatile u8 *dst = vbe_lfb + (u32)(y + yy) * vbe_pitch + (u32)x;
+            const u8 *src = fb + (u32)(y + yy) * (u32)scr_w + (u32)x;
+            for (int xx = 0; xx < w; xx++)
+                dst[xx] = src[xx];
+        }
+        return;
+    }
     u8 *dst = (u8 *)0x000A0000;
     for (int yy = 0; yy < h; yy++) {
         for (int xx = 0; xx < w; xx++)
-            dst[(y + yy) * W + x + xx] = fb[(y + yy) * W + x + xx];
+            dst[(y + yy) * scr_w + x + xx] = fb[(y + yy) * scr_w + x + xx];
     }
 }
 
@@ -411,12 +426,43 @@ static void minimize_window(int id) {
 }
 
 static void init_windows(void) {
-    wins[WIN_C0].x = 12;  wins[WIN_C0].y = 22;
-    wins[WIN_C1].x = 16;  wins[WIN_C1].y = 28;
-    wins[WIN_C2].x = 20;  wins[WIN_C2].y = 34;
+    if (scr_w >= 640) {
+        term_width = 72;
+        term_vis = 26;
+        con_w = 596;
+        con_h = 252;
+        canvas_w = 300;
+        canvas_h = 200;
+
+        wins[WIN_C0].x = 12;  wins[WIN_C0].y = 24;
+        wins[WIN_C1].x = 28;  wins[WIN_C1].y = 198;
+        wins[WIN_C2].x = 20;  wins[WIN_C2].y = 110;
+
+        wins[WIN_SYS].x = 388; wins[WIN_SYS].y = 256;
+        wins[WIN_ABOUT].x = (scr_w - ABOUT_W) / 2;
+        wins[WIN_ABOUT].y = (TASKBAR_Y - ABOUT_H) / 2;
+        wins[WIN_APP].x = scr_w - (canvas_w + 4) - 12;
+        wins[WIN_APP].y = 26;
+    } else {
+        term_width = 35;
+        term_vis = 14;
+        con_w = 296;
+        con_h = 144;
+        canvas_w = 180;
+        canvas_h = 120;
+
+        wins[WIN_C0].x = 12;  wins[WIN_C0].y = 22;
+        wins[WIN_C1].x = 16;  wins[WIN_C1].y = 28;
+        wins[WIN_C2].x = 20;  wins[WIN_C2].y = 34;
+
+        wins[WIN_SYS].x = 42; wins[WIN_SYS].y = 42;
+        wins[WIN_ABOUT].x = 56; wins[WIN_ABOUT].y = 48;
+        wins[WIN_APP].x = 68; wins[WIN_APP].y = 34;
+    }
+
     for (int i = 0; i < NCONS; i++) {
-        wins[i].w = CON_W;
-        wins[i].h = CON_H;
+        wins[i].w = con_w;
+        wins[i].h = con_h;
         wins[i].visible = (i == 0);
         wins[i].minimized = 0;
     }
@@ -424,20 +470,18 @@ static void init_windows(void) {
     wins[WIN_C1].title = "Console 2 - MiniOS";
     wins[WIN_C2].title = "Console 3 - MiniOS";
 
-    wins[WIN_SYS].x = 56; wins[WIN_SYS].y = 42;
     wins[WIN_SYS].w = SYS_W; wins[WIN_SYS].h = SYS_H;
     wins[WIN_SYS].visible = 0;
     wins[WIN_SYS].minimized = 0;
     wins[WIN_SYS].title = "System Information";
 
-    wins[WIN_ABOUT].x = 60; wins[WIN_ABOUT].y = 48;
     wins[WIN_ABOUT].w = ABOUT_W; wins[WIN_ABOUT].h = ABOUT_H;
     wins[WIN_ABOUT].visible = 0;
     wins[WIN_ABOUT].minimized = 0;
     wins[WIN_ABOUT].title = "About MiniOS";
 
-    wins[WIN_APP].x = 68; wins[WIN_APP].y = 34;
-    wins[WIN_APP].w = CANVAS_BUF_W; wins[WIN_APP].h = CANVAS_BUF_H;
+    wins[WIN_APP].w = canvas_w + 4;
+    wins[WIN_APP].h = canvas_h + 14;
     wins[WIN_APP].visible = 0;
     wins[WIN_APP].minimized = 0;
     wins[WIN_APP].title = canvas_title;
@@ -485,7 +529,7 @@ static void term_newline(struct console *c) {
     }
     if (was_scrolled) {
         c->scroll++;
-        int max = c->n > TERM_VIS ? c->n - TERM_VIS : 0;
+        int max = c->n > term_vis ? c->n - term_vis : 0;
         if (c->scroll > max)
             c->scroll = max;
     }
@@ -493,7 +537,7 @@ static void term_newline(struct console *c) {
 }
 
 static void term_scroll_by(struct console *c, int delta) {
-    int max = c->n > TERM_VIS ? c->n - TERM_VIS : 0;
+    int max = c->n > term_vis ? c->n - term_vis : 0;
     c->scroll += delta;
     if (c->scroll < 0)
         c->scroll = 0;
@@ -503,11 +547,11 @@ static void term_scroll_by(struct console *c, int delta) {
 
 static void scroll_metrics(struct console *c, int *bx, int *by, int *bh,
                            int *thumb, int *pos) {
-    int track_h = TERM_VIS * 9 - 2;
-    int t = track_h * TERM_VIS / (c->n > 0 ? c->n : 1);
+    int track_h = term_vis * 9 - 2;
+    int t = track_h * term_vis / (c->n > 0 ? c->n : 1);
     if (t < 8) t = 8;
     if (t > track_h) t = track_h;
-    int max = c->n > TERM_VIS ? c->n - TERM_VIS : 0;
+    int max = c->n > term_vis ? c->n - term_vis : 0;
     int travel = track_h - t;
     int p = max > 0 ? travel * (max - c->scroll) / max : 0;
     *bx = c->x + c->w - 8;
@@ -518,7 +562,7 @@ static void scroll_metrics(struct console *c, int *bx, int *by, int *bh,
 }
 
 static int scrollbar_hit(struct console *c, int x, int y) {
-    if (c->n <= TERM_VIS)
+    if (c->n <= term_vis)
         return 0;
     int bx, by, bh, thumb, pos;
     scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
@@ -528,13 +572,13 @@ static int scrollbar_hit(struct console *c, int x, int y) {
 }
 
 static void scrollbar_set_from_y(struct console *c, int y) {
-    if (c->n <= TERM_VIS)
+    if (c->n <= term_vis)
         return;
     int bx, by, bh, thumb, pos;
     scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
     (void)bx;
     (void)pos;
-    int max = c->n - TERM_VIS;
+    int max = c->n - term_vis;
     int travel = bh - thumb;
     int rel = y - by - thumb / 2;
     if (rel < 0) rel = 0;
@@ -545,7 +589,7 @@ static void scrollbar_set_from_y(struct console *c, int y) {
 }
 
 static void scrollbar_draw(struct console *c) {
-    if (c->n <= TERM_VIS)
+    if (c->n <= term_vis)
         return;
     int bx, by, bh, thumb, pos;
     scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
@@ -558,7 +602,7 @@ static int term_ansi_final(struct console *c, char ch) {
         if (c->col > 0)
             c->col--;
     } else if (ch == 'C') {
-        if (c->col < TERM_WIDTH - 1)
+        if (c->col < term_width - 1)
             c->col++;
     } else if (ch == 'H') {
         c->col = 0;
@@ -614,7 +658,7 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     }
     if (ch < 32)
         return;
-    if (c->col >= TERM_WIDTH)
+    if (c->col >= term_width)
         term_newline(c);
     int len = line_len(c, c->cur);
     if (insert && c->col < len && len < TERM_COLS - 2) {
@@ -691,13 +735,13 @@ static int starts_with(const char *s, const char *p) {
 static void launch_python(struct console *c, const char *rest) {
     extern int run_user_module_args(const char *name, int argc,
                                     const char *const *argv);
-    char buf[64];
+    char buf[128];
     const char *argv[8];
     int argc = 0;
     argv[argc++] = "py";
 
     int bi = 0;
-    while (*rest && argc < 8 && bi < 62) {
+    while (*rest && argc < 8 && bi < 126) {
         while (*rest == ' ')
             rest++;
         if (!*rest)
@@ -707,7 +751,7 @@ static void launch_python(struct console *c, const char *rest) {
             quote = *rest++;
         }
         argv[argc++] = &buf[bi];
-        while (*rest && bi < 62) {
+        while (*rest && bi < 126) {
             if (quote) {
                 if (*rest == quote) {
                     rest++;
@@ -726,15 +770,15 @@ static void launch_python(struct console *c, const char *rest) {
 }
 
 static void launch_tool(struct console *c, const char *file, const char *arg) {
-    char line[80];
+    char line[128];
     int n = 0;
-    while (file[n] && n < 70) {
+    while (file[n] && n < 40) {
         line[n] = file[n];
         n++;
     }
     if (arg && *arg) {
         line[n++] = ' ';
-        while (*arg && n < 78)
+        while (*arg && n < 126)
             line[n++] = *arg++;
     }
     line[n] = 0;
@@ -744,11 +788,11 @@ static void launch_tool(struct console *c, const char *file, const char *arg) {
 static void run_python_expr(struct console *c, const char *rest) {
     extern int run_user_module_args(const char *name, int argc,
                                     const char *const *argv);
-    char expr[64];
+    char expr[120];
     int n = 0;
     while (*rest == ' ')
         rest++;
-    while (*rest && n < 62)
+    while (*rest && n < 118)
         expr[n++] = *rest++;
     expr[n] = 0;
     if (n == 0) {
@@ -762,13 +806,19 @@ static void run_python_expr(struct console *c, const char *rest) {
 
 static void py_stats(struct console *c) {
     extern volatile u32 user_module_last_ticks;
+    extern volatile u32 user_module_cold_ticks;
+    extern volatile u32 user_module_warm_ticks;
     extern volatile u32 user_module_last_size;
     extern volatile u8 user_module_cache_hit;
     term_puts(c, "mpy last: ");
     term_puts(c, user_module_cache_hit ? "warm" : "cold");
     term_puts(c, " ticks=");
     term_u32(c, user_module_last_ticks);
-    term_puts(c, " bytes=");
+    term_puts(c, " (cold=");
+    term_u32(c, user_module_cold_ticks);
+    term_puts(c, " warm=");
+    term_u32(c, user_module_warm_ticks);
+    term_puts(c, ") bytes=");
     term_u32(c, user_module_last_size);
     term_puts(c, "\n");
 }
@@ -788,10 +838,11 @@ static void run_command(struct console *c, char *line) {
          streq(line, "py") || streq(line, "python") ||
          streq(line, "modtest") || streq(line, "uargs") ||
          streq(line, "big512") || streq(line, "serial") ||
-         streq(line, "calc") || streq(line, "top") ||
+         streq(line, "calc") || streq(line, "top") || streq(line, "bench") ||
          streq(line, "demos") || streq(line, "plot") || streq(line, "futil") ||
          streq(line, "xxd") || streq(line, "edit") ||
          starts_with(line, "calc ") || starts_with(line, "xxd ") ||
+         starts_with(line, "plot ") ||
          starts_with(line, "edit ") || streq(line, "sync") ||
          streq(line, "reboot") ||
          streq(line, "halt") ||
@@ -808,7 +859,7 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "help ver cpu mem time date ps kill\n");
         term_puts(c, "py python clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
-        term_puts(c, "py pystat = EXPR calc top demos\n");
+        term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
@@ -941,8 +992,12 @@ static void run_command(struct console *c, char *line) {
         launch_tool(c, "-m calc", line + 5);
     } else if (streq(line, "top")) {
         launch_tool(c, "-m top", "");
+    } else if (streq(line, "bench")) {
+        launch_tool(c, "-m bench", "");
     } else if (streq(line, "demos") || streq(line, "plot")) {
         launch_tool(c, "-m demos", "");
+    } else if (starts_with(line, "plot ")) {
+        launch_tool(c, "-m demos", line + 5);
     } else if (streq(line, "futil")) {
         launch_tool(c, "-m futil", "");
     } else if (starts_with(line, "xxd ")) {
@@ -997,9 +1052,9 @@ static void term_key(struct console *c, char ch) {
     c->scroll = 0;
     if (key == '\n') {
         char *line = c->term[c->cur];
-        char command[40];
+        char command[TERM_COLS];
         int i = 0;
-        while (i < 39 && line[5 + i]) {
+        while (i < TERM_COLS - 6 && line[5 + i]) {
             command[i] = line[5 + i];
             i++;
         }
@@ -1074,26 +1129,37 @@ static void taskbar_button(int x, int y, int w, const char *label, int hit, int 
 }
 
 static void draw_desktop(void) {
-    fill_rect(0, 0, W, TASKBAR_Y, 3);
-    text(8, 5, "MiniOS 2.0", 15);
-    text(188, 5, "F4 windows", 11);
-    fill_rect(0, 17, W, 1, 2);
+    fill_rect(0, 0, scr_w, TASKBAR_Y, 3);
+    if (scr_w >= 640) {
+        text(8, 5, "MiniOS 2.0 - Live MicroPython Desktop", 15);
+        text(scr_w - 232, 5, "640x480 VBE | F4 Windows", 11);
+    } else {
+        text(8, 5, "MiniOS 2.0", 15);
+        text(188, 5, "F4 windows", 11);
+    }
+    fill_rect(0, 17, scr_w, 1, 2);
 }
 
 static void draw_taskbar(void) {
-    fill_rect(0, TASKBAR_Y, W, 14, 7);
-    fill_rect(0, TASKBAR_Y, W, 1, 15);
-    fill_rect(0, TASKBAR_Y + 1, W, 1, 8);
+    int ty = TASKBAR_Y;
+    fill_rect(0, ty, scr_w, 14, 7);
+    fill_rect(0, ty, scr_w, 1, 15);
+    fill_rect(0, ty + 1, scr_w, 1, 8);
 
-    taskbar_button(2, 188, 44, "Start", HIT_START, menu_open);
-    taskbar_button(48, 188, 50, "Con1", HIT_TB_C1, focus_win == WIN_C0);
-    taskbar_button(100, 188, 50, "Con2", HIT_TB_C2, focus_win == WIN_C1);
-    taskbar_button(152, 188, 46, "Sys", HIT_TB_SYS, focus_win == WIN_SYS);
-    taskbar_button(200, 188, 56, "Wins", HIT_TB_WIN, list_open);
+    taskbar_button(2, ty + 2, 44, "Start", HIT_START, menu_open);
+    taskbar_button(48, ty + 2, 50, "Con1", HIT_TB_C1, focus_win == WIN_C0);
+    taskbar_button(100, ty + 2, 50, "Con2", HIT_TB_C2, focus_win == WIN_C1);
+    taskbar_button(152, ty + 2, 46, "Sys", HIT_TB_SYS, focus_win == WIN_SYS);
+    taskbar_button(200, ty + 2, 56, "Wins", HIT_TB_WIN, list_open);
+    if (scr_w >= 640) {
+        taskbar_button(258, ty + 2, 50, "Con3", HIT_TB_C3, focus_win == WIN_C2);
+        taskbar_button(310, ty + 2, 58, "Canvas", HIT_TB_APP, focus_win == WIN_APP);
+    }
 
-    fill_rect(264, 188, 52, 10, 0);
-    fill_rect(265, 189, 50, 8, 15);
-    text(274, 189, clock_hm, 0);
+    int cx = scr_w - 56;
+    fill_rect(cx, ty + 2, 52, 10, 0);
+    fill_rect(cx + 1, ty + 3, 50, 8, 15);
+    text(cx + 10, ty + 3, clock_hm, 0);
 }
 
 static void window_frame(int id) {
@@ -1124,8 +1190,8 @@ static void window_frame(int id) {
 static void draw_console(int id) {
     struct console *c = &consoles[id];
     window_frame(id);
-    int start = c->n > TERM_VIS ? c->n - TERM_VIS - c->scroll : 0;
-    for (int r = 0; r < TERM_VIS; r++) {
+    int start = c->n > term_vis ? c->n - term_vis - c->scroll : 0;
+    for (int r = 0; r < term_vis; r++) {
         int idx = start + r;
         if (idx >= 0 && idx < c->n)
             text(c->x + 4, c->y + 14 + r * 9, c->term[idx], 0);
@@ -1133,7 +1199,7 @@ static void draw_console(int id) {
     scrollbar_draw(c);
     if (focus_win == id && c->scroll == 0 && ((ticks / 50) & 1)) {
         int row = c->cur - start;
-        if (row >= 0 && row < TERM_VIS)
+        if (row >= 0 && row < term_vis)
             fill_rect(c->x + 4 + c->col * 8, c->y + 14 + row * 9, 1, 8, 0);
     }
 }
@@ -1160,9 +1226,11 @@ static void draw_system(void) {
         tmp[p++] = tmp[--n];
     tmp[p] = 0;
     text(x + 46, y + 32, tmp, 0);
-    text(x + 6, y + 41, "Video: VGA 320x200x256", 0);
+    text(x + 6, y + 41,
+         vbe_active ? "Video: VBE 640x480x256 LFB" : "Video: VGA 320x200x256",
+         0);
     text(x + 6, y + 50, "Boot: 1.44MB floppy", 0);
-    text(x + 6, y + 59, "Mode: 32-bit protected", 0);
+    text(x + 6, y + 59, "Mode: 32-bit Ring0+Ring3", 0);
     text(x + 6, y + 68, "Uptime:", 0);
     text(x + 70, y + 68, uptime_str, 0);
     text(x + 6, y + 77, "Date:", 0);
@@ -1175,14 +1243,18 @@ static void draw_canvas(void) {
     int cx = w->x + 2;
     int cy = w->y + 12;
     if (!canvas_buf) {
-        for (int y = 0; y < CANVAS_H; y++)
-            for (int x = 0; x < CANVAS_W; x++)
-                fb[(cy + y) * W + cx + x] = 0;
+        fill_rect(cx, cy, canvas_w, canvas_h, 0);
         return;
     }
-    for (int y = 0; y < CANVAS_H; y++) {
-        for (int x = 0; x < CANVAS_W; x++)
-            fb[(cy + y) * W + cx + x] = canvas_buf[y * CANVAS_W + x];
+    for (int y = 0; y < canvas_h; y++) {
+        int py = cy + y;
+        if ((unsigned)py >= (unsigned)scr_h)
+            continue;
+        for (int x = 0; x < canvas_w; x++) {
+            int px = cx + x;
+            if ((unsigned)px < (unsigned)scr_w)
+                fb[py * scr_w + px] = canvas_buf[y * canvas_w + x];
+        }
     }
 }
 
@@ -1190,15 +1262,15 @@ static void draw_about(void) {
     struct window *w = &wins[WIN_ABOUT];
     window_frame(WIN_ABOUT);
     int x = w->x, y = w->y;
-    text2(x + 52, y + 16, "MiniOS", 1);
-    text(x + 24, y + 42, "A C GUI in 1.44 MB", 0);
-    text(x + 24, y + 53, "32-bit protected mode", 0);
-    text(x + 8, y + 64, "(c) 2026 MiniOS Project", 8);
+    text2(x + 56, y + 16, "MiniOS", 1);
+    text(x + 12, y + 42, "C + MicroPython in 1.44MB", 0);
+    text(x + 28, y + 53, "32-bit Ring 3 desktop", 0);
+    text(x + 12, y + 64, "(c) 2026 MiniOS Project", 8);
     if (is_pressed(HIT_OK))
-        sunken_box(x + 80, y + 80, 40, 14);
+        sunken_box(x + 84, y + 80, 40, 14);
     else
-        raise_box_col(x + 80, y + 80, 40, 14, 7);
-    text(x + 92, y + 83, "OK", 0);
+        raise_box_col(x + 84, y + 80, 40, 14, 7);
+    text(x + 96, y + 83, "OK", 0);
 }
 
 static void draw_menu(void) {
@@ -1262,8 +1334,9 @@ static void cursor_capture(void) {
         for (int c = 0; c < 12; c++) {
             int px = mouse_x + c;
             int py = mouse_y + r;
-            cursor_bg[r][c] = ((unsigned)px < W && (unsigned)py < H)
-                                  ? fb[py * W + px] : 0;
+            cursor_bg[r][c] = ((unsigned)px < (unsigned)scr_w &&
+                               (unsigned)py < (unsigned)scr_h)
+                                  ? fb[py * scr_w + px] : 0;
         }
     }
     cursor_px = mouse_x;
@@ -1274,16 +1347,16 @@ static void cursor_capture(void) {
 static void cursor_draw_art(void) {
     for (int r = 0; r < 18; r++) {
         int py = mouse_y + r;
-        if ((unsigned)py >= H)
+        if ((unsigned)py >= (unsigned)scr_h)
             continue;
         for (int c = 0; c < 12; c++) {
             int px = mouse_x + c;
-            if ((unsigned)px >= W)
+            if ((unsigned)px >= (unsigned)scr_w)
                 continue;
             char ch = cursor_art[r][c];
             if (ch == '.')
                 continue;
-            fb[py * W + px] = (ch == 'X') ? 0 : 15;
+            fb[py * scr_w + px] = (ch == 'X') ? 0 : 15;
         }
     }
 }
@@ -1293,13 +1366,13 @@ static void cursor_restore(void) {
         return;
     for (int r = 0; r < 18; r++) {
         int py = cursor_py + r;
-        if ((unsigned)py >= H)
+        if ((unsigned)py >= (unsigned)scr_h)
             continue;
         for (int c = 0; c < 12; c++) {
             int px = cursor_px + c;
-            if ((unsigned)px >= W)
+            if ((unsigned)px >= (unsigned)scr_w)
                 continue;
-            fb[py * W + px] = cursor_bg[r][c];
+            fb[py * scr_w + px] = cursor_bg[r][c];
         }
     }
     blit_rect(cursor_px, cursor_py, 12, 18);
@@ -1336,7 +1409,7 @@ static void open_context(int x, int y) {
     ctx_count = ctx_target >= 0 ? 5 : 6;
     ctx_x = x + 2;
     ctx_y = y + 2;
-    if (ctx_x + 128 > W) ctx_x = W - 128;
+    if (ctx_x + 128 > scr_w) ctx_x = scr_w - 128;
     if (ctx_y + ctx_height() > TASKBAR_Y - 2)
         ctx_y = TASKBAR_Y - 2 - ctx_height();
     if (ctx_x < 0) ctx_x = 0;
@@ -1388,8 +1461,17 @@ static void draw_context(void) {
 }
 
 static void canvas_pixel(int x, int y, u8 color) {
-    if (canvas_buf && (unsigned)x < CANVAS_W && (unsigned)y < CANVAS_H)
-        canvas_buf[y * CANVAS_W + x] = color;
+    if (canvas_buf && (unsigned)x < (unsigned)canvas_w &&
+        (unsigned)y < (unsigned)canvas_h)
+        canvas_buf[y * canvas_w + x] = color;
+}
+
+int gui_canvas_w(void) {
+    return canvas_w;
+}
+
+int gui_canvas_h(void) {
+    return canvas_h;
 }
 
 static void canvas_rect(int x, int y, int w, int h, u8 color) {
@@ -1418,8 +1500,12 @@ static void canvas_line(int x0, int y0, int x1, int y1, u8 color) {
 
 void gui_canvas_open(const char *title) {
     extern void *kernel_alloc_pages_zero(u32 pages);
-    if (!canvas_buf)
-        canvas_buf = (u8 *)kernel_alloc_pages_zero(6);
+    if (!canvas_buf) {
+        u32 pages = ((u32)(canvas_w * canvas_h) + 4095u) / 4096u;
+        canvas_buf = (u8 *)kernel_alloc_pages_zero(pages);
+    }
+    wins[WIN_APP].w = canvas_w + 4;
+    wins[WIN_APP].h = canvas_h + 14;
     int i = 0;
     if (title) {
         while (i < 31 && title[i]) {
@@ -1447,7 +1533,7 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
     if (!cmd || !canvas_buf)
         return -1;
     if (cmd->op == 0) {
-        for (int i = 0; i < CANVAS_W * CANVAS_H; i++)
+        for (int i = 0; i < canvas_w * canvas_h; i++)
             canvas_buf[i] = (u8)cmd->color;
     } else if (cmd->op == 1) {
         canvas_pixel((int)cmd->x, (int)cmd->y, (u8)cmd->color);
@@ -1508,8 +1594,10 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
 
 void gui_alloc_fb(void) {
     extern void *kernel_alloc_pages_zero(u32 pages);
-    if (!fb)
-        fb = (u8 *)kernel_alloc_pages_zero((W * H + 4095) / 4096);
+    if (!fb) {
+        u32 pages = ((u32)(scr_w * scr_h) + 4095u) / 4096u;
+        fb = (u8 *)kernel_alloc_pages_zero(pages);
+    }
 }
 
 void gui_redraw(void) {
@@ -1595,6 +1683,10 @@ static int hit_test(int x, int y) {
         if (inside(x, y, 100, TASKBAR_Y, 50, 14)) return HIT_TB_C2;
         if (inside(x, y, 152, TASKBAR_Y, 46, 14)) return HIT_TB_SYS;
         if (inside(x, y, 200, TASKBAR_Y, 56, 14)) return HIT_TB_WIN;
+        if (scr_w >= 640) {
+            if (inside(x, y, 258, TASKBAR_Y, 50, 14)) return HIT_TB_C3;
+            if (inside(x, y, 310, TASKBAR_Y, 58, 14)) return HIT_TB_APP;
+        }
         return HIT_NONE;
     }
 
@@ -1607,7 +1699,7 @@ static int hit_test(int x, int y) {
             return HIT_MIN_BASE + id;
         if (inside(x, y, w->x + w->w - 20, w->y, 20, 12))
             return HIT_CLOSE_BASE + id;
-        if (id == WIN_ABOUT && inside(x, y, w->x + 76, w->y + 77, 48, 19))
+        if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 77, 48, 19))
             return HIT_OK;
         if (inside(x, y, w->x + 1, w->y + 1, w->w - 2, 10))
             return HIT_TITLE_BASE + id;
@@ -1633,7 +1725,7 @@ static void drag_move(int x, int y) {
     int ny = y - drag_dy;
     if (nx < 0) nx = 0;
     if (ny < 0) ny = 0;
-    if (nx > W - w->w) nx = W - w->w;
+    if (nx > scr_w - w->w) nx = scr_w - w->w;
     if (ny > TASKBAR_Y - w->h) ny = TASKBAR_Y - w->h;
     w->x = nx;
     w->y = ny;
@@ -1651,6 +1743,8 @@ static void activate_hit(int hit) {
     }
     if (hit == HIT_TB_C1) { focus_window(WIN_C0); return; }
     if (hit == HIT_TB_C2) { focus_window(WIN_C1); return; }
+    if (hit == HIT_TB_C3) { focus_window(WIN_C2); return; }
+    if (hit == HIT_TB_APP) { focus_window(WIN_APP); return; }
     if (hit == HIT_TB_SYS) { focus_window(WIN_SYS); return; }
     if (hit == HIT_TB_WIN) {
         list_open = !list_open;
@@ -1777,7 +1871,7 @@ void gui_mouse_event(int x, int y, int buttons) {
 
     if (wins[WIN_APP].visible &&
         inside(x, y, wins[WIN_APP].x + 2, wins[WIN_APP].y + 12,
-               CANVAS_W, CANVAS_H)) {
+               canvas_w, canvas_h)) {
         canvas_ev.x = x - (wins[WIN_APP].x + 2);
         canvas_ev.y = y - (wins[WIN_APP].y + 12);
         canvas_ev.buttons = (u32)buttons;
@@ -1868,11 +1962,11 @@ void gui_key(char ch) {
             return;
         }
         if (key == GUI_KEY_PGUP) {
-            term_scroll_by(&consoles[focus_win], TERM_VIS - 1);
+            term_scroll_by(&consoles[focus_win], term_vis - 1);
             return;
         }
         if (key == GUI_KEY_PGDN) {
-            term_scroll_by(&consoles[focus_win], -(TERM_VIS - 1));
+            term_scroll_by(&consoles[focus_win], -(term_vis - 1));
             return;
         }
         term_key(&consoles[focus_win], ch);

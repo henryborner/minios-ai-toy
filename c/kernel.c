@@ -12,6 +12,12 @@ typedef unsigned int   u32;
 
 char cpu[13];
 volatile u32 ticks;
+int scr_w = 320;
+int scr_h = 200;
+u8 vbe_active = 0;
+volatile u8 *vbe_lfb = 0;
+u32 vbe_pitch = 320;
+u32 vbe_phys_base = 0x000A0000u;
 volatile int mouse_x = 160;
 volatile int mouse_y = 100;
 volatile int mouse_buttons = 0;
@@ -328,9 +334,9 @@ void irq12_handler(void) {
         int nx = mouse_x + dx;
         int ny = mouse_y - dy;
         if (nx < 0) nx = 0;
-        if (nx >= 320) nx = 319;
+        if (nx >= scr_w) nx = scr_w - 1;
         if (ny < 0) ny = 0;
-        if (ny >= 200) ny = 199;
+        if (ny >= scr_h) ny = scr_h - 1;
         mouse_x = nx;
         mouse_y = ny;
         mouse_buttons = mouse_packet[0] & 7;
@@ -524,6 +530,21 @@ static struct gdt_entry gdt[6];
 static struct gdt_ptr_t gdtp;
 static struct tss_entry tss;
 static u8 tss_loaded;
+static u8 gdt_ready;
+
+#define VBE_VIRT_BASE 0xE0000000u
+#define VBE_PDE_INDEX (VBE_VIRT_BASE >> 22)
+static u32 vbe_pde_entry;
+
+struct vbe_boot_info {
+    u8  magic[4];
+    u16 width;
+    u16 height;
+    u16 pitch;
+    u8  bpp;
+    u8  active;
+    u32 phys_base;
+} __attribute__((packed));
 
 static void gdt_set(int n, u32 base, u32 limit, u8 access, u8 gran) {
     gdt[n].limit_lo = (u16)(limit & 0xFFFF);
@@ -535,6 +556,8 @@ static void gdt_set(int n, u32 base, u32 limit, u8 access, u8 gran) {
 }
 
 static void gdt_install(void) {
+    if (gdt_ready)
+        return;
     for (int i = 0; i < 6; i++) {
         gdt[i].limit_lo = 0;
         gdt[i].base_lo = 0;
@@ -558,13 +581,25 @@ static void gdt_install(void) {
 
     gdtp.limit = (u16)(sizeof(gdt) - 1);
     gdtp.base = (u32)&gdt;
-    __asm__ __volatile__("lgdt %0" : : "m"(gdtp));
+    __asm__ __volatile__(
+        "lgdt %0\n\t"
+        "movw $0x10, %%ax\n\t"
+        "movw %%ax, %%ds\n\t"
+        "movw %%ax, %%es\n\t"
+        "movw %%ax, %%fs\n\t"
+        "movw %%ax, %%gs\n\t"
+        "movw %%ax, %%ss\n\t"
+        "ljmp $0x08, $1f\n\t"
+        "1:\n\t"
+        : : "m"(gdtp) : "eax", "memory"
+    );
 
     if (!tss_loaded) {
         u16 tr = 0x28;
         __asm__ __volatile__("ltr %0" : : "rm"(tr));
         tss_loaded = 1;
     }
+    gdt_ready = 1;
 }
 
 /* -----------------------------------------------------------------------------
@@ -573,6 +608,7 @@ static void gdt_install(void) {
 static u32 page_directory[1024] __attribute__((aligned(4096)));
 static u32 page_table0[1024] __attribute__((aligned(4096)));
 static u32 page_table1[1024] __attribute__((aligned(4096)));
+static u32 direct_pt[3][1024] __attribute__((aligned(4096)));
 
 static void paging_install(void) {
     for (int i = 0; i < 1024; i++) {
@@ -583,6 +619,10 @@ static void paging_install(void) {
 
     page_directory[0] = (u32)page_table0 | 0x003;   /* supervisor 0-4 MB */
     page_directory[1] = (u32)page_table1 | 0x007;   /* user-capable 4-8 MB */
+    for (int i = 0; i < 3; i++)
+        page_directory[4 + i] = (u32)direct_pt[i] | 0x003;
+    if (vbe_active)
+        page_directory[VBE_PDE_INDEX] = vbe_pde_entry;
 
     for (int i = 0; i < 1024; i++) {
         page_table0[i] = (u32)(i * 0x1000) | 0x003;
@@ -1091,8 +1131,7 @@ static u32 task_user_pt[NTASKS][1024] __attribute__((aligned(4096)));
 static u8 task_kstack[NTASKS][4096] __attribute__((aligned(16)));
 static u8 big_kstack[8192] __attribute__((aligned(16)));
 
-/* Direct-map the 4-16 MB physical window at 16-28 MB. */
-static u32 direct_pt[3][1024] __attribute__((aligned(4096)));
+/* Direct-map the 4-16 MB physical window at 16-28 MB (declared above). */
 static u32 frame_bitmap[(FRAME_COUNT + 31) / 32];
 static u8 frames_ready;
 
@@ -1196,6 +1235,8 @@ static void task_system_init(void) {
             sched_safe_pd[4 + i] = (u32)direct_pt[i] | 0x003;
         sched_safe_ready = 1;
     }
+    if (vbe_active)
+        sched_safe_pd[VBE_PDE_INDEX] = vbe_pde_entry;
     set_cr3((u32)sched_safe_pd);
 
     for (int i = 0; i < 1024; i++)
@@ -1258,6 +1299,48 @@ static void task_fill_pd(int slot) {
     task_pd[slot][1] = (u32)task_user_pt[slot] | 0x007;
     for (int i = 0; i < 3; i++)
         task_pd[slot][4 + i] = (u32)direct_pt[i] | 0x003;
+    if (vbe_active)
+        task_pd[slot][VBE_PDE_INDEX] = vbe_pde_entry;
+}
+
+static void vbe_init(void) {
+    const volatile struct vbe_boot_info *vi =
+        (const volatile struct vbe_boot_info *)0x00000500u;
+    vbe_active = 0;
+    vbe_lfb = 0;
+    vbe_pitch = 320;
+    vbe_phys_base = 0x000A0000u;
+    vbe_pde_entry = 0;
+    scr_w = 320;
+    scr_h = 200;
+
+    if (vi->magic[0] == 'V' && vi->magic[1] == 'B' &&
+        vi->magic[2] == 'E' && vi->magic[3] == '1' &&
+        vi->width == 640 && vi->height == 480 &&
+        vi->bpp == 8 && vi->phys_base >= 0x00100000u) {
+        u32 map_base = vi->phys_base & 0xFFC00000u;
+        u32 map_off = vi->phys_base - map_base;
+        u32 pitch = vi->pitch ? (u32)vi->pitch : (u32)vi->width;
+        if (map_off + pitch * (u32)vi->height <= 0x00400000u) {
+            u32 cr4;
+            __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4));
+            cr4 |= 0x00000010u; /* CR4.PSE for 4 MB supervisor LFB page */
+            __asm__ __volatile__("mov %0, %%cr4" : : "r"(cr4));
+
+            vbe_pde_entry = map_base | 0x09Bu; /* Present|RW|PWT|PCD|PS */
+            sched_safe_pd[VBE_PDE_INDEX] = vbe_pde_entry;
+            set_cr3((u32)sched_safe_pd);
+
+            vbe_active = 1;
+            vbe_lfb = (volatile u8 *)(VBE_VIRT_BASE + map_off);
+            vbe_pitch = pitch;
+            vbe_phys_base = vi->phys_base;
+            scr_w = (int)vi->width;
+            scr_h = (int)vi->height;
+        }
+    }
+    mouse_x = scr_w / 2;
+    mouse_y = scr_h / 2;
 }
 
 static void task_set_name(int slot, const char *name) {
@@ -1863,9 +1946,9 @@ static int build_args_on_stack(int slot, u32 argc, const char *const *argv,
         if (!s)
             return 0;
         int len = 0;
-        while (len < 64 && s[len])
+        while (len < 128 && s[len])
             len++;
-        if (len == 64)
+        if (len == 128)
             return 0;
         sp -= (u32)len + 1;
         if (sp < stack_base + 64)
@@ -1900,6 +1983,8 @@ struct warm_module {
 };
 static struct warm_module warm_modules[WARM_CACHE_SLOTS];
 volatile u32 user_module_last_ticks;
+volatile u32 user_module_cold_ticks;
+volatile u32 user_module_warm_ticks;
 volatile u32 user_module_last_size;
 volatile u8 user_module_cache_hit;
 
@@ -2015,7 +2100,12 @@ static int run_user_module_ex(const char *name, int argc,
         __asm__ __volatile__("sti");
         return 0;
     }
-    user_module_last_ticks = ticks - start_ticks;
+    u32 elapsed = ticks - start_ticks;
+    user_module_last_ticks = elapsed;
+    if (cache_hit)
+        user_module_warm_ticks = elapsed;
+    else
+        user_module_cold_ticks = elapsed;
     user_module_last_size = size;
     user_module_cache_hit = (u8)cache_hit;
     start_tasks(slot);
@@ -2861,6 +2951,15 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             } else {
                 ((u32 *)frame)[7] = 0xFFFFFFFFu;
             }
+        } else if (op == 2) {
+            ((u32 *)frame)[7] = ((u32)gui_canvas_w() << 16) | (u32)gui_canvas_h();
+        } else if (op == 3) {
+            ((u32 *)frame)[7] = ((u32)scr_w << 16) | (u32)scr_h;
+        } else if (op == 4) {
+            ((u32 *)frame)[7] = vbe_phys_base;
+        } else if (op == 5) {
+            ((u32 *)frame)[7] = (user_module_cold_ticks << 16) |
+                                (user_module_warm_ticks & 0xFFFFu);
         } else {
             ((u32 *)frame)[7] = 0xFFFFFFFFu;
         }
@@ -2970,15 +3069,18 @@ static void cpu_vendor(void) {
  * Entry
  * ----------------------------------------------------------------------------- */
 void kmain(void) {
+    gdt_install();
     cpu_vendor();
     serial_init();
+    task_system_init();
+    vbe_init();
+    gui_alloc_fb();
     gui_init();
     interrupts_setup();
+    idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
     mouse_init();
 
     interrupts_on();
-    task_system_init();
-    gui_alloc_fb();
     savefs_restore();
     gui_redraw();
 
