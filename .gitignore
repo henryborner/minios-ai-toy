@@ -1,5 +1,6 @@
 # Build outputs
 /build/
+/c/build/
 /kernel
 *.lst
 *.ppm
@@ -10,3 +11,4 @@
 # Scratch files
 /screenshots/*.bin
 *.log
+

@@ -1,4 +1,6 @@
 * text=auto
+*.c text
+*.ld text
 *.asm text
 *.inc text
 *.py text
@@ -7,3 +9,4 @@
 checksums.txt text
 *.img binary
 *.png binary
+

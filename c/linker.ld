@@ -1,0 +1,30 @@
+OUTPUT_FORMAT(elf32-i386)
+ENTRY(_start)
+
+SECTIONS
+{
+    . = 0x10000;
+
+    .text : {
+        *(.text)
+        *(.text.*)
+    }
+
+    .rodata : {
+        *(.rodata)
+        *(.rodata.*)
+    }
+
+    .data : {
+        *(.data)
+        *(.data.*)
+    }
+
+    __bss_start = .;
+    .bss : {
+        *(.bss)
+        *(.bss.*)
+        *(COMMON)
+    }
+    __bss_end = .;
+}
