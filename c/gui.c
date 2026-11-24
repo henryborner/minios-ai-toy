@@ -6,6 +6,19 @@
 
 #define CON_W 296
 #define CON_H 144
+#define TERM_ROWS 96
+#define TERM_COLS 40
+#define TERM_VIS 14
+#define TERM_WIDTH 35
+#define GUI_KEY_PGUP 0xFE
+#define GUI_KEY_PGDN 0xFF
+#define GUI_KEY_UP 0xF7
+#define GUI_KEY_DOWN 0xF8
+#define GUI_KEY_LEFT 0xF9
+#define GUI_KEY_RIGHT 0xFA
+#define GUI_KEY_HOME 0xFB
+#define GUI_KEY_END 0xFC
+#define GUI_KEY_DEL 0xFD
 #define SYS_W 224
 #define SYS_H 96
 #define ABOUT_W 200
@@ -46,9 +59,11 @@
 
 struct console {
     int x, y, w, h;
-    char term[14][40];
+    char term[TERM_ROWS][TERM_COLS];
     int n;
     int cur;
+    int col;
+    int scroll;
     u8 esc;
 };
 
@@ -378,37 +393,66 @@ static void init_windows(void) {
  * ----------------------------------------------------------------------------- */
 static int line_len(struct console *c, int index) {
     int n = 0;
-    while (n < 39 && c->term[index][n])
+    while (n < TERM_COLS - 1 && c->term[index][n])
         n++;
     return n;
 }
 
 static void term_clear(struct console *c) {
-    for (int r = 0; r < 14; r++)
-        for (int col = 0; col < 40; col++)
+    for (int r = 0; r < TERM_ROWS; r++)
+        for (int col = 0; col < TERM_COLS; col++)
             c->term[r][col] = 0;
     c->n = 1;
     c->cur = 0;
+    c->col = 0;
+    c->scroll = 0;
     c->esc = 0;
 }
 
 static void term_newline(struct console *c) {
-    if (c->n < 14) {
-        for (int col = 0; col < 40; col++)
+    c->scroll = 0;
+    if (c->n < TERM_ROWS) {
+        for (int col = 0; col < TERM_COLS; col++)
             c->term[c->n][col] = 0;
         c->cur = c->n;
         c->n++;
     } else {
-        for (int r = 1; r < 14; r++)
-            for (int col = 0; col < 40; col++)
+        for (int r = 1; r < TERM_ROWS; r++)
+            for (int col = 0; col < TERM_COLS; col++)
                 c->term[r - 1][col] = c->term[r][col];
-        for (int col = 0; col < 40; col++)
-            c->term[13][col] = 0;
-        c->cur = 13;
+        for (int col = 0; col < TERM_COLS; col++)
+            c->term[TERM_ROWS - 1][col] = 0;
+        c->cur = TERM_ROWS - 1;
     }
+    c->col = 0;
 }
 
-static void term_putc(struct console *c, char ch) {
+static void term_scroll_by(struct console *c, int delta) {
+    int max = c->n > TERM_VIS ? c->n - TERM_VIS : 0;
+    c->scroll += delta;
+    if (c->scroll < 0)
+        c->scroll = 0;
+    if (c->scroll > max)
+        c->scroll = max;
+}
+
+static int term_ansi_final(struct console *c, char ch) {
+    if (ch == 'D') {
+        if (c->col > 0)
+            c->col--;
+    } else if (ch == 'C') {
+        if (c->col < TERM_WIDTH - 1)
+            c->col++;
+    } else if (ch == 'H') {
+        c->col = 0;
+    } else if (ch == 'K') {
+        for (int i = c->col; i < TERM_COLS; i++)
+            c->term[c->cur][i] = 0;
+    }
+    return 1;
+}
+
+static void term_putc_mode(struct console *c, char ch, int insert) {
     if (c->esc) {
         if (c->esc == 1) {
             if (ch == '[')
@@ -416,9 +460,10 @@ static void term_putc(struct console *c, char ch) {
             else
                 c->esc = 0;
         } else {
-            if ((ch >= '0' && ch <= '9') || ch == ';')
+            if ((ch >= '0' && ch <= '9') || ch == ';' || ch == '?')
                 return;
             c->esc = 0;
+            term_ansi_final(c, ch);
         }
         return;
     }
@@ -426,32 +471,54 @@ static void term_putc(struct console *c, char ch) {
         c->esc = 1;
         return;
     }
-    if (ch == '\r')
+    if (ch == '\r') {
+        c->col = 0;
+        c->scroll = 0;
         return;
+    }
     if (ch == '\n') {
         term_newline(c);
         return;
     }
     if (ch == '\b') {
         int len = line_len(c, c->cur);
-        if (len > 0)
-            c->term[c->cur][len - 1] = 0;
+        if (c->col > 0) {
+            for (int i = c->col - 1; i < len - 1; i++)
+                c->term[c->cur][i] = c->term[c->cur][i + 1];
+            c->term[c->cur][len > 0 ? len - 1 : 0] = 0;
+            c->col--;
+        }
+        c->scroll = 0;
         return;
     }
     if (ch == '\t') {
-        int len = line_len(c, c->cur);
-        int spaces = 4 - (len & 3);
+        int spaces = 4 - (c->col & 3);
         while (spaces-- > 0)
-            term_putc(c, ' ');
+            term_putc_mode(c, ' ', insert);
         return;
     }
-    int len = line_len(c, c->cur);
-    if (len >= 35) {
+    if (ch < 32)
+        return;
+    if (c->col >= TERM_WIDTH)
         term_newline(c);
-        len = 0;
+    int len = line_len(c, c->cur);
+    if (insert && c->col < len && len < TERM_COLS - 2) {
+        for (int i = len; i > c->col; i--)
+            c->term[c->cur][i] = c->term[c->cur][i - 1];
+        c->term[c->cur][len + 1] = 0;
+    } else if (c->col > len) {
+        for (int i = len; i < c->col; i++)
+            c->term[c->cur][i] = ' ';
     }
-    c->term[c->cur][len] = ch;
-    c->term[c->cur][len + 1] = 0;
+    c->term[c->cur][c->col] = ch;
+    c->col++;
+    if (c->col >= len)
+        c->term[c->cur][c->col] = 0;
+    c->scroll = 0;
+}
+
+static void term_putc(struct console *c, char ch) {
+    term_putc_mode(c, ch, 0);
 }
 
 static void term_puts(struct console *c, const char *s) {
@@ -772,7 +839,8 @@ static void run_command(struct console *c, char *line) {
 }
 
 static void term_key(struct console *c, char ch) {
-    if (ch == '\n') {
+    u8 key = (u8)ch;
+    if (key == '\n') {
         char *line = c->term[c->cur];
         char command[40];
         int i = 0;
@@ -787,15 +855,47 @@ static void term_key(struct console *c, char ch) {
         term_prompt(c);
         return;
     }
-    if (ch == '\b') {
+    if (key == '\b') {
         int len = line_len(c, c->cur);
-        if (len > 5)
+        if (c->col > 5) {
+            for (int i = c->col - 1; i < len - 1; i++)
+                c->term[c->cur][i] = c->term[c->cur][i + 1];
             c->term[c->cur][len - 1] = 0;
+            c->col--;
+        }
+        return;
+    }
+    if (key == GUI_KEY_LEFT) {
+        if (c->col > 5)
+            c->col--;
+        return;
+    }
+    if (key == GUI_KEY_RIGHT) {
+        if (c->col < line_len(c, c->cur))
+            c->col++;
+        return;
+    }
+    if (key == GUI_KEY_HOME) {
+        c->col = 5;
+        return;
+    }
+    if (key == GUI_KEY_END) {
+        c->col = line_len(c, c->cur);
+        return;
+    }
+    if (key == GUI_KEY_DEL) {
+        int len = line_len(c, c->cur);
+        if (c->col < len) {
+            for (int i = c->col; i < len - 1; i++)
+                c->term[c->cur][i] = c->term[c->cur][i + 1];
+            c->term[c->cur][len - 1] = 0;
+        }
         return;
     }
     if (ch >= 32 && ch < 127) {
-        if (line_len(c, c->cur) < 35)
-            term_putc(c, ch);
+        if (c->col < 5)
+            c->col = 5;
+        term_putc_mode(c, ch, 1);
     }
 }
 
@@ -862,11 +962,28 @@ static void window_frame(int id) {
 static void draw_console(int id) {
     struct console *c = &consoles[id];
     window_frame(id);
-    for (int r = 0; r < 14; r++)
-        text(c->x + 4, c->y + 14 + r * 9, c->term[r], 0);
-    if (focus_win == id && ((ticks / 50) & 1)) {
-        int len = line_len(c, c->cur);
-        fill_rect(c->x + 4 + len * 8, c->y + 14 + c->cur * 9, 1, 8, 0);
+    int start = c->n > TERM_VIS ? c->n - TERM_VIS - c->scroll : 0;
+    for (int r = 0; r < TERM_VIS; r++) {
+        int idx = start + r;
+        if (idx >= 0 && idx < c->n)
+            text(c->x + 4, c->y + 14 + r * 9, c->term[idx], 0);
+    }
+    if (c->n > TERM_VIS) {
+        int bx = c->x + c->w - 5;
+        int by = c->y + 14;
+        int bh = TERM_VIS * 9 - 4;
+        fill_rect(bx, by, 2, bh, 8);
+        int max = c->n - TERM_VIS;
+        int thumb = bh * TERM_VIS / c->n;
+        if (thumb < 6) thumb = 6;
+        int travel = bh - thumb;
+        int pos = max > 0 ? travel * (max - c->scroll) / max : 0;
+        fill_rect(bx, by + pos, 2, thumb, 11);
+    }
+    if (focus_win == id && c->scroll == 0 && ((ticks / 50) & 1)) {
+        int row = c->cur - start;
+        if (row >= 0 && row < TERM_VIS)
+            fill_rect(c->x + 4 + c->col * 8, c->y + 14 + row * 9, 1, 8, 0);
     }
 }
 
@@ -1275,6 +1392,7 @@ void gui_mouse_event(int x, int y, int buttons) {
  * Keyboard
  * ----------------------------------------------------------------------------- */
 void gui_key(char ch) {
+    u8 key = (u8)ch;
     if (list_open) {
         if (ch == 27) {
             list_open = 0;
@@ -1312,6 +1430,14 @@ void gui_key(char ch) {
         if (ch == '\t') {
             list_open = 1;
             list_sel = focus_win;
+            return;
+        }
+        if (key == GUI_KEY_PGUP) {
+            term_scroll_by(&consoles[focus_win], 1);
+            return;
+        }
+        if (key == GUI_KEY_PGDN) {
+            term_scroll_by(&consoles[focus_win], -1);
             return;
         }
         term_key(&consoles[focus_win], ch);
@@ -1398,3 +1524,5 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
+

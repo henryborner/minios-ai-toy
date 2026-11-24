@@ -124,16 +124,16 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 4：VFS 叠层文件读写、`import` 打通与终端体验升级
 **目标**：让 Python 自由读写文件、`import` 脚本模块，并给终端加上历史回滚（Scrollback）与真实行内编辑游标。
 
-- [ ] **4.1 实现 Python 内置 `open()` 与 `os` 模块**（`c/mpy_port/`）
+- [x] **4.1 实现 Python 内置 `open()` 与 `os` 模块**（`c/mpy_port/`）
   - 基于 `syscalls 13–18` 与 `21–22` 实现完整文件流对象 `open(path, mode)`（支持 `"r"`、`"rb"`、`"w"`、`"wb"`、`"a"` 及 `with` 语句块）并绑定 `mp_builtin_open_obj`。
   - 实现 `os` 模块：`os.listdir()`、`os.stat(name)`、`os.remove(name)` / `os.unlink(name)`。
-- [ ] **4.2 打通 `import` 搜索链与 `py SCRIPT.PY` 直接执行**
+- [x] **4.2 打通 `import` 搜索链与 `py SCRIPT.PY` 直接执行**
   - 实现 `mp_import_stat()`（走 `syscall 21`）与 `mp_lexer_new_from_file()`：导入 `foo` 时自动匹配 `FOO.PY`（大小写不敏感，且 RAMFS 优先于 MiniFS，支持用户动态覆盖内置脚本）。
   - 支持 `py FILE.PY [arg1 arg2 ...]` 直接执行脚本并填充 `sys.argv`。
-- [ ] **4.3 终端 96 行回滚缓冲（Scrollback）与真实行内列游标**（`c/gui.c`、`c/kernel.c`）
+- [x] **4.3 终端 96 行回滚缓冲（Scrollback）与真实行内列游标**（`c/gui.c`、`c/kernel.c`）
   - 将每个 Console 的缓冲扩展为环形历史缓冲（如 96 行），键盘驱动识别 `PgUp` (`0xE0 0x49`) / `PgDn` (`0xE0 0x51`) 上下翻阅历史输出（新按键/新输出自动回到底部），并在窗口右侧绘制简洁滚动位置指示条。
   - 为 Console 增加当前行独立游标列 `cursor_col`，完整支持 `\r`（回行首）、`\b`（游标左移）、`ESC [ D`（左移）、`ESC [ C`（右移）、`ESC [ H`（行首）、`ESC [ K`（清除游标至行尾），使 REPL 左右方向键在行中间插字/删字完全准确。
-- [ ] **Stage 4 验收**：串口上传多函数脚本 `TOOL.PY`，验证 `py TOOL.PY`、`import tool`、`with open("OUT.TXT", "w") as f:` 读写闭环；触发长 Traceback 后用 `PgUp` 翻回顶部报错截图，并测试 REPL 左右键行中改字。
+- [x] **Stage 4 验收**：实测 `open('T.TXT','w')` 写读、`with open('OUT.TXT','w')`、`os.listdir/stat`、`py TOOL.PY`、`import TOOL`；96 行 scrollback + PgUp/PgDn + 滚动条、shell/REPL 行中插入、ZeroDivisionError Traceback 回滚均通过。Python REPL 与 Shell 截图见 `screenshots/c-stage4-*.png`。
 
 ---
 

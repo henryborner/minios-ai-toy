@@ -212,6 +212,8 @@ static void kbd_push(u8 ch) {
 #define KEY_HOME  0xFB
 #define KEY_END   0xFC
 #define KEY_DEL   0xFD
+#define KEY_PGUP  0xFE
+#define KEY_PGDN  0xFF
 
 static char shift_char(char ch) {
     switch (ch) {
@@ -245,6 +247,8 @@ static void keyboard_scancode(u8 sc) {
         else if (sc == 0x47) kbd_push(KEY_HOME);
         else if (sc == 0x4F) kbd_push(KEY_END);
         else if (sc == 0x53) kbd_push(KEY_DEL);
+        else if (sc == 0x49) kbd_push(KEY_PGUP);
+        else if (sc == 0x51) kbd_push(KEY_PGDN);
         return;
     }
     if (sc & 0x80) {
@@ -885,6 +889,8 @@ static int module_getchar(void) {
             u8 ch = kbd_buf[cid][kbd_tail[cid]];
             kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
             if (ch >= 0xF1 && ch <= 0xF6)
+                continue;
+            if (ch == KEY_PGUP || ch == KEY_PGDN)
                 continue;
 
             seq_len = 0;
