@@ -279,9 +279,12 @@ static void idt_set(int n, u32 handler) {
     idt_set_flags(n, handler, 0x8E);
 }
 
-void irq0_handler(void) {
+static void sched_timer_tick(u32 *frame);
+
+void irq0_handler(u32 *frame) {
     ticks++;
     outb(0x20, 0x20);
+    sched_timer_tick(frame);
 }
 
 static void pic_remap(void) {
@@ -457,6 +460,7 @@ static void paging_install(void) {
 #define TASK_A_STACK 0x00301000u
 #define TASK_B_CODE  0x00302000u
 #define TASK_B_STACK 0x00303000u
+#define TIME_SLICE_TICKS 1
 
 struct task {
     u32 esp;
@@ -468,6 +472,7 @@ struct task {
 static struct task tasks[NTASKS];
 static int current_task;
 static volatile u8 scheduler_active;
+static u32 quantum_ticks;
 
 static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
 static u32 task_pd[NTASKS][1024] __attribute__((aligned(4096)));
@@ -553,7 +558,7 @@ static void task_setup(void) {
 }
 
 static int next_ready(void) {
-    for (int k = 1; k <= NTASKS; k++) {
+    for (int k = 1; k < NTASKS; k++) {
         int t = (current_task + k) % NTASKS;
         if (tasks[t].state == TASK_READY)
             return t;
@@ -564,14 +569,38 @@ static int next_ready(void) {
 static void switch_task(int next) {
     current_task = next;
     tasks[next].state = TASK_RUNNING;
+    quantum_ticks = 0;
     tss.esp0 = tasks[next].kstack_top;
     set_cr3(tasks[next].cr3);
     switch_to(tasks[next].esp);
     for (;;) {}
 }
 
+static void sched_timer_tick(u32 *frame) {
+    if (!scheduler_active)
+        return;
+
+    /* Only preempt a real user context, never the kernel itself. */
+    if ((frame[9] & 3) != 3)
+        return;
+
+    quantum_ticks++;
+    if (quantum_ticks < TIME_SLICE_TICKS)
+        return;
+    quantum_ticks = 0;
+
+    tasks[current_task].esp = (u32)frame;
+    tasks[current_task].state = TASK_READY;
+    int next = next_ready();
+    if (next < 0) {
+        tasks[current_task].state = TASK_RUNNING;
+        return;
+    }
+    switch_task(next);
+}
+
 static void task_yield(u32 frame) {
-    tasks[current_task].esp = frame;
+    tasks[current_task].esp = (u32)frame;
     tasks[current_task].state = TASK_READY;
     int next = next_ready();
     if (next < 0) {
@@ -711,3 +740,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
+
+

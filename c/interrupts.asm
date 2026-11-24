@@ -14,7 +14,10 @@
 irq0_stub:
         pusha
         cld
+        mov     edx, esp            ; pointer to EIP/CS/EFLAGS/ESP/SS frame
+        push    edx
         call    irq0_handler
+        add     esp, 4
         popa
         iretd
 
