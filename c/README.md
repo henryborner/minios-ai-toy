@@ -64,6 +64,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Stage 6 Canvas/minios**: 256-color palette, draggable 180×120 Canvas
   window, Python `minios.Canvas` with clear/pixel/rect/line/text/event,
   `minios.sysinfo()` and PC-speaker beep; syscalls 24–28.
+- **Stage 7 tools (partial)**: `calc`, `top`, `demos`, `xxd`, `edit`, `futil`
+  Python tools in MiniFS with native Shell shortcuts. Frozen-bytecode
+  integration with `mpy-cross` is not done yet.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -174,6 +177,10 @@ Screenshots:
 - [`../screenshots/c-stage6-canvas3.png`](../screenshots/c-stage6-canvas3.png)
 - [`../screenshots/c-stage6-event2.png`](../screenshots/c-stage6-event2.png)
 - [`../screenshots/c-stage6-sysinfo.png`](../screenshots/c-stage6-sysinfo.png)
+- [`../screenshots/c-stage7-calc.png`](../screenshots/c-stage7-calc.png)
+- [`../screenshots/c-stage7-top2.png`](../screenshots/c-stage7-top2.png)
+- [`../screenshots/c-stage7-xxd2.png`](../screenshots/c-stage7-xxd2.png)
+- [`../screenshots/c-stage7-demos2.png`](../screenshots/c-stage7-demos2.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -370,6 +377,17 @@ print(c.event())               # (x, y, buttons, closed) or None
 print(minios.sysinfo())
 ```
 
+Tools:
+
+```text
+calc 2**10        # eval expression
+top               # sysinfo
+demos             # Canvas drawing demo
+xxd TEST.TXT      # hex/ASCII dump
+edit NOTES.TXT    # line editor to RAMFS
+futil             # list/stat files
+```
+
 ## Window manager
 
 - 3 console windows, Console 1 visible at boot; `F5`/`F6`, Start menu, taskbar,
@@ -398,7 +416,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~44.0 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~45.1 KB (64 KB loader limit)
 - `c/build/mpy.bin` — **183,488 bytes** (179.2 KB, image+BSS 184,048 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo

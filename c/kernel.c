@@ -706,7 +706,7 @@ void list_programs(void) {
  * Runtime MiniFS at LBA 200: header, directory, file data.
  * ----------------------------------------------------------------------------- */
 #define FS_LBA 200u
-#define FS_MAX_ENTRIES 32
+#define FS_MAX_ENTRIES 64
 #define FS_MAX_FILE 4096
 
 struct fs_header {
@@ -721,7 +721,7 @@ struct fs_entry {
     u32 size;
 } __attribute__((packed));
 
-static u8 fs_dir[512];
+static u8 fs_dir[2048];
 static u8 fs_sector[512];
 static u8 fs_program[FS_MAX_FILE];
 
@@ -748,6 +748,15 @@ static int fs_load_dir(void) {
         return 0;
     if (h->count == 0 || h->count > FS_MAX_ENTRIES)
         return 0;
+    u32 dir_sectors = (sizeof(*h) + (u32)h->count * sizeof(struct fs_entry) + 511) / 512;
+    if (dir_sectors > 4)
+        return 0;
+    for (u32 s = 1; s < dir_sectors; s++) {
+        if (!fdc_read_sector(FS_LBA + s, fs_sector))
+            return 0;
+        for (int i = 0; i < 512; i++)
+            fs_dir[s * 512 + i] = fs_sector[i];
+    }
     return 1;
 }
 

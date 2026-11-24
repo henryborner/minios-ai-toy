@@ -725,6 +725,22 @@ static void launch_python(struct console *c, const char *rest) {
         term_puts(c, "Python launch failed.\n");
 }
 
+static void launch_tool(struct console *c, const char *file, const char *arg) {
+    char line[80];
+    int n = 0;
+    while (file[n] && n < 70) {
+        line[n] = file[n];
+        n++;
+    }
+    if (arg && *arg) {
+        line[n++] = ' ';
+        while (*arg && n < 78)
+            line[n++] = *arg++;
+    }
+    line[n] = 0;
+    launch_python(c, line);
+}
+
 static void run_python_expr(struct console *c, const char *rest) {
     extern int run_user_module_args(const char *name, int argc,
                                     const char *const *argv);
@@ -772,7 +788,12 @@ static void run_command(struct console *c, char *line) {
          streq(line, "py") || streq(line, "python") ||
          streq(line, "modtest") || streq(line, "uargs") ||
          streq(line, "big512") || streq(line, "serial") ||
-         streq(line, "sync") || streq(line, "reboot") ||
+         streq(line, "calc") || streq(line, "top") ||
+         streq(line, "demos") || streq(line, "futil") ||
+         streq(line, "xxd") || streq(line, "edit") ||
+         starts_with(line, "calc ") || starts_with(line, "xxd ") ||
+         starts_with(line, "edit ") || streq(line, "sync") ||
+         streq(line, "reboot") ||
          streq(line, "halt") ||
          starts_with(line, "py ") || starts_with(line, "python ") ||
          starts_with(line, "exec ") || starts_with(line, "run ") ||
@@ -787,7 +808,8 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "help ver cpu mem time date ps kill\n");
         term_puts(c, "py python clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
-        term_puts(c, "py pystat = EXPR ps kill PID\n");
+        term_puts(c, "py pystat = EXPR calc top demos\n");
+        term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
         term_puts(c, "modtest mod NAME utest reboot halt\n");
@@ -913,6 +935,20 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Loading kernel module from MiniFS...\n");
         gui_redraw();
         run_module(line + 4);
+    } else if (streq(line, "calc")) {
+        launch_tool(c, "CALC.PY", "");
+    } else if (starts_with(line, "calc ")) {
+        launch_tool(c, "CALC.PY", line + 5);
+    } else if (streq(line, "top")) {
+        launch_tool(c, "TOP.PY", "");
+    } else if (streq(line, "demos")) {
+        launch_tool(c, "DEMOS.PY", "");
+    } else if (streq(line, "futil")) {
+        launch_tool(c, "FUTIL.PY", "");
+    } else if (starts_with(line, "xxd ")) {
+        launch_tool(c, "XXD.PY", line + 4);
+    } else if (starts_with(line, "edit ")) {
+        launch_tool(c, "ED.PY", line + 5);
     } else if (*line == '=') {
         run_python_expr(c, line + 1);
     } else if (streq(line, "pystat")) {
