@@ -58,6 +58,8 @@
 #define HIT_MAX_BASE 900
 #define HIT_CTX_BASE 1000
 #define HIT_RESIZE_BASE 1500
+#define CANVAS_MAX_W 600
+#define CANVAS_MAX_H 420
 
 struct console {
     int x, y, w, h;
@@ -142,6 +144,7 @@ static const char cursor_art[18][13] = {
 static u8 cursor_bg[18][12];
 static int cursor_px = -1, cursor_py = -1;
 static u8 cursor_bg_valid;
+static int cursor_shape;
 
 static inline u8 inb(u16 port) {
     u8 value;
@@ -694,6 +697,7 @@ static void term_puts(struct console *c, const char *s) {
 }
 
 static int streq(const char *a, const char *b);
+static int hit_test(int x, int y);
 
 static void term_prompt(struct console *c) {
     c->cmd_start = c->cur;
@@ -1421,7 +1425,7 @@ static void draw_canvas(void) {
         for (int x = 0; x < canvas_w; x++) {
             int px = cx + x;
             if ((unsigned)px < (unsigned)scr_w)
-                fb[py * scr_w + px] = canvas_buf[y * canvas_w + x];
+                fb[py * scr_w + px] = canvas_buf[y * CANVAS_MAX_W + x];
         }
     }
 }
@@ -1512,19 +1516,54 @@ static void cursor_capture(void) {
     cursor_bg_valid = 1;
 }
 
+static void cursor_set(int r, int c, u8 col) {
+    int px = mouse_x + c;
+    int py = mouse_y + r;
+    if ((unsigned)px < (unsigned)scr_w && (unsigned)py < (unsigned)scr_h)
+        fb[py * scr_w + px] = col;
+}
+
 static void cursor_draw_art(void) {
-    for (int r = 0; r < 18; r++) {
-        int py = mouse_y + r;
-        if ((unsigned)py >= (unsigned)scr_h)
-            continue;
-        for (int c = 0; c < 12; c++) {
-            int px = mouse_x + c;
-            if ((unsigned)px >= (unsigned)scr_w)
+    if (cursor_shape == 0) {
+        for (int r = 0; r < 18; r++) {
+            int py = mouse_y + r;
+            if ((unsigned)py >= (unsigned)scr_h)
                 continue;
-            char ch = cursor_art[r][c];
-            if (ch == '.')
-                continue;
-            fb[py * scr_w + px] = (ch == 'X') ? 0 : 15;
+            for (int c = 0; c < 12; c++) {
+                int px = mouse_x + c;
+                if ((unsigned)px >= (unsigned)scr_w)
+                    continue;
+                char ch = cursor_art[r][c];
+                if (ch == '.')
+                    continue;
+                fb[py * scr_w + px] = (ch == 'X') ? 0 : 15;
+            }
+        }
+        return;
+    }
+    if (cursor_shape == 1 || cursor_shape == 2) {
+        for (int r = 3; r < 15; r++)
+            cursor_set(r, 6, 15);
+        for (int i = 0; i < 4; i++) {
+            cursor_set(3 + i, 6 - i, 15);
+            cursor_set(3 + i, 6 + i, 15);
+            cursor_set(14 - i, 6 - i, 15);
+            cursor_set(14 - i, 6 + i, 15);
+        }
+    } else if (cursor_shape == 3 || cursor_shape == 4) {
+        for (int c = 2; c < 10; c++)
+            cursor_set(9, c, 15);
+        for (int i = 0; i < 4; i++) {
+            cursor_set(9 - i, 2 + i, 15);
+            cursor_set(9 + i, 2 + i, 15);
+            cursor_set(9 - i, 9 - i, 15);
+            cursor_set(9 + i, 9 - i, 15);
+        }
+    } else {
+        for (int i = 0; i < 10; i++) {
+            cursor_set(3 + i, 2 + i, 15);
+            if (cursor_shape == 6 || cursor_shape == 7)
+                cursor_set(12 - i, 2 + i, 15);
         }
     }
 }
@@ -1631,7 +1670,7 @@ static void draw_context(void) {
 static void canvas_pixel(int x, int y, u8 color) {
     if (canvas_buf && (unsigned)x < (unsigned)canvas_w &&
         (unsigned)y < (unsigned)canvas_h)
-        canvas_buf[y * canvas_w + x] = color;
+        canvas_buf[y * CANVAS_MAX_W + x] = color;
 }
 
 int gui_canvas_w(void) {
@@ -1669,7 +1708,7 @@ static void canvas_line(int x0, int y0, int x1, int y1, u8 color) {
 void gui_canvas_open(const char *title) {
     extern void *kernel_alloc_pages_zero(u32 pages);
     if (!canvas_buf) {
-        u32 pages = ((u32)(canvas_w * canvas_h) + 4095u) / 4096u;
+        u32 pages = ((u32)(CANVAS_MAX_W * CANVAS_MAX_H) + 4095u) / 4096u;
         canvas_buf = (u8 *)kernel_alloc_pages_zero(pages);
     }
     wins[WIN_APP].w = canvas_w + 4;
@@ -1749,10 +1788,20 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
         menu_open || list_open || ctx_open ||
         drag_win >= 0 || resize_win >= 0 || scroll_drag >= 0)
         return 0;
-    if (x == mouse_x && y == mouse_y)
+    int shape = 0;
+    int hit = hit_test(x, y);
+    if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + WIN_COUNT * 9) {
+        int d = (hit - HIT_RESIZE_BASE) % 9;
+        if (d == 1 || d == 2) shape = 1;
+        else if (d == 3 || d == 4) shape = 2;
+        else if (d == 5 || d == 6) shape = 3;
+        else if (d == 7 || d == 8) shape = 4;
+    }
+    if (x == mouse_x && y == mouse_y && shape == cursor_shape)
         return 1;
 
     cursor_restore();
+    cursor_shape = shape;
     mouse_x = x;
     mouse_y = y;
     draw_cursor();
@@ -1871,7 +1920,7 @@ static int hit_test(int x, int y) {
             return HIT_CLOSE_BASE + id;
         if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 77, 48, 19))
             return HIT_OK;
-        if (!w->maximized && id != WIN_APP) {
+        if (!w->maximized) {
             int edge = 4;
             int n = (y >= w->y - edge && y <= w->y + edge);
             int s = (y >= w->y + w->h - edge && y <= w->y + w->h + edge);
@@ -1975,7 +2024,7 @@ static void resize_move(int x, int y) {
     if (north) top = y;
     if (south) bottom = y;
     int minw = (resize_win <= WIN_C2) ? 208 : 160;
-    int minh = (resize_win <= WIN_C2) ? 96 : 90;
+    int minh = (resize_win <= WIN_C2) ? 96 : (resize_win == WIN_APP ? 110 : 90);
     if (right - left < minw) {
         if (west) left = right - minw;
         else right = left + minw;
@@ -2006,6 +2055,15 @@ static void resize_move(int x, int y) {
         if (rows > 46) rows = 46;
         c->cols = cols;
         c->rows = rows;
+    } else if (resize_win == WIN_APP) {
+        canvas_w = w->w - 4;
+        canvas_h = w->h - 14;
+        if (canvas_w < 160) canvas_w = 160;
+        if (canvas_w > CANVAS_MAX_W) canvas_w = CANVAS_MAX_W;
+        if (canvas_h < 110) canvas_h = 110;
+        if (canvas_h > CANVAS_MAX_H) canvas_h = CANVAS_MAX_H;
+        w->w = canvas_w + 4;
+        w->h = canvas_h + 14;
     }
     gui_dirty = 1;
 }
@@ -2372,6 +2430,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
