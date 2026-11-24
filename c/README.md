@@ -5,8 +5,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 
 ## What works
 
-- 16-bit boot sector loads the kernel to `0x10000`, the program pack to `0x70000`,
-  enables A20, flat protected mode and VGA mode 13h
+- 16-bit boot sector loads up to **128 kernel sectors (64 KB)** to `0x10000`,
+  the program pack (64 sectors at LBA 129) to `0x70000`, enables A20, flat
+  protected mode and VGA mode 13h
 - Freestanding C kernel, clang + `ld.lld`
 - VGA 320×200×256 GUI, custom palette, ROM font
 - IDT/PIC/PIT: IRQ0 timer 100 Hz, IRQ1 keyboard, IRQ12 PS/2 mouse
@@ -15,6 +16,13 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   `Ctrl-L`/`Ctrl-Z`, `Ctrl-[`), extended arrow/Home/End/Delete keys mapped to
   ANSI sequences for `getchar`
 - **Terminal**: CR/LF, backspace, TAB expansion and ANSI CSI swallowing
+- **CPU exceptions**: `#DE`, `#UD`, `#GP`, `#PF` kill the current Ring 3 task
+  and return to the Shell; kernel-mode faults still halt
+- **Runtime mouse**: while a task/module runs or blocks in `getchar`, IRQ0
+  polls mouse packets so windows can still be clicked/dragged and Start/taskbar
+  remain usable (keyboard focus/routing is still task-bound)
+- **COM1 serial**: shell `serial`, `upload NAME` (Ctrl-Z terminates) and
+  `download NAME` for host file exchange
 - **Window manager**: focus, Z-order, active/inactive title bars, taskbar state
 - **Three independent consoles** with per-console shell history and input focus
 - **F4 / taskbar Wins window list**: Tab cycles, Enter activates, mouse click,
@@ -97,6 +105,12 @@ Screenshots:
 - [`../screenshots/c-term-test.png`](../screenshots/c-term-test.png)
 - [`../screenshots/c-dma-fd.png`](../screenshots/c-dma-fd.png)
 - [`../screenshots/c-keyboard-symbols.png`](../screenshots/c-keyboard-symbols.png)
+- [`../screenshots/c-loader-progs.png`](../screenshots/c-loader-progs.png)
+- [`../screenshots/c-exc-pf.png`](../screenshots/c-exc-pf.png)
+- [`../screenshots/c-exc-div0.png`](../screenshots/c-exc-div0.png)
+- [`../screenshots/c-runtime-menu.png`](../screenshots/c-runtime-menu.png)
+- [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
+- [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
 ## Program pack
 
@@ -227,9 +241,19 @@ directory and a saved kernel ESP. It exits back to the GUI shell.
 | Keyboard | focused console shell input |
 
 Shell commands: `help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`,
-`echo`, `console 1|2|3`, `windows`, `sysinfo`, `about`, `progs`, `run NAME`,
-`tasks`, `ls`, `exec NAME`, `disktest`, `ring3`, `modtest`, `mod NAME`, `utest`,
-`reboot`, `halt`.
+`echo`, `console 1|2|3`, `windows`, `serial`, `upload NAME`, `download NAME`,
+`sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ls`, `exec NAME`,
+`disktest`, `ring3`, `modtest`, `mod NAME`, `utest`, `reboot`, `halt`.
+
+Serial QEMU example:
+
+```text
+-serial tcp:127.0.0.1:5555,server,nowait
+```
+
+Then connect a TCP client to port 5555. `upload TMP.TXT` waits for raw bytes and
+terminates on Ctrl-Z; `download TMP.TXT` emits a `<<<FILE ...>>>` header, raw
+bytes and `<<<END>>>`.
 
 Process/FD test programs in MiniFS:
 
@@ -271,7 +295,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~28.2 KB (32 KB loader ceiling)
+- `c/build/kernel.bin` — currently ~29.8 KB (64 KB loader limit)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
@@ -334,12 +358,14 @@ qemu-system-i386 `
 - GUI focus/Z-order is fixed-list (5 windows), not a general compositor.
 - Taskbar shows Console 1/2; Console 3 is via Start menu or the Windows list.
 - FDC DMA buffer is at `0x8000`; kernel BSS ends at `0x5f1c8`, so it is safe.
-- GUI event processing is still blocking while `mod`/`utest`/`exec` runs; the
-  mouse and window manager freeze during an interactive Python REPL.
-- Kernel CPU exceptions still route to `cli; hlt`; a bad user task can halt
-  the machine.
-- Kernel binary is close to the 32 KB bootloader ceiling; the next growth needs
-  a larger/second-stage loader.
+- Mouse/window events are serviced during blocking tasks, but **keyboard input
+  is still task-owned**: switched consoles do not get independent input queues
+  yet, and shell commands cannot run in Console 2 while Python owns Console 1.
+- RAMFS is session-only; serial upload/download is the current host bridge,
+  not persistent storage.
+- FDC is still read-only; there is no writable MiniFS/FAT12.
+- The 64 KB loader is enough for current growth, but the next large subsystem
+  will need another loader/memory-layout revision.
 - Kernel module loader runs in **Ring 0**; big Ring 3 task has real user isolation.
 - Big Ring 3 task: one slot, fixed 256 KB code / 64 KB stack / 1 MB heap.
 - File API is whole-file read only (syscall 7); no open/read/seek/write.

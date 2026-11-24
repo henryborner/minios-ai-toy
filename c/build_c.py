@@ -15,7 +15,7 @@ BUILD = CDIR / "build"
 IMAGE = ROOT / "MiniOS-C.img"
 FLOPPY_SIZE = 1_474_560
 BOOT_SIZE = 512
-KERNEL_SECTORS = 64
+KERNEL_SECTORS = 128
 KERNEL_MAX = KERNEL_SECTORS * 512
 PACK_SECTORS = 64
 PACK_BYTES = PACK_SECTORS * 512
@@ -129,6 +129,8 @@ def main() -> int:
     parent_args_bin = BUILD / "parent_args.bin"
     heap_test_bin = BUILD / "heap_test.bin"
     term_test_bin = BUILD / "term_test.bin"
+    crash_test_bin = BUILD / "crash_test.bin"
+    div0_test_bin = BUILD / "div0_test.bin"
     sched_o = BUILD / "sched.o"
     gui_o = BUILD / "gui.o"
     fdc_o = BUILD / "fdc.o"
@@ -158,6 +160,8 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(parent_args_bin), "parent_args.asm"])
     run([nasm, "-f", "bin", "-o", str(heap_test_bin), "heap_test.asm"])
     run([nasm, "-f", "bin", "-o", str(term_test_bin), "term_test.asm"])
+    run([nasm, "-f", "bin", "-o", str(crash_test_bin), "crash_test.asm"])
+    run([nasm, "-f", "bin", "-o", str(div0_test_bin), "div0_test.asm"])
     run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
     run([
         clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
@@ -220,6 +224,8 @@ def main() -> int:
         ("ARGS.BIN", parent_args_bin),
         ("HEAP.BIN", heap_test_bin),
         ("TERM.BIN", term_test_bin),
+        ("CRASH.BIN", crash_test_bin),
+        ("DIV0.BIN", div0_test_bin),
         ("TEST.TXT", CDIR / "test.txt"),
     ])
     image[PACK_OFFSET:PACK_OFFSET + len(pack)] = pack
@@ -238,6 +244,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 

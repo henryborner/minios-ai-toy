@@ -110,6 +110,10 @@ Notes:
   to ANSI sequences: `ESC [ A/B/C/D/H/F`, `ESC [ 3 ~`.
 - Ctrl combinations arrive as control bytes (`Ctrl-C` = 3, `Ctrl-D` = 4).
 - Terminal output handles `\r`, `\n`, `\b`, `\t` and swallows ANSI CSI sequences.
+- Ring 3 `#DE/#UD/#GP/#PF` kills the current task and returns to the Shell;
+  the task's parent sees exit status `0xDEAD`. Kernel-mode faults halt.
+- COM1 host bridge: shell `upload NAME` / `download NAME`; RAMFS is still
+  session-only.
 
 ## HAL mapping for MicroPython
 

@@ -6,11 +6,16 @@
         global irq12_stub
         global syscall_stub
         global isr_default
+        global exc0_stub
+        global exc6_stub
+        global exc13_stub
+        global exc14_stub
         extern irq0_handler
         extern irq1_handler
         extern irq6_handler
         extern irq12_handler
         extern syscall_handler
+        extern exception_handler
 
         section .text
 irq0_stub:
@@ -67,6 +72,35 @@ syscall_stub:
         mov     es, ax
         popa
         iretd
+
+exc0_stub:
+        push    dword 0             ; dummy error code
+        push    dword 0             ; vector
+        jmp     exc_common
+exc6_stub:
+        push    dword 0
+        push    dword 6
+        jmp     exc_common
+exc13_stub:
+        push    dword 13            ; CPU already pushed #GP error code
+        jmp     exc_common
+exc14_stub:
+        push    dword 14            ; CPU already pushed #PF error code
+        jmp     exc_common
+
+exc_common:
+        pusha
+        cld
+        mov     ax, 0x10
+        mov     ds, ax
+        mov     es, ax
+        mov     eax, esp
+        push    eax
+        call    exception_handler
+        add     esp, 4
+        cli
+        hlt
+        jmp     $
 
 isr_default:
         cli

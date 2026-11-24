@@ -15,6 +15,7 @@ volatile u32 ticks;
 volatile int mouse_x = 160;
 volatile int mouse_y = 100;
 volatile int mouse_buttons = 0;
+static volatile u8 scheduler_active;
 u32 heap_used;
 
 static u8 heap[64 * 1024];
@@ -42,6 +43,43 @@ static inline void outb(u16 port, u8 v) {
 
 static inline void io_wait(void) {
     outb(0x80, 0);
+}
+
+/* COM1, 115200 8N1. */
+#define COM1 0x3F8
+static u8 serial_ready;
+
+static void serial_init(void) {
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x80);
+    outb(COM1 + 0, 0x01);
+    outb(COM1 + 1, 0x00);
+    outb(COM1 + 3, 0x03);
+    outb(COM1 + 2, 0xC7);
+    outb(COM1 + 4, 0x0B);
+    serial_ready = 1;
+}
+
+static void serial_putc(char ch) {
+    if (!serial_ready)
+        return;
+    while (!(inb(COM1 + 5) & 0x20)) {}
+    outb(COM1, (u8)ch);
+}
+
+static void serial_puts(const char *s) {
+    while (*s)
+        serial_putc(*s++);
+}
+
+static int serial_getc(void) {
+    if (!serial_ready)
+        return -1;
+    while (!(inb(COM1 + 5) & 0x01)) {
+        __asm__ __volatile__("sti");
+        __asm__ __volatile__("hlt");
+    }
+    return (int)inb(COM1);
 }
 
 static inline void interrupts_on(void) {
@@ -318,6 +356,10 @@ extern void irq6_stub(void);
 extern void irq12_stub(void);
 extern void syscall_stub(void);
 extern void isr_default(void);
+extern void exc0_stub(void);
+extern void exc6_stub(void);
+extern void exc13_stub(void);
+extern void exc14_stub(void);
 extern void run_user(u32 entry, u32 user_stack);
 extern void user_exit_to_kernel(void);
 extern void scheduler_start(u32 first_task_esp);
@@ -340,9 +382,21 @@ static void idt_set(int n, u32 handler) {
 
 static void sched_timer_tick(u32 *frame);
 
+static volatile u8 runtime_busy;
+
+static void gui_poll_runtime(void) {
+    if (!mouse_event)
+        return;
+    mouse_event = 0;
+    gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
+    gui_redraw();
+}
+
 void irq0_handler(u32 *frame) {
     ticks++;
     outb(0x20, 0x20);
+    if (scheduler_active || runtime_busy)
+        gui_poll_runtime();
     sched_timer_tick(frame);
 }
 
@@ -372,6 +426,10 @@ static void interrupts_setup(void) {
 
     for (int i = 0; i < 256; i++)
         idt_set(i, (u32)isr_default);
+    idt_set(0, (u32)exc0_stub);
+    idt_set(6, (u32)exc6_stub);
+    idt_set(13, (u32)exc13_stub);
+    idt_set(14, (u32)exc14_stub);
     idt_set(0x20, (u32)irq0_stub);
     idt_set(0x21, (u32)irq1_stub);
     idt_set(0x26, (u32)irq6_stub);
@@ -855,7 +913,9 @@ int run_module(const char *name) {
 
     void (*entry)(struct minios_api *) =
         (void (*)(struct minios_api *))(MODULE_BASE + h->entry_offset);
+    runtime_busy = 1;
     entry(&api);
+    runtime_busy = 0;
     gui_sys_print("[mod] returned to kernel.\n");
     return 1;
 }
@@ -1399,6 +1459,27 @@ static void task_exit(u32 status) {
     }
 }
 
+void exception_handler(u32 *frame) {
+    u32 vector = frame[8];
+    u32 cs = frame[11];
+    (void)frame[9];
+    (void)frame[10];
+
+    if (scheduler_active && (cs & 3) == 3) {
+        gui_sys_print("[fault] Ring3 task killed; returning to shell.\n");
+        __asm__ __volatile__("movw $0x23, %%ax; movw %%ax, %%ds; movw %%ax, %%es"
+                             : : : "eax");
+        task_exit(0xDEADu);
+    }
+
+    gui_sys_print("[fault] kernel exception; CPU halted.\n");
+    (void)vector;
+    for (;;) {
+        __asm__ __volatile__("cli");
+        __asm__ __volatile__("hlt");
+    }
+}
+
 static int task_spawn_user(const char *name) {
     if (!scheduler_active || current_task < 0 || current_task >= NTASKS)
         return 0;
@@ -1706,6 +1787,60 @@ static void ramfile_delete(int idx) {
                 fd_table[t][f].used = 0;
         }
     }
+}
+
+int serial_upload_file(const char *name) {
+    int idx = ramfile_find(name);
+    if (idx < 0)
+        idx = ramfile_create(name);
+    if (idx < 0)
+        return 0;
+    ramfiles[idx].size = 0;
+    u8 *p = (u8 *)direct_ptr(ramfiles[idx].phys);
+    u32 n = 0;
+    u8 old_busy = runtime_busy;
+    runtime_busy = 1;
+    gui_sys_print("[serial] send bytes, end with Ctrl-Z...\n");
+    while (n < ramfiles[idx].capacity) {
+        int ch = serial_getc();
+        if (ch < 0 || ch == 0x1A)
+            break;
+        p[n++] = (u8)ch;
+    }
+    runtime_busy = old_busy;
+    ramfiles[idx].size = n;
+    gui_sys_print("[serial] upload done: ");
+    if (n >= 100000) gui_sys_print("?");
+    else {
+        char b[12];
+        int i = 0;
+        u32 v = n;
+        if (!v) b[i++] = '0';
+        while (v) { b[i++] = (char)('0' + v % 10); v /= 10; }
+        while (i) gui_sys_print((char[]){ b[--i], 0 });
+    }
+    gui_sys_print(" bytes.\n");
+    return 1;
+}
+
+int serial_download_file(const char *name) {
+    int idx = ramfile_find(name);
+    if (idx < 0)
+        return 0;
+    struct ramfile *r = &ramfiles[idx];
+    u8 *p = (u8 *)direct_ptr(r->phys);
+    serial_puts("<<<FILE ");
+    for (int i = 0; i < 16 && r->name[i]; i++)
+        serial_putc(r->name[i]);
+    serial_puts(">>>\n");
+    for (u32 i = 0; i < r->size; i++)
+        serial_putc((char)p[i]);
+    serial_puts("\n<<<END>>>\n");
+    return 1;
+}
+
+void serial_info(void) {
+    serial_puts("MiniOS COM1 115200 8N1 ready\r\n");
 }
 
 void list_ram_files(void) {
@@ -2109,7 +2244,9 @@ void enter_ring3_demo(void) {
     gdt_install();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);   /* DPL3 interrupt gate */
     paging_install();
+    runtime_busy = 1;
     run_user(0x400000, 0x402000);
+    runtime_busy = 0;
 }
 
 /* -----------------------------------------------------------------------------
@@ -2136,6 +2273,7 @@ static void cpu_vendor(void) {
  * ----------------------------------------------------------------------------- */
 void kmain(void) {
     cpu_vendor();
+    serial_init();
     gui_init();
     interrupts_setup();
     mouse_init();
@@ -2172,6 +2310,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

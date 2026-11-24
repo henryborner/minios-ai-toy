@@ -472,6 +472,7 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date\n");
         term_puts(c, "uptime clear echo console windows\n");
+        term_puts(c, "serial upload NAME download NAME\n");
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
         term_puts(c, "modtest mod NAME utest reboot halt\n");
@@ -521,6 +522,19 @@ static void run_command(struct console *c, char *line) {
         } else {
             term_puts(c, "Usage: console 1|2|3\n");
         }
+    } else if (streq(line, "serial")) {
+        extern void serial_info(void);
+        serial_info();
+        term_puts(c, "COM1 115200 8N1 ready.\n");
+    } else if (starts_with(line, "upload ")) {
+        extern int serial_upload_file(const char *name);
+        term_puts(c, "Receiving from COM1...\n");
+        if (!serial_upload_file(line + 7))
+            term_puts(c, "Upload failed.\n");
+    } else if (starts_with(line, "download ")) {
+        extern int serial_download_file(const char *name);
+        if (!serial_download_file(line + 9))
+            term_puts(c, "Download failed.\n");
     } else if (streq(line, "sysinfo")) {
         focus_window(WIN_SYS);
         term_puts(c, "System window opened.\n");
@@ -810,6 +824,10 @@ static void draw_cursor(void) {
 }
 
 void gui_redraw(void) {
+    static u8 redraw_busy;
+    if (redraw_busy)
+        return;
+    redraw_busy = 1;
     update_clock();
     make_uptime();
     draw_desktop();
@@ -829,6 +847,7 @@ void gui_redraw(void) {
     draw_list();
     draw_cursor();
     blit();
+    redraw_busy = 0;
 }
 
 /* -----------------------------------------------------------------------------

@@ -7,7 +7,7 @@
         ORG 0x7C00
 
 KERNEL_SEG      equ 0x1000       ; ES for 0x10000
-KERNEL_SECTORS  equ 64
+KERNEL_SECTORS  equ 128
 PACK_SEG        equ 0x7000       ; ES for 0x70000
 PACK_SECTORS    equ 64
 
@@ -41,13 +41,13 @@ start:
         mov     byte [left], KERNEL_SECTORS
         call    load_sectors
 
-        ; Program pack: sectors 66-129, loaded to 0x70000.
+        ; Program pack: sectors 130-193, loaded to 0x70000.
         mov     ax, PACK_SEG
         mov     es, ax
         xor     bx, bx
-        mov     byte [cyl], 1
+        mov     byte [cyl], 3
         mov     byte [head], 1
-        mov     byte [sect], 12
+        mov     byte [sect], 4
         mov     byte [left], PACK_SECTORS
         call    load_sectors
 
