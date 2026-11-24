@@ -31,6 +31,10 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **COM1 serial**: shell `serial`, `upload NAME` (Ctrl-Z terminates) and
   `download NAME` for host file exchange
 - **Window manager**: focus, Z-order, active/inactive title bars, taskbar state
+- **Stage 9 input polish**: i8042 keyboard/mouse source demultiplexing,
+  IntelliMouse 4-byte packets with wheel scrolling, per-console 128-byte
+  command buffers with wrapped-line rendering, and 8-entry Up/Down history.
+  `Ctrl-U` clears the line, `Ctrl-L` clears the screen while preserving it.
 - **Three independent consoles** with per-console shell history and input focus
 - **F4 / taskbar Wins window list**: Tab cycles, Enter activates, mouse click,
   hidden-window markers
@@ -81,7 +85,8 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   - Native adaptive GUI: `72×26` consoles (`80×96` scrollback), `300×200`
     256-color Canvas window, taskbar `Con3`/`Canvas` buttons, dynamic PS/2 mouse
     bounds, and pure LFB blitting (never touching the `0xA0000` alias window in
-    VBE mode). Kernel `.bss` ends at `0x0005CC94` (~76.8 KB below `0x70000`).
+    VBE mode). Kernel `.bss` ends at `0x0005EA68` (~70.9 KB below `0x70000`)
+  after the Stage 9 command-history buffers.
 - **Stage 7–8 frozen suite**: `calc`, `top`, `demos` (`plot`), `xxd`, `edit`,
   `futil`, and `bench` are frozen to `.mpy` bytecode with `mpy-cross 1.24.1`,
   linked into `MPY.BIN` (`189,616` bytes), and launched via Shell shortcuts with
@@ -214,7 +219,7 @@ Exact sector/byte accounting for `MiniOS-C.img` (`1,474,560` bytes = `2,880` sec
 | Region | LBA Range | Sectors | Bytes | Notes |
 |---|---|---:|---:|---|
 | Boot sector (`boot.bin`) | `0` | `1` | `512` | Loads kernel, `MPK1` pack, and `stage2` |
-| 32-bit C kernel (`kernel.bin`) | `1–128` | `128` | `48,860` / `65,536` | `16.3 KB` loader headroom; `.bss` ends at `0x5CC94` |
+| 32-bit C kernel (`kernel.bin`) | `1–128` | `128` | `49,860` / `65,536` | `15.7 KB` loader headroom; `.bss` ends at `0x5EA68` |
 | Program pack (`MPK1`) | `129–192` | `64` | `32,768` | Boot-loaded at `0x70000` (`A/B/C/HELLO.BIN`) |
 | Stage 2 VBE/PM (`stage2.bin`) | `193` (`194–199` pad) | `1` (+`6`) | `512` (+`3,072`) | Loaded at `0x7E00`; VBE `640×480×8` LFB + `320×200` fallback |
 | Read-only `MiniFS` (`MFS1`) | `200–1203` | `1,004` | `514,048` | `MPY.BIN` (`189,616 B`, 7 frozen tools) + Ring 3/0 test suite |
@@ -467,8 +472,8 @@ Outputs:
 
 - `c/build/boot.bin` — 512 bytes (LBA 0)
 - `c/build/stage2.bin` — 512 bytes (LBA 193, loaded at `0x7E00`)
-- `c/build/kernel.bin` — 48,860 bytes (~47.7 KB, 64 KB loader limit; `.bss` ends at `0x5CC94`)
-- `c/build/mpy.bin` — **189,616 bytes** (185.2 KB, image+BSS 190,176 B, 7 frozen tools)
+- `c/build/kernel.bin` — 49,860 bytes (~48.7 KB, 64 KB loader limit; `.bss` ends at `0x5EA68`)
+- `c/build/mpy.bin` — **191,056 bytes** (186.6 KB, image+BSS 191,616 B, 8 frozen tools)
 - Stage 0–8 master roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
@@ -537,7 +542,7 @@ qemu-system-i386 `
 - `exec` supports flat programs ≤4 KB; no arguments, fork/exec or per-task heap.
 - GUI focus/Z-order is fixed-list (5 windows), not a general compositor.
 - Taskbar shows Console 1/2; Console 3 is via Start menu or the Windows list.
-- FDC DMA buffer is at `0x8000`; kernel BSS ends at `0x5f1c8`, so it is safe.
+- FDC DMA buffer is at `0x8000`; kernel BSS ends at `0x5ea68`, so it is safe.
 - During a running task, only safe shell commands are accepted in another
   console; task/FDC/serial/reboot commands are refused with `[busy]`.
 - There is no kernel task-kill/foreground-control UI yet; Python must exit via

@@ -57,17 +57,17 @@
 ### Stage 9：输入子系统加固、命令行历史与体积护栏
 **目标**：根治键鼠并发串包与折行截断两个底层隐患，并补齐鼠标滚轮与 Shell 历史命令。
 
-- [ ] **9.1 i8042 键鼠同源校验与 PS/2 鼠标滚轮（IntelliMouse）支持**（`c/kernel.c`、`c/gui.c`、`c/gui.h`）
+- [x] **9.1 i8042 键鼠同源校验与 PS/2 鼠标滚轮（IntelliMouse）支持**（`c/kernel.c`、`c/gui.c`、`c/gui.h`）
   - 在 `irq1_handler()` 与 `irq12_handler()` 中读取 `inb(0x64)` 检查 `bit 5`（`0x20`），若数据来源与当前 IRQ 不匹配则转发给对应处理逻辑，彻底杜绝打字同时动鼠标导致的包错位或假点击。
   - 在 `mouse_init()` 中发送标准 IntelliMouse 激活序列（`0xF3, 200` -> `0xF3, 100` -> `0xF3, 80`，随后发 `0xF2` 查询 Device ID）：若返回 `0x03` 则启用 4 字节数据包（第 4 字节低 4 位有符号 `dz` 为滚轮位移），若返回 `0x00` 则保持兼容 3 字节模式。
   - 滚轮滚动时直接调用焦点 Console 的 `term_scroll_by(c, dz * 3)`（或焦点列表的上下移动）。
-- [ ] **9.2 Console 独立输入行缓冲与上下键命令历史（Command History）**（`c/gui.c`）
+- [x] **9.2 Console 独立输入行缓冲与上下键命令历史（Command History）**（`c/gui.c`）
   - **痛点修复**：当前 `term_key()` 按回车时直接截取 `c->term[c->cur] + 5`，一旦命令在 `320×200`（35 列）或长命令下发生自动折行，前半行就会丢失报 `Bad command`。
   - 为每个 `struct console` 增加独立的编辑行缓冲 `cmd_buf[128]`（记录命令起始行号与光标偏移，支持跨行渲染回显）以及 `8` 条环形历史记录（存储从帧池动态分配，不涨 `.bss`！），支持 `Up` / `Down` 方向键翻阅历史命令、`Ctrl-U` 清空当前输入行、`Ctrl-L` 清屏保留当前输入。
-- [ ] **9.3 构建脚本体积水位线自动巡检**（`c/build_c.py`）
+- [x] **9.3 构建脚本体积水位线自动巡检**（`c/build_c.py`）
   - 清理 `kernel.c` / `gui.c` 现有 `-Wunused-function` 编译警告，实现 **0 warnings** 编译；
   - 在 `c/build_c.py` 中自动解析 `kernel.elf` 的 `__bss_end`，每次构建打印内核代码余量（距 `65,536 B`）与 `.bss` 余量（距 `0x70000`），若超过安全阈值直接报错拦截。
-- [ ] **Stage 9 验收**：在 `320×200` 回退模式下输入超过 45 字符的 `= ...` 表达式折行后回车正常求值；`Up`/`Down` 键可翻出前序命令；鼠标滚轮可顺滑上下翻动长输出终端。
+- [x] **Stage 9 验收**：640×480 下 80+ 字符 `= ...` 折行求值正常；强制 `force_vga=1` 的 320×200 回退下 60+ 字符折行输出 `120`，Up 历史完整恢复折行命令；QEMU PS/2 返回 Device ID=3、4 字节包，滚轮上下翻动长输出；构建 0 warnings，自动打印 code/BSS 余量并拦截溢出。截图 `c-stage9-longwrap.png`、`c-stage9-history-up.png`、`c-stage9-fallback-long.png`、`c-stage9-fallback-history.png`、`c-stage9-wheel3-up.png`。
 
 ---
 

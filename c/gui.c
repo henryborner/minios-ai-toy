@@ -65,6 +65,11 @@ struct console {
     int col;
     int scroll;
     u8 esc;
+    char cmd_buf[128];
+    char history[8][128];
+    int cmd_len, cmd_pos;
+    int cmd_start, cmd_rows;
+    int hist_n, hist_next, hist_pos;
 };
 
 struct window {
@@ -360,10 +365,6 @@ static void make_uptime(void) {
 /* -----------------------------------------------------------------------------
  * Window management
  * ----------------------------------------------------------------------------- */
-static int win_visible(int id) {
-    return wins[id].visible;
-}
-
 static void bring_front(int id) {
     int pos = 0;
     for (int i = 0; i < WIN_COUNT; i++) {
@@ -684,8 +685,108 @@ static void term_puts(struct console *c, const char *s) {
         term_putc(c, *s++);
 }
 
+static int streq(const char *a, const char *b);
+
 static void term_prompt(struct console *c) {
+    c->cmd_start = c->cur;
+    c->cmd_len = 0;
+    c->cmd_pos = 0;
+    c->cmd_buf[0] = 0;
+    c->cmd_rows = 1;
+    c->hist_pos = -1;
     term_puts(c, "C:\\> ");
+}
+
+static void cmd_render(struct console *c) {
+    int w = term_width;
+    int newrows = (5 + c->cmd_len + w - 1) / w;
+    int rows = newrows > c->cmd_rows ? newrows : c->cmd_rows;
+    if (newrows < 1) newrows = 1;
+    for (int r = 0; r < rows; r++) {
+        int row = c->cmd_start + r;
+        if (row < 0 || row >= TERM_ROWS)
+            break;
+        for (int x = 0; x < TERM_COLS; x++)
+            c->term[row][x] = 0;
+        if (row >= c->n)
+            c->n = row + 1;
+    }
+    if (c->n < c->cmd_start + newrows)
+        c->n = c->cmd_start + newrows;
+    if (c->n > TERM_ROWS)
+        c->n = TERM_ROWS;
+    const char *prompt = "C:\\> ";
+    if (c->cmd_start < TERM_ROWS) {
+        for (int i = 0; i < 5 && i < TERM_COLS; i++)
+            c->term[c->cmd_start][i] = prompt[i];
+    }
+    for (int i = 0; i < c->cmd_len; i++) {
+        int abs = 5 + i;
+        int row = c->cmd_start + abs / w;
+        int col = abs % w;
+        if (row >= 0 && row < TERM_ROWS && col < TERM_COLS)
+            c->term[row][col] = c->cmd_buf[i];
+    }
+    for (int r = 0; r < newrows; r++) {
+        int row = c->cmd_start + r;
+        if (row < 0 || row >= TERM_ROWS)
+            break;
+        int used = 5 + c->cmd_len - r * w;
+        if (used > w) used = w;
+        if (used < 0) used = 0;
+        if (used < TERM_COLS)
+            c->term[row][used] = 0;
+    }
+    c->cmd_rows = newrows;
+    int abs = 5 + c->cmd_pos;
+    c->cur = c->cmd_start + abs / w;
+    c->col = abs % w;
+    if (c->cur >= TERM_ROWS)
+        c->cur = TERM_ROWS - 1;
+    if (c->cur >= c->n)
+        c->n = c->cur + 1;
+    c->scroll = 0;
+}
+
+static void hist_add(struct console *c) {
+    if (c->cmd_len == 0)
+        return;
+    if (c->hist_n > 0) {
+        int last = (c->hist_next + 7) & 7;
+        if (streq(c->history[last], c->cmd_buf))
+            return;
+    }
+    int i = 0;
+    while (i < 127 && c->cmd_buf[i]) {
+        c->history[c->hist_next][i] = c->cmd_buf[i];
+        i++;
+    }
+    c->history[c->hist_next][i] = 0;
+    c->hist_next = (c->hist_next + 1) & 7;
+    if (c->hist_n < 8)
+        c->hist_n++;
+}
+
+static void hist_load(struct console *c, int pos) {
+    if (pos < 0 || pos >= c->hist_n) {
+        c->cmd_len = 0;
+        c->cmd_pos = 0;
+        c->cmd_buf[0] = 0;
+        c->hist_pos = -1;
+        cmd_render(c);
+        return;
+    }
+    int idx = (c->hist_next - 1 - pos + 16) & 7;
+    int n = 0;
+    while (n < 127 && c->history[idx][n]) {
+        c->cmd_buf[n] = c->history[idx][n];
+        n++;
+    }
+    c->cmd_buf[n] = 0;
+    c->cmd_len = n;
+    c->cmd_pos = n;
+    c->hist_pos = pos;
+    cmd_render(c);
 }
 
 static void term_u32(struct console *c, u32 v) {
@@ -1051,61 +1152,111 @@ static void term_key(struct console *c, char ch) {
     u8 key = (u8)ch;
     c->scroll = 0;
     if (key == '\n') {
-        char *line = c->term[c->cur];
-        char command[TERM_COLS];
+        c->cmd_buf[c->cmd_len] = 0;
+        hist_add(c);
+        char command[128];
         int i = 0;
-        while (i < TERM_COLS - 6 && line[5 + i]) {
-            command[i] = line[5 + i];
+        while (i < 127 && c->cmd_buf[i]) {
+            command[i] = c->cmd_buf[i];
             i++;
         }
         command[i] = 0;
+        c->cur = c->cmd_start + (5 + c->cmd_len) / term_width;
+        c->col = (5 + c->cmd_len) % term_width;
         sys_output = c;
         term_newline(c);
         run_command(c, command);
         term_prompt(c);
         return;
     }
+    if (key == 0x15) { /* Ctrl-U */
+        c->cmd_len = 0;
+        c->cmd_pos = 0;
+        c->cmd_buf[0] = 0;
+        c->hist_pos = -1;
+        cmd_render(c);
+        return;
+    }
+    if (key == 0x0C) { /* Ctrl-L */
+        char save[128];
+        int slen = c->cmd_len, spos = c->cmd_pos;
+        for (int i = 0; i <= slen; i++)
+            save[i] = c->cmd_buf[i];
+        term_clear(c);
+        term_prompt(c);
+        for (int i = 0; i <= slen; i++)
+            c->cmd_buf[i] = save[i];
+        c->cmd_len = slen;
+        c->cmd_pos = spos;
+        cmd_render(c);
+        return;
+    }
+    if (key == GUI_KEY_UP) {
+        int p = c->hist_pos < 0 ? 0 : c->hist_pos + 1;
+        if (p < c->hist_n)
+            hist_load(c, p);
+        return;
+    }
+    if (key == GUI_KEY_DOWN) {
+        int p = c->hist_pos - 1;
+        if (c->hist_pos < 0)
+            return;
+        hist_load(c, p);
+        return;
+    }
     if (key == '\b') {
-        int len = line_len(c, c->cur);
-        if (c->col > 5) {
-            for (int i = c->col - 1; i < len - 1; i++)
-                c->term[c->cur][i] = c->term[c->cur][i + 1];
-            c->term[c->cur][len - 1] = 0;
-            c->col--;
+        if (c->cmd_pos > 0) {
+            for (int i = c->cmd_pos - 1; i < c->cmd_len - 1; i++)
+                c->cmd_buf[i] = c->cmd_buf[i + 1];
+            c->cmd_len--;
+            c->cmd_pos--;
+            c->cmd_buf[c->cmd_len] = 0;
+            cmd_render(c);
         }
         return;
     }
     if (key == GUI_KEY_LEFT) {
-        if (c->col > 5)
-            c->col--;
-        return;
-    }
-    if (key == GUI_KEY_RIGHT) {
-        if (c->col < line_len(c, c->cur))
-            c->col++;
-        return;
-    }
-    if (key == GUI_KEY_HOME) {
-        c->col = 5;
-        return;
-    }
-    if (key == GUI_KEY_END) {
-        c->col = line_len(c, c->cur);
-        return;
-    }
-    if (key == GUI_KEY_DEL) {
-        int len = line_len(c, c->cur);
-        if (c->col < len) {
-            for (int i = c->col; i < len - 1; i++)
-                c->term[c->cur][i] = c->term[c->cur][i + 1];
-            c->term[c->cur][len - 1] = 0;
+        if (c->cmd_pos > 0) {
+            c->cmd_pos--;
+            cmd_render(c);
         }
         return;
     }
-    if (ch >= 32 && ch < 127) {
-        if (c->col < 5)
-            c->col = 5;
-        term_putc_mode(c, ch, 1);
+    if (key == GUI_KEY_RIGHT) {
+        if (c->cmd_pos < c->cmd_len) {
+            c->cmd_pos++;
+            cmd_render(c);
+        }
+        return;
+    }
+    if (key == GUI_KEY_HOME) {
+        c->cmd_pos = 0;
+        cmd_render(c);
+        return;
+    }
+    if (key == GUI_KEY_END) {
+        c->cmd_pos = c->cmd_len;
+        cmd_render(c);
+        return;
+    }
+    if (key == GUI_KEY_DEL) {
+        if (c->cmd_pos < c->cmd_len) {
+            for (int i = c->cmd_pos; i < c->cmd_len - 1; i++)
+                c->cmd_buf[i] = c->cmd_buf[i + 1];
+            c->cmd_len--;
+            c->cmd_buf[c->cmd_len] = 0;
+            cmd_render(c);
+        }
+        return;
+    }
+    if (ch >= 32 && ch < 127 && c->cmd_len < 127) {
+        for (int i = c->cmd_len; i > c->cmd_pos; i--)
+            c->cmd_buf[i] = c->cmd_buf[i - 1];
+        c->cmd_buf[c->cmd_pos] = ch;
+        c->cmd_len++;
+        c->cmd_pos++;
+        c->cmd_buf[c->cmd_len] = 0;
+        cmd_render(c);
     }
 }
 
@@ -1792,6 +1943,20 @@ static void activate_hit(int hit) {
         } else {
             machine_reboot();
         }
+    }
+}
+
+void gui_mouse_wheel(int dz) {
+    if (list_open) {
+        list_sel -= dz;
+        if (list_sel < 0) list_sel = 0;
+        if (list_sel >= WIN_COUNT) list_sel = WIN_COUNT - 1;
+        gui_dirty = 1;
+        return;
+    }
+    if (focus_win >= WIN_C0 && focus_win <= WIN_C2) {
+        term_scroll_by(&consoles[focus_win], dz * 3);
+        gui_dirty = 1;
     }
 }
 

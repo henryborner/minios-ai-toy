@@ -35,7 +35,8 @@ static int console_has_live_task(int cid);
 static u8 shift_down, ctrl_down, extended;
 
 static volatile u8 mouse_cycle;
-static volatile u8 mouse_packet[3];
+static volatile u8 mouse_packet[4];
+static volatile u8 mouse_packet_size = 3;
 static volatile u8 mouse_event;
 
 /* -----------------------------------------------------------------------------
@@ -158,6 +159,11 @@ static void kbc_flush(void) {
     }
 }
 
+static void mouse_send(u8 b) {
+    kbc_cmd(0xD4);
+    kbc_data(b);
+}
+
 static void mouse_init(void) {
     kbc_flush();
     kbc_cmd(0xA8);          /* enable auxiliary device */
@@ -172,13 +178,33 @@ static void mouse_init(void) {
         kbc_data(c);
     }
 
-    kbc_cmd(0xD4);          /* next byte to mouse */
-    kbc_data(0xF6);         /* set defaults */
+    mouse_send(0xF6);       /* set defaults before wheel probing */
     (void)kbc_read();
 
-    kbc_cmd(0xD4);
-    kbc_data(0xF4);         /* enable data reporting */
+    /* IntelliMouse magic sample-rate sequence, then read Device ID. */
+    const u8 rates[3] = { 200, 100, 80 };
+    for (int i = 0; i < 3; i++) {
+        mouse_send(0xF3);
+        (void)kbc_read();
+        mouse_send(rates[i]);
+        (void)kbc_read();
+    }
+    mouse_send(0xF2);
     (void)kbc_read();
+    int id = kbc_read();
+    if (id == 3)
+        mouse_packet_size = 4;
+    else
+        mouse_packet_size = 3;
+    serial_puts("[mouse] id=");
+    serial_putc(id >= 0 && id <= 9 ? (char)('0' + id) : '?');
+    serial_puts(" packet=");
+    serial_putc((char)('0' + mouse_packet_size));
+    serial_puts("\r\n");
+
+    mouse_send(0xF4);       /* enable data reporting */
+    (void)kbc_read();
+    mouse_cycle = 0;
     kbc_flush();
 }
 
@@ -302,9 +328,54 @@ static void keyboard_scancode(u8 sc) {
     kbd_push((u8)ch);
 }
 
+static void mouse_byte(u8 data) {
+    u8 cycle = mouse_cycle;
+    if (cycle == 0 && !(data & 0x08)) {
+        mouse_cycle = 0;
+        return;
+    }
+    mouse_packet[cycle] = data;
+    cycle++;
+    if (cycle < mouse_packet_size) {
+        mouse_cycle = cycle;
+        return;
+    }
+    cycle = 0;
+    mouse_cycle = 0;
+
+    u8 flags = mouse_packet[0];
+    if (flags & 0xC0)
+        return;
+    int dx = (signed char)mouse_packet[1];
+    int dy = (signed char)mouse_packet[2];
+    int nx = mouse_x + dx;
+    int ny = mouse_y - dy;
+    int max_y = scr_h - 1;
+    if (nx < 0) nx = 0;
+    if (nx >= scr_w) nx = scr_w - 1;
+    if (ny < 0) ny = 0;
+    if (ny > max_y) ny = max_y;
+    mouse_x = nx;
+    mouse_y = ny;
+    mouse_buttons = flags & 7;
+    mouse_event = 1;
+
+    if (mouse_packet_size == 4) {
+        int dz = mouse_packet[3] & 0x0F;
+        if (dz & 8)
+            dz -= 16;
+        if (dz)
+            gui_mouse_wheel(dz);
+    }
+}
+
 void irq1_handler(void) {
+    u8 st = inb(0x64);
     u8 sc = inb(0x60);
-    keyboard_scancode(sc);
+    if (st & 0x20)
+        mouse_byte(sc);
+    else
+        keyboard_scancode(sc);
     outb(0x20, 0x20);
 }
 
@@ -317,33 +388,12 @@ void irq6_handler(void) {
  * Mouse
  * ----------------------------------------------------------------------------- */
 void irq12_handler(void) {
+    u8 st = inb(0x64);
     u8 data = inb(0x60);
-    u8 cycle = mouse_cycle;
-
-    if (cycle == 0 && !(data & 0x08)) {
-        outb(0xA0, 0x20);
-        outb(0x20, 0x20);
-        return;
-    }
-    mouse_packet[cycle] = data;
-    cycle++;
-    if (cycle == 3) {
-        cycle = 0;
-        int dx = (signed char)mouse_packet[1];
-        int dy = (signed char)mouse_packet[2];
-        int nx = mouse_x + dx;
-        int ny = mouse_y - dy;
-        if (nx < 0) nx = 0;
-        if (nx >= scr_w) nx = scr_w - 1;
-        if (ny < 0) ny = 0;
-        if (ny >= scr_h) ny = scr_h - 1;
-        mouse_x = nx;
-        mouse_y = ny;
-        mouse_buttons = mouse_packet[0] & 7;
-        mouse_event = 1;
-    }
-    mouse_cycle = cycle;
-
+    if (st & 0x20)
+        mouse_byte(data);
+    else
+        keyboard_scancode(data);
     outb(0xA0, 0x20);
     outb(0x20, 0x20);
 }
@@ -1210,17 +1260,6 @@ void *kernel_alloc_pages_zero(u32 pages) {
         return 0;
     frame_zero(phys, pages);
     return direct_ptr(phys);
-}
-
-static void task_copy_page(u32 dst, const u8 *src, const u8 *end) {
-    u32 len = (u32)(end - src);
-    if (len > 4096)
-        len = 4096;
-    u8 *d = (u8 *)dst;
-    for (u32 i = 0; i < 4096; i++)
-        d[i] = 0;
-    for (u32 i = 0; i < len; i++)
-        d[i] = src[i];
 }
 
 static void task_system_init(void) {

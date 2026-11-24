@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import shutil
 import struct
 import subprocess
@@ -106,6 +107,10 @@ def main() -> int:
     ld = find_tool(["ld.lld", "ld.lld.exe"], [
         Path("C:/msys64/ucrt64/bin/ld.lld.exe"),
     ])
+    objdump = find_tool(["objdump"], [
+        Path("C:/msys64/ucrt64/bin/objdump.exe"),
+        Path("C:/msys64/usr/bin/objdump.exe"),
+    ])
     objcopy = find_tool(["objcopy"], [
         Path("C:/msys64/ucrt64/bin/objcopy.exe"),
         Path("C:/msys64/usr/bin/objcopy.exe"),
@@ -207,10 +212,21 @@ def main() -> int:
         str(kernel_o), str(gui_o), str(fdc_o),
     ])
     run([objcopy, "-O", "binary", str(kernel_elf), str(kernel_bin)])
+    kernel_data = kernel_bin.read_bytes()
+    syms = subprocess.check_output([objdump, "-t", str(kernel_elf)], text=True)
+    m = re.search(r"^([0-9a-fA-F]+)\s+g\s+.*__bss_end$", syms, re.MULTILINE)
+    bss_end = int(m.group(1), 16) if m else 0
+    code_left = KERNEL_MAX - len(kernel_data)
+    bss_left = 0x70000 - bss_end
+    print(f"[kernel] code {len(kernel_data):,} B / {KERNEL_MAX:,} B, BSS end 0x{bss_end:x}, "
+          f"headroom code {code_left:,} B / BSS {bss_left:,} B")
+    if bss_end >= 0x70000:
+        raise SystemExit(f"[kernel] BSS overflow: 0x{bss_end:x} >= 0x70000")
+    if len(kernel_data) > KERNEL_MAX:
+        raise SystemExit("[kernel] 64 KB loader overflow")
 
     boot_data = boot.read_bytes()
     stage2_data = stage2.read_bytes()
-    kernel_data = kernel_bin.read_bytes()
     if len(boot_data) != BOOT_SIZE:
         raise SystemExit(f"boot sector is {len(boot_data)} bytes, expected 512")
     if len(stage2_data) != STAGE2_SIZE:
@@ -275,6 +291,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 
