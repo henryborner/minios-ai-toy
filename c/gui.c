@@ -70,6 +70,10 @@ struct console {
     int scroll;
     int cols, rows;
     u8 esc;
+    u8 cur_attr;
+    u8 ansi_len;
+    char ansi_buf[8];
+    u8 *attrs;
     char cmd_buf[128];
     char history[8][128];
     int cmd_len, cmd_pos;
@@ -112,7 +116,10 @@ static int ctx_count;
 static int ctx_target;
 
 static u8 *canvas_buf;
+static u8 *term_attrs;
 static int canvas_open;
+static char clipboard[256];
+static int clipboard_len;
 static char canvas_title[32] = "Canvas";
 static struct gui_canvas_event canvas_ev;
 static u8 canvas_ev_pending;
@@ -516,28 +523,39 @@ static int line_len(struct console *c, int index) {
 
 static void term_clear(struct console *c) {
     for (int r = 0; r < TERM_ROWS; r++)
-        for (int col = 0; col < TERM_COLS; col++)
+        for (int col = 0; col < TERM_COLS; col++) {
             c->term[r][col] = 0;
+            if (c->attrs)
+                c->attrs[r * TERM_COLS + col] = 0xF0;
+        }
     c->n = 1;
     c->cur = 0;
     c->col = 0;
     c->scroll = 0;
     c->esc = 0;
+    c->cur_attr = 0xF0;
+    c->ansi_len = 0;
 }
 
 static void term_newline(struct console *c) {
     int was_scrolled = c->scroll > 0;
     if (c->n < TERM_ROWS) {
-        for (int col = 0; col < TERM_COLS; col++)
+        for (int col = 0; col < TERM_COLS; col++) {
             c->term[c->n][col] = 0;
+            if (c->attrs)
+                c->attrs[c->n * TERM_COLS + col] = 0xF0;
+        }
         c->cur = c->n;
         c->n++;
     } else {
         for (int r = 1; r < TERM_ROWS; r++)
             for (int col = 0; col < TERM_COLS; col++)
                 c->term[r - 1][col] = c->term[r][col];
-        for (int col = 0; col < TERM_COLS; col++)
+        for (int col = 0; col < TERM_COLS; col++) {
             c->term[TERM_ROWS - 1][col] = 0;
+            if (c->attrs)
+                c->attrs[(TERM_ROWS - 1) * TERM_COLS + col] = 0xF0;
+        }
         c->cur = TERM_ROWS - 1;
     }
     if (was_scrolled) {
@@ -610,6 +628,45 @@ static void scrollbar_draw(struct console *c) {
     fill_rect(bx, by + pos, 4, thumb, 11);
 }
 
+static void term_attr_put(struct console *c, int row, int col, u8 attr) {
+    if (c->attrs && row >= 0 && row < TERM_ROWS && col >= 0 && col < TERM_COLS)
+        c->attrs[row * TERM_COLS + col] = attr;
+}
+
+static void term_sgr(struct console *c) {
+    int vals[8];
+    int n = 0, v = 0, any = 0;
+    for (int i = 0; i <= c->ansi_len; i++) {
+        char ch = (i < c->ansi_len) ? c->ansi_buf[i] : ';';
+        if (ch >= '0' && ch <= '9') {
+            v = v * 10 + (ch - '0');
+            any = 1;
+            if (v > 255) v = 255;
+        } else if (ch == ';' && n < 8) {
+            vals[n++] = any ? v : 0;
+            v = 0;
+            any = 0;
+        }
+    }
+    if (n == 0)
+        vals[n++] = 0;
+    u8 fg = c->cur_attr & 15;
+    u8 bg = c->cur_attr >> 4;
+    for (int i = 0; i < n; i++) {
+        int x = vals[i];
+        if (x == 0) { fg = 0; bg = 15; }
+        else if (x == 1) fg |= 8;
+        else if (x == 22) fg &= 7;
+        else if (x >= 30 && x <= 37) fg = (u8)(x - 30);
+        else if (x >= 90 && x <= 97) fg = (u8)(x - 90 + 8);
+        else if (x == 39) fg = 0;
+        else if (x >= 40 && x <= 47) bg = (u8)(x - 40);
+        else if (x >= 100 && x <= 107) bg = (u8)(x - 100 + 8);
+        else if (x == 49) bg = 15;
+    }
+    c->cur_attr = (u8)((bg << 4) | (fg & 15));
+}
+
 static int term_ansi_final(struct console *c, char ch) {
     if (ch == 'D') {
         if (c->col > 0)
@@ -620,8 +677,10 @@ static int term_ansi_final(struct console *c, char ch) {
     } else if (ch == 'H') {
         c->col = 0;
     } else if (ch == 'K') {
-        for (int i = c->col; i < TERM_COLS; i++)
+        for (int i = c->col; i < TERM_COLS; i++) {
             c->term[c->cur][i] = 0;
+            term_attr_put(c, c->cur, i, c->cur_attr);
+        }
     }
     return 1;
 }
@@ -634,10 +693,17 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
             else
                 c->esc = 0;
         } else {
-            if ((ch >= '0' && ch <= '9') || ch == ';' || ch == '?')
+            if ((ch >= '0' && ch <= '9') || ch == ';') {
+                if (c->ansi_len < 7)
+                    c->ansi_buf[c->ansi_len++] = ch;
                 return;
+            }
+            c->ansi_buf[c->ansi_len] = 0;
             c->esc = 0;
-            term_ansi_final(c, ch);
+            if (ch == 'm')
+                term_sgr(c);
+            else
+                term_ansi_final(c, ch);
         }
         return;
     }
@@ -656,9 +722,13 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     if (ch == '\b') {
         int len = line_len(c, c->cur);
         if (c->col > 0) {
-            for (int i = c->col - 1; i < len - 1; i++)
+            for (int i = c->col - 1; i < len - 1; i++) {
                 c->term[c->cur][i] = c->term[c->cur][i + 1];
+                if (c->attrs)
+                    c->attrs[c->cur * TERM_COLS + i] = c->attrs[c->cur * TERM_COLS + i + 1];
+            }
             c->term[c->cur][len > 0 ? len - 1 : 0] = 0;
+            term_attr_put(c, c->cur, len - 1, 0xF0);
             c->col--;
         }
         return;
@@ -675,14 +745,20 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
         term_newline(c);
     int len = line_len(c, c->cur);
     if (insert && c->col < len && len < TERM_COLS - 2) {
-        for (int i = len; i > c->col; i--)
+        for (int i = len; i > c->col; i--) {
             c->term[c->cur][i] = c->term[c->cur][i - 1];
+            if (c->attrs)
+                c->attrs[c->cur * TERM_COLS + i] = c->attrs[c->cur * TERM_COLS + i - 1];
+        }
         c->term[c->cur][len + 1] = 0;
     } else if (c->col > len) {
-        for (int i = len; i < c->col; i++)
+        for (int i = len; i < c->col; i++) {
             c->term[c->cur][i] = ' ';
+            term_attr_put(c, c->cur, i, 0xF0);
+        }
     }
     c->term[c->cur][c->col] = ch;
+    term_attr_put(c, c->cur, c->col, c->cur_attr);
     c->col++;
     if (c->col >= len)
         c->term[c->cur][c->col] = 0;
@@ -703,6 +779,7 @@ static void draw_snap_preview(void);
 static void sync_console_layout(int id);
 
 static void term_prompt(struct console *c) {
+    c->cur_attr = 0xF0;
     c->cmd_start = c->cur;
     c->cmd_len = 0;
     c->cmd_pos = 0;
@@ -721,8 +798,10 @@ static void cmd_render(struct console *c) {
         int row = c->cmd_start + r;
         if (row < 0 || row >= TERM_ROWS)
             break;
-        for (int x = 0; x < TERM_COLS; x++)
+        for (int x = 0; x < TERM_COLS; x++) {
             c->term[row][x] = 0;
+            term_attr_put(c, row, x, 0xF0);
+        }
         if (row >= c->n)
             c->n = row + 1;
     }
@@ -732,15 +811,19 @@ static void cmd_render(struct console *c) {
         c->n = TERM_ROWS;
     const char *prompt = "C:\\> ";
     if (c->cmd_start < TERM_ROWS) {
-        for (int i = 0; i < 5 && i < TERM_COLS; i++)
+        for (int i = 0; i < 5 && i < TERM_COLS; i++) {
             c->term[c->cmd_start][i] = prompt[i];
+            term_attr_put(c, c->cmd_start, i, 0xF0);
+        }
     }
     for (int i = 0; i < c->cmd_len; i++) {
         int abs = 5 + i;
         int row = c->cmd_start + abs / w;
         int col = abs % w;
-        if (row >= 0 && row < TERM_ROWS && col < TERM_COLS)
+        if (row >= 0 && row < TERM_ROWS && col < TERM_COLS) {
             c->term[row][col] = c->cmd_buf[i];
+            term_attr_put(c, row, col, 0xF0);
+        }
     }
     for (int r = 0; r < newrows; r++) {
         int row = c->cmd_start + r;
@@ -1380,8 +1463,17 @@ static void draw_console(int id) {
     int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
     for (int r = 0; r < c->rows; r++) {
         int idx = start + r;
-        if (idx >= 0 && idx < c->n)
-            text(c->x + 4, c->y + 14 + r * 9, c->term[idx], 0);
+        if (idx < 0 || idx >= c->n)
+            continue;
+        for (int col = 0; col < c->cols; col++) {
+            u8 attr = c->attrs ? c->attrs[idx * TERM_COLS + col] : 0xF0;
+            char ch = c->term[idx][col];
+            int cx = c->x + 4 + col * 8;
+            int cy = c->y + 14 + r * 9;
+            fill_rect(cx, cy, 8, 9, attr >> 4);
+            if (ch)
+                draw_char(cx, cy, ch, attr & 15, 1);
+        }
     }
     scrollbar_draw(c);
     if (focus_win == id && c->scroll == 0 && ((ticks / 50) & 1)) {
@@ -1603,10 +1695,11 @@ static void cursor_restore(void) {
 
 static const char *ctx_label(int i) {
     if (ctx_target >= 0) {
-        static const char *items[5] = {
-            "Scroll top", "Scroll bottom", "Clear", "Minimize", "Close"
+        static const char *items[7] = {
+            "Scroll top", "Scroll bottom", "Clear", "Minimize", "Close",
+            "Copy line", "Paste"
         };
-        return (i >= 0 && i < 5) ? items[i] : "";
+        return (i >= 0 && i < 7) ? items[i] : "";
     }
     static const char *items[8] = {
         "Console 1", "Console 2", "Console 3", "Windows", "System", "About",
@@ -1629,7 +1722,7 @@ static void open_context(int x, int y) {
             break;
         }
     }
-    ctx_count = ctx_target >= 0 ? 5 : 8;
+    ctx_count = ctx_target >= 0 ? 7 : 8;
     ctx_x = x + 2;
     ctx_y = y + 2;
     if (ctx_x + 128 > scr_w) ctx_x = scr_w - 128;
@@ -1652,6 +1745,24 @@ static void activate_context(int idx) {
         else if (idx == 2) { term_clear(c); term_prompt(c); }
         else if (idx == 3) minimize_window(target);
         else if (idx == 4) hide_window(target);
+        else if (idx == 5) {
+            clipboard_len = c->cmd_len;
+            if (clipboard_len > 255) clipboard_len = 255;
+            for (int i = 0; i < clipboard_len; i++)
+                clipboard[i] = c->cmd_buf[i];
+        } else if (idx == 6) {
+            int n = c->cmd_len;
+            for (int i = 0; i < clipboard_len && n < 127; i++) {
+                for (int j = n; j > c->cmd_pos; j--)
+                    c->cmd_buf[j] = c->cmd_buf[j - 1];
+                c->cmd_buf[c->cmd_pos] = clipboard[i];
+                c->cmd_len++;
+                c->cmd_pos++;
+                n++;
+            }
+            c->cmd_buf[c->cmd_len] = 0;
+            cmd_render(c);
+        }
         return;
     }
     if (idx >= 0 && idx <= 2) focus_window(idx);
@@ -1866,6 +1977,16 @@ void gui_alloc_fb(void) {
     if (!fb) {
         u32 pages = ((u32)(scr_w * scr_h) + 4095u) / 4096u;
         fb = (u8 *)kernel_alloc_pages_zero(pages);
+    }
+    if (!term_attrs) {
+        u32 n = (u32)(NCONS * TERM_ROWS * TERM_COLS);
+        term_attrs = (u8 *)kernel_alloc_pages_zero((n + 4095u) / 4096u);
+        if (term_attrs) {
+            for (u32 i = 0; i < n; i++)
+                term_attrs[i] = 0xF0;
+            for (int i = 0; i < NCONS; i++)
+                consoles[i].attrs = term_attrs + i * TERM_ROWS * TERM_COLS;
+        }
     }
 }
 
