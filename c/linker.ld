@@ -21,7 +21,7 @@ SECTIONS
     }
 
     __bss_start = .;
-    .bss : {
+    .bss (NOLOAD) : {
         *(.bss)
         *(.bss.*)
         *(COMMON)
