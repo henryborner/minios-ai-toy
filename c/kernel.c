@@ -799,6 +799,9 @@ int run_module(const char *name) {
 #define BIG_USER_CODE    0x00400000u
 #define BIG_USER_STACK   0x00480000u
 #define BIG_USER_HEAP    0x00500000u
+#define HEAP_VIRT_BASE   0x00500000u
+#define HEAP_VIRT_MAX    0x00700000u
+#define HEAP_PAGE_INDEX  ((HEAP_VIRT_BASE - BIG_USER_CODE) / 0x1000)
 #define BIG_STACK_PAGES  16
 #define BIG_HEAP_PAGES   256
 #define BIG_STACK_SIZE   (BIG_STACK_PAGES * 0x1000u)
@@ -839,13 +842,26 @@ static u32 next_pid = 1;
 #define MAX_FDS 8
 struct fd_entry {
     u8 used;
-    u8 pad[3];
+    u8 kind;            /* 0 = MiniFS read-only, 1 = RAMFS */
+    u8 writable;
+    u8 ram_index;
     u32 start_lba;
     u32 size;
     u32 offset;
     char name[16];
 };
 static struct fd_entry fd_table[NTASKS][MAX_FDS];
+
+#define MAX_RAMFILES 8
+#define RAMFILE_PAGES 4
+struct ramfile {
+    u8 used;
+    char name[16];
+    u32 phys;
+    u32 capacity;
+    u32 size;
+};
+static struct ramfile ramfiles[MAX_RAMFILES];
 
 static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
 static u32 task_pd[NTASKS][1024] __attribute__((aligned(4096)));
@@ -962,6 +978,17 @@ static void task_system_init(void) {
     }
 }
 
+static void task_free_heap(int slot) {
+    for (int i = 0; i < tasks[slot].heap_pages; i++) {
+        u32 pte = task_user_pt[slot][HEAP_PAGE_INDEX + i];
+        if (pte & 1)
+            frame_free_pages(pte & 0xFFFFF000u, 1);
+        task_user_pt[slot][HEAP_PAGE_INDEX + i] = 0;
+    }
+    tasks[slot].heap_pages = 0;
+    tasks[slot].heap_phys = 0;
+}
+
 static void task_clear_all(void) {
     for (int t = 0; t < NTASKS; t++) {
         if (tasks[t].state != TASK_FREE) {
@@ -969,8 +996,7 @@ static void task_clear_all(void) {
                 frame_free_pages(tasks[t].code_phys, tasks[t].code_pages);
             if (tasks[t].stack_phys)
                 frame_free_pages(tasks[t].stack_phys, tasks[t].stack_pages);
-            if (tasks[t].heap_phys)
-                frame_free_pages(tasks[t].heap_phys, tasks[t].heap_pages);
+            task_free_heap(t);
         }
         tasks[t].state = TASK_FREE;
         tasks[t].code_phys = 0;
@@ -1185,14 +1211,12 @@ static void task_free_frames(int slot) {
         frame_free_pages(tasks[slot].code_phys, tasks[slot].code_pages);
     if (tasks[slot].stack_phys)
         frame_free_pages(tasks[slot].stack_phys, tasks[slot].stack_pages);
-    if (tasks[slot].heap_phys)
-        frame_free_pages(tasks[slot].heap_phys, tasks[slot].heap_pages);
+    task_free_heap(slot);
     tasks[slot].code_phys = 0;
     tasks[slot].stack_phys = 0;
     tasks[slot].heap_phys = 0;
     tasks[slot].code_pages = 0;
     tasks[slot].stack_pages = 0;
-    tasks[slot].heap_pages = 0;
 }
 
 static int find_pid(u32 pid) {
@@ -1307,6 +1331,65 @@ static int task_spawn_user(const char *name) {
     if (child < 0)
         return 0;
     tasks[child].parent_pid = tasks[current_task].pid;
+    return (int)tasks[child].pid;
+}
+
+static int task_spawn_args(const char *name, u32 argv, u32 argc) {
+    if (!scheduler_active || current_task < 0 || current_task >= NTASKS)
+        return 0;
+    if (argc > 8 || argv < 0x400000 || argv >= 0x800000)
+        return 0;
+    u32 size = 0;
+    __asm__ __volatile__("sti");
+    int ok = fs_load_file_to(name, fs_program, FS_MAX_FILE, &size);
+    __asm__ __volatile__("cli");
+    if (!ok || size == 0)
+        return 0;
+
+    int child = task_create(name, fs_program, fs_program + size);
+    if (child < 0)
+        return 0;
+    tasks[child].parent_pid = tasks[current_task].pid;
+
+    u8 *stackv = (u8 *)direct_ptr(tasks[child].stack_phys);
+    u32 sp = 0x402000;
+    u32 ptrs[8];
+    for (u32 i = 0; i < argc; i++) {
+        u32 up = ((u32 *)argv)[i];
+        if (up < 0x400000 || up >= 0x800000) {
+            tasks[child].state = TASK_FREE;
+            task_free_frames(child);
+            return 0;
+        }
+        int len = 0;
+        while (len < 64 && *(volatile u8 *)(up + (u32)len) != 0)
+            len++;
+        if (len == 64) {
+            tasks[child].state = TASK_FREE;
+            task_free_frames(child);
+            return 0;
+        }
+        sp -= (u32)len + 1;
+        if (sp < 0x401000) {
+            tasks[child].state = TASK_FREE;
+            task_free_frames(child);
+            return 0;
+        }
+        u8 *dst = stackv + (sp - 0x401000);
+        for (int j = 0; j <= len; j++)
+            dst[j] = *(volatile u8 *)(up + (u32)j);
+        ptrs[i] = sp;
+    }
+    sp &= ~3u;
+    sp -= 4;
+    *(u32 *)(stackv + (sp - 0x401000)) = 0;
+    for (int i = (int)argc - 1; i >= 0; i--) {
+        sp -= 4;
+        *(u32 *)(stackv + (sp - 0x401000)) = ptrs[i];
+    }
+    sp -= 4;
+    *(u32 *)(stackv + (sp - 0x401000)) = argc;
+    ((u32 *)tasks[child].esp)[11] = sp;
     return (int)tasks[child].pid;
 }
 
@@ -1485,6 +1568,86 @@ int exec_disk(const char *name) {
     return 1;
 }
 
+static int name16_eq(const char *a, const char *b) {
+    for (int i = 0; i < 16; i++) {
+        u8 ca = (u8)a[i];
+        u8 cb = (u8)b[i];
+        if (ca == 0 && cb == 0)
+            return 1;
+        if (ca == 0 || cb == 0)
+            return 0;
+        if (upper_char(ca) != upper_char(cb))
+            return 0;
+    }
+    return 1;
+}
+
+static int ramfile_find(const char *name) {
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (ramfiles[i].used && name16_eq(ramfiles[i].name, name))
+            return i;
+    }
+    return -1;
+}
+
+static int ramfile_create(const char *name) {
+    int idx = -1;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used) {
+            idx = i;
+            break;
+        }
+    }
+    if (idx < 0)
+        return -1;
+    u32 phys = frame_alloc_pages(RAMFILE_PAGES);
+    if (!phys)
+        return -1;
+    frame_zero(phys, RAMFILE_PAGES);
+    ramfiles[idx].used = 1;
+    ramfiles[idx].phys = phys;
+    ramfiles[idx].capacity = RAMFILE_PAGES * 0x1000u;
+    ramfiles[idx].size = 0;
+    for (int i = 0; i < 16; i++)
+        ramfiles[idx].name[i] = name[i];
+    return idx;
+}
+
+static void ramfile_delete(int idx) {
+    if (idx < 0 || idx >= MAX_RAMFILES || !ramfiles[idx].used)
+        return;
+    frame_free_pages(ramfiles[idx].phys, RAMFILE_PAGES);
+    ramfiles[idx].used = 0;
+    for (int t = 0; t < NTASKS; t++) {
+        for (int f = 0; f < MAX_FDS; f++) {
+            if (fd_table[t][f].used && fd_table[t][f].kind == 1 &&
+                fd_table[t][f].ram_index == idx)
+                fd_table[t][f].used = 0;
+        }
+    }
+}
+
+void list_ram_files(void) {
+    int any = 0;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used)
+            continue;
+        if (!any) {
+            gui_sys_print("[ramfs] files:\n");
+            any = 1;
+        }
+        char name[17];
+        for (int j = 0; j < 16; j++)
+            name[j] = ramfiles[i].name[j];
+        name[16] = 0;
+        gui_sys_print("  ");
+        gui_sys_print(name);
+        gui_sys_print("\n");
+    }
+    if (!any)
+        gui_sys_print("[ramfs] empty.\n");
+}
+
 static int fd_open(const char *name) {
     if (current_task < 0 || current_task >= NTASKS)
         return -1;
@@ -1502,6 +1665,9 @@ static int fd_open(const char *name) {
             if (fd_table[current_task][f].used)
                 continue;
             fd_table[current_task][f].used = 1;
+            fd_table[current_task][f].kind = 0;
+            fd_table[current_task][f].writable = 0;
+            fd_table[current_task][f].ram_index = 0;
             fd_table[current_task][f].start_lba = entries[i].start_lba;
             fd_table[current_task][f].size = entries[i].size;
             fd_table[current_task][f].offset = 0;
@@ -1520,6 +1686,22 @@ static int fd_read(int fd, u8 *buf, u32 len) {
     struct fd_entry *f = &fd_table[current_task][fd - 1];
     if (!f->used)
         return -1;
+    if (f->kind == 1) {
+        if (f->ram_index >= MAX_RAMFILES || !ramfiles[f->ram_index].used)
+            return -1;
+        struct ramfile *r = &ramfiles[f->ram_index];
+        if (f->offset >= r->size)
+            return 0;
+        u32 n = r->size - f->offset;
+        if (n > len)
+            n = len;
+        u8 *p = (u8 *)direct_ptr(r->phys) + f->offset;
+        for (u32 i = 0; i < n; i++)
+            buf[i] = p[i];
+        f->offset += n;
+        f->size = r->size;
+        return (int)n;
+    }
     u32 done = 0;
     __asm__ __volatile__("sti");
     while (done < len && f->offset < f->size) {
@@ -1541,6 +1723,144 @@ static int fd_read(int fd, u8 *buf, u32 len) {
     }
     __asm__ __volatile__("cli");
     return (int)done;
+}
+
+#define O_CREAT 1
+#define O_TRUNC 2
+#define O_WRITE 4
+
+static int fd_alloc_slot(void) {
+    for (int f = 0; f < MAX_FDS; f++) {
+        if (!fd_table[current_task][f].used)
+            return f;
+    }
+    return -1;
+}
+
+static int fd_open_ex(const char *name, u32 flags) {
+    if (current_task < 0 || current_task >= NTASKS)
+        return -1;
+
+    int ri = ramfile_find(name);
+    if (ri >= 0) {
+        int f = fd_alloc_slot();
+        if (f < 0)
+            return -1;
+        struct fd_entry *e = &fd_table[current_task][f];
+        e->used = 1;
+        e->kind = 1;
+        e->writable = (flags & O_WRITE) ? 1 : 0;
+        e->ram_index = (u8)ri;
+        e->start_lba = 0;
+        e->size = ramfiles[ri].size;
+        e->offset = 0;
+        if ((flags & O_TRUNC) && e->writable) {
+            ramfiles[ri].size = 0;
+            e->size = 0;
+        }
+        for (int j = 0; j < 16; j++)
+            e->name[j] = ramfiles[ri].name[j];
+        return f + 1;
+    }
+
+    if (flags & O_CREAT) {
+        ri = ramfile_create(name);
+        if (ri < 0)
+            return -1;
+        int f = fd_alloc_slot();
+        if (f < 0) {
+            ramfile_delete(ri);
+            return -1;
+        }
+        struct fd_entry *e = &fd_table[current_task][f];
+        e->used = 1;
+        e->kind = 1;
+        e->writable = 1;
+        e->ram_index = (u8)ri;
+        e->start_lba = 0;
+        e->size = 0;
+        e->offset = 0;
+        for (int j = 0; j < 16; j++)
+            e->name[j] = ramfiles[ri].name[j];
+        return f + 1;
+    }
+
+    if (flags & O_WRITE)
+        return -1;
+    return fd_open(name);
+}
+
+static int fd_write(int fd, const u8 *buf, u32 len) {
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= NTASKS)
+        return -1;
+    struct fd_entry *f = &fd_table[current_task][fd - 1];
+    if (!f->used || f->kind != 1 || !f->writable)
+        return -1;
+    if (f->ram_index >= MAX_RAMFILES || !ramfiles[f->ram_index].used)
+        return -1;
+    struct ramfile *r = &ramfiles[f->ram_index];
+    if (f->offset + len > r->capacity)
+        return -1;
+    u8 *p = (u8 *)direct_ptr(r->phys) + f->offset;
+    for (u32 i = 0; i < len; i++)
+        p[i] = buf[i];
+    f->offset += len;
+    if (f->offset > r->size)
+        r->size = f->offset;
+    f->size = r->size;
+    return (int)len;
+}
+
+static u32 task_brk(u32 addr) {
+    if (current_task < 0 || current_task >= NTASKS)
+        return 0xFFFFFFFFu;
+    u16 old_pages = tasks[current_task].heap_pages;
+    u32 cur = HEAP_VIRT_BASE + (u32)old_pages * 0x1000u;
+    if (addr == 0)
+        return cur;
+    if (addr < HEAP_VIRT_BASE || addr > HEAP_VIRT_MAX)
+        return 0xFFFFFFFFu;
+    u32 pages = (addr - HEAP_VIRT_BASE + 0xFFFu) / 0x1000u;
+
+    if (pages < old_pages) {
+        for (u32 i = pages; i < old_pages; i++) {
+            u32 pte = task_user_pt[current_task][HEAP_PAGE_INDEX + i];
+            if (pte & 1)
+                frame_free_pages(pte & 0xFFFFF000u, 1);
+            task_user_pt[current_task][HEAP_PAGE_INDEX + i] = 0;
+        }
+        tasks[current_task].heap_pages = (u16)pages;
+        tasks[current_task].heap_phys = 0;
+        return HEAP_VIRT_BASE + pages * 0x1000u;
+    }
+
+    for (u32 i = old_pages; i < pages; i++) {
+        u32 phys = frame_alloc_pages(1);
+        if (!phys) {
+            for (u32 j = old_pages; j < i; j++) {
+                u32 pte = task_user_pt[current_task][HEAP_PAGE_INDEX + j];
+                if (pte & 1)
+                    frame_free_pages(pte & 0xFFFFF000u, 1);
+                task_user_pt[current_task][HEAP_PAGE_INDEX + j] = 0;
+            }
+            tasks[current_task].heap_pages = old_pages;
+            return 0xFFFFFFFFu;
+        }
+        frame_zero(phys, 1);
+        if (i == old_pages)
+            tasks[current_task].heap_phys = phys;
+        task_user_pt[current_task][HEAP_PAGE_INDEX + i] = phys | 0x007;
+    }
+    tasks[current_task].heap_pages = (u16)pages;
+    return HEAP_VIRT_BASE + pages * 0x1000u;
+}
+
+static int fd_unlink(const char *name) {
+    int ri = ramfile_find(name);
+    if (ri < 0)
+        return -1;
+    ramfile_delete(ri);
+    return 0;
 }
 
 static int fd_seek(int fd, int offset, int whence) {
@@ -1654,6 +1974,38 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         ((u32 *)frame)[7] = (u32)fd_seek((int)((u32 *)frame)[4],
                                         (int)((u32 *)frame)[6],
                                         (int)((u32 *)frame)[5]);
+    } else if (number == 16) {
+        u32 name = ((u32 *)frame)[4];
+        u32 flags = ((u32 *)frame)[6];
+        int fd = -1;
+        if (name >= 0x400000 && name < 0x800000)
+            fd = fd_open_ex((const char *)name, flags);
+        ((u32 *)frame)[7] = (u32)fd;
+    } else if (number == 17) {
+        u32 fd = ((u32 *)frame)[4];
+        u32 buf = ((u32 *)frame)[6];
+        u32 len = ((u32 *)frame)[5];
+        int r = -1;
+        if (buf >= 0x400000 && buf < 0x800000 && len <= 0x10000 &&
+            buf + len <= 0x800000)
+            r = fd_write((int)fd, (const u8 *)buf, len);
+        ((u32 *)frame)[7] = (u32)r;
+    } else if (number == 18) {
+        u32 name = ((u32 *)frame)[4];
+        int r = -1;
+        if (name >= 0x400000 && name < 0x800000)
+            r = fd_unlink((const char *)name);
+        ((u32 *)frame)[7] = (u32)r;
+    } else if (number == 19) {
+        u32 name = ((u32 *)frame)[4];
+        u32 argv = ((u32 *)frame)[6];
+        u32 argc = ((u32 *)frame)[5];
+        int pid = 0;
+        if (name >= 0x400000 && name < 0x800000)
+            pid = task_spawn_args((const char *)name, argv, argc);
+        ((u32 *)frame)[7] = (u32)pid;
+    } else if (number == 20) {
+        ((u32 *)frame)[7] = task_brk(((u32 *)frame)[4]);
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }

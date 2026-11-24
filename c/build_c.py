@@ -124,6 +124,10 @@ def main() -> int:
     fd_test_bin = BUILD / "fd_test.bin"
     child5_bin = BUILD / "child5.bin"
     parent_status_bin = BUILD / "parent_status.bin"
+    ramfs_test_bin = BUILD / "ramfs_test.bin"
+    arg_child_bin = BUILD / "arg_child.bin"
+    parent_args_bin = BUILD / "parent_args.bin"
+    heap_test_bin = BUILD / "heap_test.bin"
     sched_o = BUILD / "sched.o"
     gui_o = BUILD / "gui.o"
     fdc_o = BUILD / "fdc.o"
@@ -148,6 +152,10 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(fd_test_bin), "fd_test.asm"])
     run([nasm, "-f", "bin", "-o", str(child5_bin), "child5.asm"])
     run([nasm, "-f", "bin", "-o", str(parent_status_bin), "parent_status.asm"])
+    run([nasm, "-f", "bin", "-o", str(ramfs_test_bin), "ramfs_test.asm"])
+    run([nasm, "-f", "bin", "-o", str(arg_child_bin), "arg_child.asm"])
+    run([nasm, "-f", "bin", "-o", str(parent_args_bin), "parent_args.asm"])
+    run([nasm, "-f", "bin", "-o", str(heap_test_bin), "heap_test.asm"])
     run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
     run([
         clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
@@ -205,6 +213,10 @@ def main() -> int:
         ("FD.BIN", fd_test_bin),
         ("CHILD5.BIN", child5_bin),
         ("STATUS.BIN", parent_status_bin),
+        ("RAMFS.BIN", ramfs_test_bin),
+        ("ARG.BIN", arg_child_bin),
+        ("ARGS.BIN", parent_args_bin),
+        ("HEAP.BIN", heap_test_bin),
         ("TEST.TXT", CDIR / "test.txt"),
         ("UMTEST.BIN", umtest_bin),
         ("PARENT.BIN", parent_bin),
@@ -212,6 +224,10 @@ def main() -> int:
         ("FD.BIN", fd_test_bin),
         ("CHILD5.BIN", child5_bin),
         ("STATUS.BIN", parent_status_bin),
+        ("RAMFS.BIN", ramfs_test_bin),
+        ("ARG.BIN", arg_child_bin),
+        ("ARGS.BIN", parent_args_bin),
+        ("HEAP.BIN", heap_test_bin),
         ("TEST.TXT", CDIR / "test.txt"),
     ])
     image[PACK_OFFSET:PACK_OFFSET + len(pack)] = pack
@@ -230,6 +246,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
 
 
 

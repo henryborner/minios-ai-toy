@@ -25,10 +25,14 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   page directories/user page tables/kernel stacks
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
-- **Process lifecycle**: PIDs, parent/child, `spawn`, `wait`, `sleep`,
-  `exit(status)`, blocking task states, timer wakeups and frame reclamation
-- **Per-task file descriptors**: `open/read/close/seek` on read-only MiniFS
-  files, 8 FDs per task
+- **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
+  `sleep`, `exit(status)`, blocking task states, timer wakeups and frame
+  reclamation
+- **User heap `brk`**: heap pages are mapped/freed on demand at
+  `0x500000–0x700000`; the initial big-task heap is 1 MB
+- **Per-task file descriptors**: `open/read/close/seek/write`, 8 FDs per task
+- **Writable RAMFS**: 8 in-memory files (16 KB each), `create/write/unlink`,
+  in addition to the read-only MiniFS; RAMFS is non-persistent
 - **Timer-preemptive round-robin** scheduling: IRQ0 every 10 ms saves the user
   trap frame, switches CR3/TSS `esp0` and `iretd`s into the next task
 - **Read-only program pack (MPK1)** loaded by the boot sector:
@@ -82,6 +86,10 @@ Screenshots:
 - [`../screenshots/c-proc-status.png`](../screenshots/c-proc-status.png)
 - [`../screenshots/c-proc-utest.png`](../screenshots/c-proc-utest.png)
 - [`../screenshots/c-fd-test.png`](../screenshots/c-fd-test.png)
+- [`../screenshots/c-ramfs-test.png`](../screenshots/c-ramfs-test.png)
+- [`../screenshots/c-ramfs-ls.png`](../screenshots/c-ramfs-ls.png)
+- [`../screenshots/c-argv-test.png`](../screenshots/c-argv-test.png)
+- [`../screenshots/c-brk-test.png`](../screenshots/c-brk-test.png)
 
 ## Program pack
 
@@ -221,7 +229,11 @@ Process/FD test programs in MiniFS:
 ```text
 exec PARENT.BIN    # spawn + sleep + wait
 exec PARENT2.BIN   # spawn + blocking wait
+exec STATUS.BIN    # exit(5) -> wait() == 5
 exec FD.BIN        # open/read/close TEST.TXT
+exec RAMFS.BIN     # create/write/seek/read a RAMFS file
+exec ARGS.BIN      # spawn ARG.BIN with argv
+exec HEAP.BIN      # brk heap grow/write/read/shrink
 ```
 
 ## Window manager
@@ -252,7 +264,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~24.5 KB
+- `c/build/kernel.bin` — currently ~27 KB
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
@@ -281,8 +293,11 @@ qemu-system-i386 `
 | `user_blob.asm` | embeds `user.bin` for the `ring3` command |
 | `task_a.asm`, `task_b.asm`, `task_c.asm` | pack task programs |
 | `disk_task.asm` | Ring 3 task stored in MiniFS |
-| `parent_test.asm`, `parent_block.asm` | spawn/sleep/wait process tests |
-| `fd_test.asm`, `test.txt` | open/read/close test |
+| `parent_test.asm`, `parent_block.asm`, `parent_status.asm` | spawn/sleep/wait/status tests |
+| `fd_test.asm`, `test.txt` | MiniFS open/read/close test |
+| `ramfs_test.asm` | RAMFS create/write/seek/read test |
+| `parent_args.asm`, `arg_child.asm` | argv spawn/stack test |
+| `heap_test.asm` | brk heap test |
 | `modtest.asm` | kernel-module ABI test at `0x100000` |
 | `umtest.asm` | large Ring 3 user-module test at `0x400000` |
 | `module_api.h` | MicroPython module header/API layout |
@@ -301,9 +316,10 @@ qemu-system-i386 `
 - Dynamic table has **8 slots**; 7 small slots + 1 big Ring 3 slot.
 - Scheduler is timer-preemptive with a fixed 10 ms slice; no priorities.
 - Task code/stack/heap pages come from a frame allocator (5–16 MB).
-- `spawn` supports flat MiniFS programs ≤4 KB only; no argv/fork.
+- `spawn`/`spawn_args` support flat MiniFS programs ≤4 KB; no fork/replace-exec.
 - `wait` is parent/child only; exit status is available through syscall 11.
-- File descriptors are read-only and whole-file backed by MiniFS.
+- FDs can write only RAMFS; MiniFS remains read-only.
+- RAMFS is 8 files × 16 KB and non-persistent.
 - Program pack is read-only and boot-loaded; MiniFS is read-only at runtime.
 - MiniFS is custom, not FAT12; no write support or directory updates.
 - FDC driver reads one 512-byte sector per command (seeks between tracks).

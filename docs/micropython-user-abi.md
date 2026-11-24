@@ -75,10 +75,15 @@ by replacing the saved EAX, so the user sees it in EAX after `int 0x80`.
 | 9 | wait | EBX = PID (0 = any child) | EAX = exit status or -1 |
 | 10 | sleep ms | EBX = ms | EAX = 0 |
 | 11 | exit(status) | EBX = status | does not return |
-| 12 | open | EBX = name | EAX = fd (1..8) or -1 |
+| 12 | open read-only | EBX = name | EAX = fd (1..8) or -1 |
 | 13 | read | EBX = fd, ECX = buf, EDX = len | EAX = bytes or -1 |
 | 14 | close | EBX = fd | EAX = 0 or -1 |
 | 15 | seek | EBX = fd, ECX = offset, EDX = whence | EAX = new offset or -1 |
+| 16 | open_ex | EBX = name, ECX = flags | EAX = fd or -1 |
+| 17 | write | EBX = fd, ECX = buf, EDX = len | EAX = bytes or -1 |
+| 18 | unlink | EBX = name | EAX = 0 or -1 |
+| 19 | spawn_args | EBX = name, ECX = argv, EDX = argc | EAX = child PID or 0 |
+| 20 | brk | EBX = new break (0 = query) | EAX = break or -1 |
 
 Notes:
 
@@ -88,8 +93,16 @@ Notes:
 - Syscall 7 reads a whole MiniFS file into the user buffer.
 - Syscalls 12–15 are the read-only FD API. FDs are per-task (8 per task),
   backed by MiniFS extents; `read` copies sectors through the FDC.
+- Syscall 16 (`open_ex`) flags: bit0 `O_CREAT`, bit1 `O_TRUNC`, bit2
+  `O_WRITE`. Files created here are in RAMFS, not MiniFS.
+- Syscall 17 writes only RAMFS FDs. RAMFS holds up to 8 files × 16 KB and is
+  non-persistent.
 - `spawn` loads a flat MiniFS program ≤4 KB, assigns a PID and parent PID,
   and returns immediately. `wait` blocks until a child exits.
+- `spawn_args` copies argv strings onto the child stack; at child entry
+  `[esp]=argc`, then `argv[0..argc-1]`, then NULL.
+- `brk` grows/shrinks the heap at `0x500000–0x700000`, mapping/freeing pages
+  from the frame allocator. The big task starts with a 1 MB heap.
 - `sleep` blocks the task; IRQ0 wakes it. If no other task is ready, the
   syscall busy-waits with `sti; hlt`.
 - Syscall 2 exits with status 0; syscall 11 exits with EBX.
@@ -127,7 +140,11 @@ Process/FD tests:
 ```text
 exec PARENT.BIN    # spawn + sleep + wait
 exec PARENT2.BIN   # spawn + blocking wait
+exec STATUS.BIN    # exit(5) -> wait() == 5
 exec FD.BIN        # open/read/close TEST.TXT
+exec RAMFS.BIN     # RAMFS create/write/seek/read
+exec ARGS.BIN      # argv child
+exec HEAP.BIN      # brk grow/write/read/shrink
 ```
 
 Expected output includes:
@@ -145,8 +162,9 @@ Heap, read_file, getchar and ticks_ms OK.
 - One big task only (slot 7).
 - Physical frames are dynamically allocated, but there is no demand paging,
   `mmap` or `brk`; the big heap is a fixed 1 MB region.
-- FDs are read-only; no file writes, no writable VFS.
-- `spawn` supports flat programs ≤4 KB; no argv/fork/exec.
+- MiniFS is read-only; only RAMFS (8 × 16 KB, non-persistent) is writable.
+- `spawn`/`spawn_args` support flat programs ≤4 KB; no fork/replace-exec.
+- `brk` is the heap interface; there is no `mmap`/demand paging.
 - Kernel syscall stack is 8 KB for the big task; deep MicroPython C recursion
   needs auditing.
 - `0x00100000` remains a temporary image load address; don't run the kernel

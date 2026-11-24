@@ -526,7 +526,9 @@ static void run_command(struct console *c, char *line) {
         run_user_module("UMTEST.BIN");
     } else if (streq(line, "ls")) {
         extern void list_disk_files(void);
+        extern void list_ram_files(void);
         list_disk_files();
+        list_ram_files();
     } else if (starts_with(line, "exec ")) {
         extern int exec_disk(const char *name);
         term_puts(c, "Reading MiniFS from floppy...\n");
