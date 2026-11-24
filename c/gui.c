@@ -2357,8 +2357,15 @@ void gui_mouse_event(int x, int y, int buttons) {
     }
 
     if (release) {
-        if (snap_mode && drag_win >= 0)
-            snap_window(drag_win, snap_mode);
+        if (drag_win >= 0) {
+            struct window *dw = &wins[drag_win];
+            if (dw->y <= 19)
+                snap_window(drag_win, 3);
+            else if (dw->x <= 2)
+                snap_window(drag_win, 1);
+            else if (dw->x + dw->w >= scr_w - 2)
+                snap_window(drag_win, 2);
+        }
         snap_mode = 0;
         if (pressed_hit != HIT_NONE && hit == pressed_hit)
             activate_hit(pressed_hit);
