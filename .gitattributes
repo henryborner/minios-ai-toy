@@ -1,0 +1,9 @@
+* text=auto
+*.asm text
+*.inc text
+*.py text
+*.ps1 text
+*.md text
+checksums.txt text
+*.img binary
+*.png binary

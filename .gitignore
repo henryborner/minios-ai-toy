@@ -1,0 +1,12 @@
+# Build outputs
+/build/
+/kernel
+*.lst
+*.ppm
+
+# Local toolchain (NASM) and dev helpers
+/tools/
+
+# Scratch files
+/screenshots/*.bin
+*.log

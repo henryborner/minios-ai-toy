@@ -1,0 +1,2 @@
+SHA256 (MiniOS.img) = 8c753eff0135feaf9e5c2de8d1fecddd4d7b9ff83b0cf13faafa440a7120e864
+SIZE (MiniOS.img) = 1474560 bytes
