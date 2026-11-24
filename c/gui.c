@@ -1593,6 +1593,24 @@ static void num_text(int x, int y, u32 v, u8 col) {
     }
 }
 
+static void files_open_selected(void) {
+    extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
+    extern int run_user_module(const char *name);
+    char name[17];
+    u32 size = 0, kind = 0;
+    if (!kernel_readdir_gui((u32)(files_scroll + files_sel), name, &size, &kind))
+        return;
+    int py = 0;
+    for (int i = 0; name[i]; i++)
+        if (name[i] == '.' && (name[i + 1] == 'P' || name[i + 1] == 'p'))
+            py = 1;
+    focus_window(WIN_C0);
+    if (py)
+        launch_python(&consoles[WIN_C0], name);
+    else
+        run_user_module(name);
+}
+
 static void draw_system(void) {
     struct window *w = &wins[WIN_SYS];
     window_frame(WIN_SYS);
@@ -2509,8 +2527,19 @@ static void activate_hit(int hit) {
         return;
     }
     if (hit >= HIT_FILES_ROW_BASE && hit < HIT_FILES_ROW_BASE + 32) {
-        files_sel = hit - HIT_FILES_ROW_BASE;
-        gui_dirty = 1;
+        static u32 last_file_tick;
+        static int last_file_row = -1;
+        int row = hit - HIT_FILES_ROW_BASE;
+        if (last_file_row == row && (u32)(ticks - last_file_tick) < 20) {
+            last_file_row = -1;
+            files_sel = row;
+            files_open_selected();
+        } else {
+            last_file_row = row;
+            last_file_tick = ticks;
+            files_sel = row;
+            gui_dirty = 1;
+        }
         return;
     }
     if (hit >= HIT_FILES_BTN_BASE && hit < HIT_FILES_BTN_BASE + 4) {
