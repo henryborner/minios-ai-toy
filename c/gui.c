@@ -55,6 +55,7 @@
 #define HIT_BODY_BASE 600
 #define HIT_SCROLL_BASE 700
 #define HIT_MIN_BASE 800
+#define HIT_MAX_BASE 900
 #define HIT_CTX_BASE 1000
 
 struct console {
@@ -74,8 +75,10 @@ struct console {
 
 struct window {
     int x, y, w, h;
+    int saved_x, saved_y, saved_w, saved_h;
     u8 visible;
     u8 minimized;
+    u8 maximized;
     const char *title;
 };
 
@@ -1322,6 +1325,13 @@ static void window_frame(int id) {
     fill_rect(w->x + 1, w->y + 1, w->w - 2, 10, active ? 1 : 8);
     text(w->x + 4, w->y + 2, w->title, 15);
 
+    int max_hit = HIT_MAX_BASE + id;
+    if (is_pressed(max_hit))
+        sunken_box(w->x + w->w - 42, w->y + 2, 12, 8);
+    else
+        raise_box_col(w->x + w->w - 42, w->y + 2, 12, 8, 7);
+    draw_char(w->x + w->w - 39, w->y + 2, w->maximized ? 'o' : 'M', 0, 1);
+
     int min_hit = HIT_MIN_BASE + id;
     if (is_pressed(min_hit))
         sunken_box(w->x + w->w - 28, w->y + 2, 12, 8);
@@ -1846,6 +1856,8 @@ static int hit_test(int x, int y) {
         struct window *w = &wins[id];
         if (!w->visible || !inside(x, y, w->x, w->y, w->w, w->h))
             continue;
+        if (inside(x, y, w->x + w->w - 46, w->y + 1, 13, 10))
+            return HIT_MAX_BASE + id;
         if (inside(x, y, w->x + w->w - 32, w->y + 1, 13, 10))
             return HIT_MIN_BASE + id;
         if (inside(x, y, w->x + w->w - 20, w->y, 20, 12))
@@ -1860,6 +1872,37 @@ static int hit_test(int x, int y) {
         return HIT_BODY_BASE + id;
     }
     return HIT_NONE;
+}
+
+void gui_toggle_maximize(int id) {
+    struct window *w = &wins[id];
+    if (!w->maximized) {
+        w->saved_x = w->x;
+        w->saved_y = w->y;
+        w->saved_w = w->w;
+        w->saved_h = w->h;
+        int top = 18;
+        int tby = scr_h - 14;
+        w->x = 0;
+        w->y = top;
+        w->w = scr_w;
+        w->h = tby - top;
+        w->maximized = 1;
+    } else {
+        w->x = w->saved_x;
+        w->y = w->saved_y;
+        w->w = w->saved_w;
+        w->h = w->saved_h;
+        w->maximized = 0;
+    }
+    if (id >= WIN_C0 && id <= WIN_C2) {
+        consoles[id].x = w->x;
+        consoles[id].y = w->y;
+        consoles[id].w = w->w;
+        consoles[id].h = w->h;
+    }
+    focus_window(id);
+    gui_dirty = 1;
 }
 
 static void start_drag(int id, int x, int y) {
@@ -1901,6 +1944,11 @@ static void activate_hit(int hit) {
         list_open = !list_open;
         list_sel = focus_win >= 0 ? focus_win : 0;
         menu_open = 0;
+        return;
+    }
+    if (hit >= HIT_MAX_BASE && hit < HIT_MAX_BASE + WIN_COUNT) {
+        extern void gui_toggle_maximize(int id);
+        gui_toggle_maximize(hit - HIT_MAX_BASE);
         return;
     }
     if (hit >= HIT_MIN_BASE && hit < HIT_MIN_BASE + WIN_COUNT) {
@@ -2051,9 +2099,18 @@ void gui_mouse_event(int x, int y, int buttons) {
             scroll_drag = id;
             scrollbar_set_from_y(&consoles[id], y);
         } else if (hit >= HIT_TITLE_BASE && hit < HIT_TITLE_BASE + WIN_COUNT) {
+            static u32 last_title_tick;
+            static int last_title_id = -1;
             int id = hit - HIT_TITLE_BASE;
-            focus_window(id);
-            start_drag(id, x, y);
+            if (last_title_id == id && (u32)(ticks - last_title_tick) < 20) {
+                last_title_id = -1;
+                gui_toggle_maximize(id);
+            } else {
+                last_title_id = id;
+                last_title_tick = ticks;
+                focus_window(id);
+                start_drag(id, x, y);
+            }
         } else if (hit >= HIT_BODY_BASE && hit < HIT_BODY_BASE + WIN_COUNT) {
             focus_window(hit - HIT_BODY_BASE);
         } else if (hit == HIT_NONE) {
