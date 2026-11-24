@@ -224,7 +224,7 @@ Exact sector/byte accounting for `MiniOS-C.img` (`1,474,560` bytes = `2,880` sec
 | Region | LBA Range | Sectors | Bytes | Notes |
 |---|---|---:|---:|---|
 | Boot sector (`boot.bin`) | `0` | `1` | `512` | Loads kernel, `MPK1` pack, and `stage2` |
-| 32-bit C kernel (`kernel.bin`) | `1–128` | `128` | `54,336` / `65,536` | `11.2 KB` loader headroom; `.bss` ends at `0x5FC27` |
+| 32-bit C kernel (`kernel.bin`) | `1–128` | `128` | `55,700` / `65,536` | `9.8 KB` loader headroom; `.bss` ends at `0x5FC3B` |
 | Program pack (`MPK1`) | `129–192` | `64` | `32,768` | Boot-loaded at `0x70000` (`A/B/C/HELLO.BIN`) |
 | Stage 2 VBE/PM (`stage2.bin`) | `193` (`194–199` pad) | `1` (+`6`) | `512` (+`3,072`) | Loaded at `0x7E00`; VBE `640×480×8` LFB + `320×200` fallback |
 | Read-only `MiniFS` (`MFS1`) | `200–1203` | `1,004` | `514,048` | `MPY.BIN` (`189,616 B`, 7 frozen tools) + Ring 3/0 test suite |
@@ -575,6 +575,7 @@ qemu-system-i386 `
 3. Writable VFS and real `open/read/write/seek`.
 4. Per-process windows / graphics syscalls.
 5. More big-task slots, priorities, SMP.
+
 
 
 

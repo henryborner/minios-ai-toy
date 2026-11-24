@@ -117,9 +117,14 @@ static int ctx_target;
 
 static u8 *canvas_buf;
 static u8 *term_attrs;
+static u8 term_default_attr = 0xF0;
+static int term_dark;
 static int canvas_open;
 static char clipboard[256];
 static int clipboard_len;
+static int sel_id = -1;
+static int sel_active;
+static int sel_r0, sel_c0, sel_r1, sel_c1;
 static char canvas_title[32] = "Canvas";
 static struct gui_canvas_event canvas_ev;
 static u8 canvas_ev_pending;
@@ -526,14 +531,14 @@ static void term_clear(struct console *c) {
         for (int col = 0; col < TERM_COLS; col++) {
             c->term[r][col] = 0;
             if (c->attrs)
-                c->attrs[r * TERM_COLS + col] = 0xF0;
+                c->attrs[r * TERM_COLS + col] = term_default_attr;
         }
     c->n = 1;
     c->cur = 0;
     c->col = 0;
     c->scroll = 0;
     c->esc = 0;
-    c->cur_attr = 0xF0;
+    c->cur_attr = term_default_attr;
     c->ansi_len = 0;
 }
 
@@ -543,7 +548,7 @@ static void term_newline(struct console *c) {
         for (int col = 0; col < TERM_COLS; col++) {
             c->term[c->n][col] = 0;
             if (c->attrs)
-                c->attrs[c->n * TERM_COLS + col] = 0xF0;
+                c->attrs[c->n * TERM_COLS + col] = term_default_attr;
         }
         c->cur = c->n;
         c->n++;
@@ -554,7 +559,7 @@ static void term_newline(struct console *c) {
         for (int col = 0; col < TERM_COLS; col++) {
             c->term[TERM_ROWS - 1][col] = 0;
             if (c->attrs)
-                c->attrs[(TERM_ROWS - 1) * TERM_COLS + col] = 0xF0;
+                c->attrs[(TERM_ROWS - 1) * TERM_COLS + col] = term_default_attr;
         }
         c->cur = TERM_ROWS - 1;
     }
@@ -654,7 +659,7 @@ static void term_sgr(struct console *c) {
     u8 bg = c->cur_attr >> 4;
     for (int i = 0; i < n; i++) {
         int x = vals[i];
-        if (x == 0) { fg = 0; bg = 15; }
+        if (x == 0) { fg = term_default_attr & 15; bg = term_default_attr >> 4; }
         else if (x == 1) fg |= 8;
         else if (x == 22) fg &= 7;
         else if (x >= 30 && x <= 37) fg = (u8)(x - 30);
@@ -728,7 +733,7 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
                     c->attrs[c->cur * TERM_COLS + i] = c->attrs[c->cur * TERM_COLS + i + 1];
             }
             c->term[c->cur][len > 0 ? len - 1 : 0] = 0;
-            term_attr_put(c, c->cur, len - 1, 0xF0);
+            term_attr_put(c, c->cur, len - 1, term_default_attr);
             c->col--;
         }
         return;
@@ -754,7 +759,7 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     } else if (c->col > len) {
         for (int i = len; i < c->col; i++) {
             c->term[c->cur][i] = ' ';
-            term_attr_put(c, c->cur, i, 0xF0);
+            term_attr_put(c, c->cur, i, term_default_attr);
         }
     }
     c->term[c->cur][c->col] = ch;
@@ -778,8 +783,26 @@ static int hit_test(int x, int y);
 static void draw_snap_preview(void);
 static void sync_console_layout(int id);
 
+void gui_theme(int dark) {
+    u8 old = term_default_attr;
+    u8 now = dark ? 0x0F : 0xF0;
+    term_dark = dark;
+    term_default_attr = now;
+    if (term_attrs) {
+        for (int i = 0; i < NCONS * TERM_ROWS * TERM_COLS; i++)
+            if (term_attrs[i] == old || term_attrs[i] == 0xF0 || term_attrs[i] == 0x0F)
+                term_attrs[i] = now;
+        for (int i = 0; i < NCONS; i++) {
+            if (consoles[i].cur_attr == old || consoles[i].cur_attr == 0xF0 ||
+                consoles[i].cur_attr == 0x0F)
+                consoles[i].cur_attr = now;
+        }
+    }
+    gui_dirty = 1;
+}
+
 static void term_prompt(struct console *c) {
-    c->cur_attr = 0xF0;
+    c->cur_attr = term_default_attr;
     c->cmd_start = c->cur;
     c->cmd_len = 0;
     c->cmd_pos = 0;
@@ -800,7 +823,7 @@ static void cmd_render(struct console *c) {
             break;
         for (int x = 0; x < TERM_COLS; x++) {
             c->term[row][x] = 0;
-            term_attr_put(c, row, x, 0xF0);
+            term_attr_put(c, row, x, term_default_attr);
         }
         if (row >= c->n)
             c->n = row + 1;
@@ -813,7 +836,7 @@ static void cmd_render(struct console *c) {
     if (c->cmd_start < TERM_ROWS) {
         for (int i = 0; i < 5 && i < TERM_COLS; i++) {
             c->term[c->cmd_start][i] = prompt[i];
-            term_attr_put(c, c->cmd_start, i, 0xF0);
+            term_attr_put(c, c->cmd_start, i, term_default_attr);
         }
     }
     for (int i = 0; i < c->cmd_len; i++) {
@@ -822,7 +845,7 @@ static void cmd_render(struct console *c) {
         int col = abs % w;
         if (row >= 0 && row < TERM_ROWS && col < TERM_COLS) {
             c->term[row][col] = c->cmd_buf[i];
-            term_attr_put(c, row, col, 0xF0);
+            term_attr_put(c, row, col, term_default_attr);
         }
     }
     for (int r = 0; r < newrows; r++) {
@@ -1088,6 +1111,14 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Uptime: ");
         term_puts(c, uptime_str);
         term_puts(c, "\n");
+    } else if (streq(line, "theme light")) {
+        extern void gui_theme(int dark);
+        gui_theme(0);
+        term_puts(c, "Theme: light\n");
+    } else if (streq(line, "theme dark")) {
+        extern void gui_theme(int dark);
+        gui_theme(1);
+        term_puts(c, "Theme: dark\n");
     } else if (streq(line, "clear")) {
         term_clear(c);
         term_puts(c, "MiniOS 2.0 - C GUI\n\n");
@@ -1242,7 +1273,7 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "CPU halted.\n");
         machine_halt();
     } else {
-        term_puts(c, "Bad command or file name\n");
+        term_puts(c, "\x1b[31mBad command or file name\x1b[0m\n");
     }
 }
 
@@ -1460,19 +1491,26 @@ static void window_frame(int id) {
 static void draw_console(int id) {
     struct console *c = &consoles[id];
     window_frame(id);
+    fill_rect(c->x + 1, c->y + 11, c->w - 2, c->h - 12, term_default_attr >> 4);
     int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
+    int slo = sel_r0 < sel_r1 ? sel_r0 : sel_r1;
+    int shi = sel_r0 < sel_r1 ? sel_r1 : sel_r0;
+    int clo = sel_c0 < sel_c1 ? sel_c0 : sel_c1;
+    int chi = sel_c0 < sel_c1 ? sel_c1 : sel_c0;
     for (int r = 0; r < c->rows; r++) {
         int idx = start + r;
         if (idx < 0 || idx >= c->n)
             continue;
         for (int col = 0; col < c->cols; col++) {
-            u8 attr = c->attrs ? c->attrs[idx * TERM_COLS + col] : 0xF0;
+            u8 attr = c->attrs ? c->attrs[idx * TERM_COLS + col] : term_default_attr;
             char ch = c->term[idx][col];
             int cx = c->x + 4 + col * 8;
             int cy = c->y + 14 + r * 9;
-            fill_rect(cx, cy, 8, 9, attr >> 4);
+            int inv = sel_active && sel_id == id && idx >= slo && idx <= shi &&
+                      col >= clo && col <= chi;
+            fill_rect(cx, cy, 8, 9, inv ? (attr & 15) : (attr >> 4));
             if (ch)
-                draw_char(cx, cy, ch, attr & 15, 1);
+                draw_char(cx, cy, ch, inv ? (attr >> 4) : (attr & 15), 1);
         }
     }
     scrollbar_draw(c);
@@ -1983,7 +2021,7 @@ void gui_alloc_fb(void) {
         term_attrs = (u8 *)kernel_alloc_pages_zero((n + 4095u) / 4096u);
         if (term_attrs) {
             for (u32 i = 0; i < n; i++)
-                term_attrs[i] = 0xF0;
+                term_attrs[i] = term_default_attr;
             for (int i = 0; i < NCONS; i++)
                 consoles[i].attrs = term_attrs + i * TERM_ROWS * TERM_COLS;
         }
@@ -2519,12 +2557,42 @@ void gui_mouse_event(int x, int y, int buttons) {
                 start_drag(id, x, y);
             }
         } else if (hit >= HIT_BODY_BASE && hit < HIT_BODY_BASE + WIN_COUNT) {
-            focus_window(hit - HIT_BODY_BASE);
+            int id = hit - HIT_BODY_BASE;
+            focus_window(id);
+            if (id <= WIN_C2) {
+                struct console *c = &consoles[id];
+                int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
+                int rr = (y - (c->y + 14)) / 9;
+                int cc = (x - (c->x + 4)) / 8;
+                if (rr < 0) rr = 0;
+                if (rr >= c->rows) rr = c->rows - 1;
+                if (cc < 0) cc = 0;
+                if (cc >= c->cols) cc = c->cols - 1;
+                sel_id = id;
+                sel_active = 0;
+                sel_r0 = sel_r1 = start + rr;
+                sel_c0 = sel_c1 = cc;
+            }
         } else if (hit == HIT_NONE) {
             focus_win = -1;
         }
     }
 
+    if ((buttons & 1) && sel_id >= 0) {
+        struct console *c = &consoles[sel_id];
+        int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
+        int rr = (y - (c->y + 14)) / 9;
+        int cc = (x - (c->x + 4)) / 8;
+        if (rr < 0) rr = 0;
+        if (rr >= c->rows) rr = c->rows - 1;
+        if (cc < 0) cc = 0;
+        if (cc >= c->cols) cc = c->cols - 1;
+        sel_r1 = start + rr;
+        sel_c1 = cc;
+        if (sel_r1 != sel_r0 || sel_c1 != sel_c0)
+            sel_active = 1;
+        gui_dirty = 1;
+    }
     if ((buttons & 1) && resize_win >= 0) {
         resize_move(x, y);
     } else if ((buttons & 1) && scroll_drag >= 0) {
@@ -2534,6 +2602,29 @@ void gui_mouse_event(int x, int y, int buttons) {
     }
 
     if (release) {
+        if (sel_id >= 0 && sel_active) {
+            int slo = sel_r0 < sel_r1 ? sel_r0 : sel_r1;
+            int shi = sel_r0 < sel_r1 ? sel_r1 : sel_r0;
+            int clo = sel_c0 < sel_c1 ? sel_c0 : sel_c1;
+            int chi = sel_c0 < sel_c1 ? sel_c1 : sel_c0;
+            struct console *c = &consoles[sel_id];
+            clipboard_len = 0;
+            for (int r = slo; r <= shi && clipboard_len < 255; r++) {
+                for (int col = clo; col <= chi && clipboard_len < 255; col++) {
+                    char ch = c->term[r][col];
+                    if (ch)
+                        clipboard[clipboard_len++] = ch;
+                }
+                if (clipboard_len < 255)
+                    clipboard[clipboard_len++] = '\n';
+            }
+            while (clipboard_len > 0 &&
+                   (clipboard[clipboard_len - 1] == '\n' ||
+                    clipboard[clipboard_len - 1] == ' '))
+                clipboard_len--;
+        }
+        sel_id = -1;
+        sel_active = 0;
         if (drag_win >= 0) {
             struct window *dw = &wins[drag_win];
             if (dw->y <= 19)
@@ -2697,6 +2788,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
