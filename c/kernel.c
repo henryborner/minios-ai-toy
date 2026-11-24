@@ -255,7 +255,8 @@ extern void irq1_stub(void);
 extern void irq12_stub(void);
 extern void syscall_stub(void);
 extern void isr_default(void);
-extern void enter_user(u32 entry, u32 user_stack);
+extern void run_user(u32 entry, u32 user_stack);
+extern void user_exit_to_kernel(void);
 extern const u8 user_blob_start[];
 extern const u8 user_blob_end[];
 
@@ -443,8 +444,8 @@ void syscall_handler(u32 number, u32 arg, u32 cs) {
     if (number == 1) {
         gui_sys_print((const char *)arg);
     } else if (number == 2) {
-        gui_sys_print("[ring3] exit syscall; halting.\n");
-        machine_halt();
+        gui_sys_print("[ring3] exit syscall; returning to GUI.\n");
+        user_exit_to_kernel();
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }
@@ -455,8 +456,7 @@ void enter_ring3_demo(void) {
     gdt_install();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);   /* DPL3 interrupt gate */
     paging_install();
-    enter_user(0x400000, 0x402000);
-    for (;;) {}
+    run_user(0x400000, 0x402000);
 }
 
 /* -----------------------------------------------------------------------------

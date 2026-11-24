@@ -26,7 +26,7 @@ Screenshots:
 - [`../screenshots/c-gui-startmenu.png`](../screenshots/c-gui-startmenu.png)
 - [`../screenshots/c-gui-system.png`](../screenshots/c-gui-system.png)
 - [`../screenshots/c-gui-about.png`](../screenshots/c-gui-about.png)
-- [`../screenshots/c-ring3-cpl.png`](../screenshots/c-ring3-cpl.png)
+- [`../screenshots/c-ring3-cpl.png`](../screenshots/c-ring3-cpl.png)\r\n- [`../screenshots/c-ring3-return.png`](../screenshots/c-ring3-return.png)
 
 ## Ring 3 demo
 
@@ -110,7 +110,7 @@ qemu-system-i386 `
 
 - Ring 1/2 unused (normal; only Ring 0/3 matter here).
 - Paging is identity-only and one address space; no per-process page directories yet.
-- User demo has no return path; syscall 2 halts. Scheduler/exit-to-shell is next.
+- User syscall 2 returns to the GUI; cooperative multi-task scheduler is next.
 - No filesystem; user program is embedded in the kernel image.
 - Static 64 KB heap; no general allocator.
 - Boot loader loads 64 floppy sectors (32 KB); kernel file is ~11 KB.
@@ -122,3 +122,4 @@ qemu-system-i386 `
 3. Filesystem + loadable user programs.
 4. More syscalls (VGA/window drawing, file I/O, keyboard input).
 5. On-device interpreter for applications.
+
