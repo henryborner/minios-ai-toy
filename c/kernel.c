@@ -1866,23 +1866,85 @@ static int build_args_on_stack(int slot, u32 argc, const char *const *argv,
     return 1;
 }
 
+#define WARM_CACHE_SLOTS 2
+struct warm_module {
+    u8 used;
+    char name[16];
+    u32 phys;
+    u32 pages;
+    u32 size;
+};
+static struct warm_module warm_modules[WARM_CACHE_SLOTS];
+volatile u32 user_module_last_ticks;
+volatile u32 user_module_last_size;
+volatile u8 user_module_cache_hit;
+
+static int warm_name_eq(const char *a, const char *b) {
+    for (int i = 0; i < 16; i++) {
+        u8 ca = (u8)a[i];
+        u8 cb = (u8)b[i];
+        if (ca == 0 && cb == 0)
+            return 1;
+        if (ca == 0 || cb == 0)
+            return 0;
+        if (upper_char(ca) != upper_char(cb))
+            return 0;
+    }
+    return 1;
+}
+
+static int warm_find(const char *name) {
+    for (int i = 0; i < WARM_CACHE_SLOTS; i++) {
+        if (warm_modules[i].used && warm_name_eq(warm_modules[i].name, name))
+            return i;
+    }
+    return -1;
+}
+
+static void warm_store(const char *name, u32 size) {
+    int slot = -1;
+    for (int i = 0; i < WARM_CACHE_SLOTS; i++) {
+        if (!warm_modules[i].used) {
+            slot = i;
+            break;
+        }
+    }
+    if (slot < 0 || size == 0 || size > BIG_CODE_MAX)
+        return;
+    u32 pages = (size + 0xFFFu) / 0x1000u;
+    u32 phys = frame_alloc_pages(pages);
+    if (!phys)
+        return;
+    u8 *dst = (u8 *)direct_ptr(phys);
+    const u8 *src = (const u8 *)BIG_CODE_PHYS;
+    for (u32 i = 0; i < size; i++)
+        dst[i] = src[i];
+    warm_modules[slot].used = 1;
+    warm_modules[slot].phys = phys;
+    warm_modules[slot].pages = pages;
+    warm_modules[slot].size = size;
+    for (int i = 0; i < 16; i++)
+        warm_modules[slot].name[i] = name[i];
+}
+
+static void warm_copy(int slot, u32 size) {
+    const u8 *src = (const u8 *)direct_ptr(warm_modules[slot].phys);
+    u8 *dst = (u8 *)BIG_CODE_PHYS;
+    for (u32 i = 0; i < size; i++)
+        dst[i] = src[i];
+}
+
 static int run_user_module_ex(const char *name, int argc,
                               const char *const *argv) {
+    u32 start_ticks = ticks;
     u32 size = 0;
-    if (!fs_load_file_to(name, (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size)) {
-        gui_sys_print("[user-mod] load failed.\n");
-        return 0;
-    }
+    int cache = warm_find(name);
+    int cache_hit = 0;
 
-    struct module_header *h = (struct module_header *)BIG_CODE_PHYS;
-    if (h->magic[0] != 'U' || h->magic[1] != 'M' ||
-        h->magic[2] != 'P' || h->magic[3] != '1') {
-        gui_sys_print("[user-mod] bad UMP1 header.\n");
-        return 0;
-    }
-    if (h->image_size > size || h->entry_offset >= h->image_size ||
-        h->image_size > BIG_CODE_MAX || h->bss_size > BIG_CODE_MAX - h->image_size) {
-        gui_sys_print("[user-mod] bad sizes.\n");
+    if (cache >= 0) {
+        size = warm_modules[cache].size;
+    } else if (!fs_load_file_to(name, (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size)) {
+        gui_sys_print("[user-mod] load failed.\n");
         return 0;
     }
 
@@ -1891,6 +1953,28 @@ static int run_user_module_ex(const char *name, int argc,
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
     task_system_init();
     task_clear_all();
+
+    if (cache >= 0) {
+        warm_copy(cache, size);
+        cache_hit = 1;
+    }
+
+    struct module_header *h = (struct module_header *)BIG_CODE_PHYS;
+    if (h->magic[0] != 'U' || h->magic[1] != 'M' ||
+        h->magic[2] != 'P' || h->magic[3] != '1') {
+        gui_sys_print("[user-mod] bad UMP1 header.\n");
+        __asm__ __volatile__("sti");
+        return 0;
+    }
+    if (h->image_size > size || h->entry_offset >= h->image_size ||
+        h->image_size > BIG_CODE_MAX || h->bss_size > BIG_CODE_MAX - h->image_size) {
+        gui_sys_print("[user-mod] bad sizes.\n");
+        __asm__ __volatile__("sti");
+        return 0;
+    }
+
+    if (!cache_hit)
+        warm_store(name, size);
 
     int slot = task_create_big(name, h->image_size, h->bss_size, h->entry_offset);
     if (slot < 0) {
@@ -1907,6 +1991,9 @@ static int run_user_module_ex(const char *name, int argc,
         __asm__ __volatile__("sti");
         return 0;
     }
+    user_module_last_ticks = ticks - start_ticks;
+    user_module_last_size = size;
+    user_module_cache_hit = (u8)cache_hit;
     start_tasks(slot);
     return 1;
 }

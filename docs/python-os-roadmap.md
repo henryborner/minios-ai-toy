@@ -108,16 +108,16 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 3：特色王牌 ① ——「瞬启热驻留镜像池」与 Shell `= expr` 秒算
 **目标**：彻底消灭二次启动的软盘 I/O，让 Python 在系统里达到 `< 2 ms` 随叫随到的原生响应体验。
 
-- [ ] **3.1 实现内核大模块母本热缓存（Warm Image Cache）**（`c/kernel.c`）
+- [x] **3.1 实现内核大模块母本热缓存（Warm Image Cache）**（`c/kernel.c`）
   - 在物理页帧池（`5–16 MB`）中建立只读母本缓存槽（保存模块名、缓存物理页基址、页数及校验通过的 `UMP1` 头信息）。
   - `run_user_module_args()` 首次加载 `MPY.BIN` 时从 MiniFS 读入并写入缓存物理页；此后再次启动同名模块时，**直接从缓存物理页 `memcpy` 到任务代码页**，0 次软盘访问。
-- [ ] **3.2 支持 `py -c` / `py -e` 与 Shell `= <表达式>` 秒算语法糖**
+- [x] **3.2 支持 `py -c` / `py -e` 与 Shell `= <表达式>` 秒算语法糖**
   - 在 `c/mpy_port/main.c` 中解析命令行参数：
     - `py`（无参）：进入交互式 REPL；
     - `py -c "<code>"`：执行语句块后退出；
     - `py -e "<expr>"`：按表达式求值（`MP_PARSE_EVAL_INPUT`），若返回值不为 `None` 则自动打印 `repr` 结果后退出。
   - 在 `c/gui.c` 的 `run_command()` 中支持 `=` 前缀快捷求值：例如输入 `= 1024*768, hex(0xdeadbeef)` 直接调用热缓存中的 `MPY.BIN -e "..."` 打印结果并返回提示符。
-- [ ] **Stage 3 验收**：对比打印首次冷加载与第二次热缓存运行 `= 2**100` 的 `ticks` 耗时（二次启动应 `<= 1` tick）；截图展示在 `C:\>` 连续用 `= ...` 秒算表达式的效果。
+- [x] **Stage 3 验收**：`MPY.BIN` 181,696B；首次 `py -e 2**64` 冷加载 **26 ticks**，第二次 **0 ticks**（`<=1`）；`= 2**100` 与 `pystat` 实测通过。另修复 HAL 在 readline 阶段直接 `mp_handle_pending` 导致 Ctrl-C 报 `[mpy] FATAL: uncaught NLR` 的问题。
 
 ---
 

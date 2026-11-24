@@ -46,6 +46,9 @@ void mp_hal_delay_ms(mp_uint_t ms) {
         if (step > 0) {
             sys_sleep_ms(step);
         }
+        if (sys_poll_ctrl_c()) {
+            mp_sched_keyboard_interrupt();
+        }
         mp_handle_pending(true);
     }
 }
@@ -66,9 +69,9 @@ int mp_hal_stdin_rx_chr(void) {
         mp_handle_pending(true);
         int c = sys_getchar();
         if (c == mp_interrupt_char) {
-            mp_sched_keyboard_interrupt();
-            mp_handle_pending(true);
-            continue;
+            /* readline consumes Ctrl-C while a line is being edited; do not
+               raise NLR here, because the REPL read path has no NLR frame. */
+            return c;
         }
         if (c == '\n') {
             return '\r';

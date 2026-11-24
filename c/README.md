@@ -44,6 +44,12 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   page directories/user page tables/kernel stacks
 - **Stage 1 ABI**: big Ring 3 code window 512 KB, `run_user_module_args()`
   argc/argv, syscall 4 long writes, `stat`/`readdir`, and `ps`/`kill`
+- **Stage 2 MicroPython**: `MPY.BIN` v1.24.1 Ring 3 REPL, `py`/`python`,
+  `py -c/-e`, VFS, GC, JSON/math/re, Ctrl-C/Ctrl-D
+- **Stage 3 warm cache**: the first launch reads `MPY.BIN` from the FDC and
+  caches it in the frame pool; subsequent launches copy from RAM (0 disk I/O).
+  Shell `= EXPR` evaluates a one-shot expression and `pystat` reports last
+  cold/warm ticks.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -130,6 +136,10 @@ Screenshots:
 - [`../screenshots/c-stage1-ps.png`](../screenshots/c-stage1-ps.png)
 - [`../screenshots/c-stage1-kill-con1.png`](../screenshots/c-stage1-kill-con1.png)
 - [`../screenshots/c-stage1-big512.png`](../screenshots/c-stage1-big512.png)
+- [`../screenshots/c-stage3-cold.png`](../screenshots/c-stage3-cold.png)
+- [`../screenshots/c-stage3-warm.png`](../screenshots/c-stage3-warm.png)
+- [`../screenshots/c-stage3-equals.png`](../screenshots/c-stage3-equals.png)
+- [`../screenshots/c-verify-ctrlc-fixed.png`](../screenshots/c-verify-ctrlc-fixed.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -292,6 +302,10 @@ uargs              # large UMP1 task argc/argv
 big512             # 300 KB UMP1 payload (> old 256 KB limit)
 ps                 # list active tasks
 kill PID           # terminate a task, including a runaway one
+py                 # MicroPython REPL
+py -e 2**64        # one-shot expression
+= 2**100           # warm-cache one-shot expression
+pystat             # last MPY load: cold/warm, ticks, bytes
 ```
 
 ## Window manager
@@ -322,8 +336,9 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~34.8 KB (64 KB loader limit)
-- Stage 0/1 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
+- `c/build/kernel.bin` — currently ~36.6 KB (64 KB loader limit)
+- `c/build/mpy.bin` — **181,696 bytes** (177.4 KB, image+BSS 182,256 B)
+- Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task

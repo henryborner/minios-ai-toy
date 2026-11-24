@@ -544,6 +544,38 @@ static void launch_python(struct console *c, const char *rest) {
         term_puts(c, "Python launch failed.\n");
 }
 
+static void run_python_expr(struct console *c, const char *rest) {
+    extern int run_user_module_args(const char *name, int argc,
+                                    const char *const *argv);
+    char expr[64];
+    int n = 0;
+    while (*rest == ' ')
+        rest++;
+    while (*rest && n < 62)
+        expr[n++] = *rest++;
+    expr[n] = 0;
+    if (n == 0) {
+        term_puts(c, "usage: = <expression>\n");
+        return;
+    }
+    const char *argv[3] = { "py", "-e", expr };
+    if (!run_user_module_args("MPY.BIN", 3, argv))
+        term_puts(c, "Python expression failed.\n");
+}
+
+static void py_stats(struct console *c) {
+    extern volatile u32 user_module_last_ticks;
+    extern volatile u32 user_module_last_size;
+    extern volatile u8 user_module_cache_hit;
+    term_puts(c, "mpy last: ");
+    term_puts(c, user_module_cache_hit ? "warm" : "cold");
+    term_puts(c, " ticks=");
+    term_u32(c, user_module_last_ticks);
+    term_puts(c, " bytes=");
+    term_u32(c, user_module_last_size);
+    term_puts(c, "\n");
+}
+
 static void run_command(struct console *c, char *line) {
     while (*line == ' ')
         line++;
@@ -552,7 +584,8 @@ static void run_command(struct console *c, char *line) {
 
     extern int kernel_runtime_busy(void);
     if (kernel_runtime_busy() &&
-        (streq(line, "ls") || streq(line, "disktest") ||
+        (*line == '=' ||
+         streq(line, "ls") || streq(line, "disktest") ||
          streq(line, "ring3") || streq(line, "tasks") ||
          streq(line, "progs") || streq(line, "utest") ||
          streq(line, "py") || streq(line, "python") ||
@@ -573,6 +606,7 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "help ver cpu mem time date ps kill\n");
         term_puts(c, "py python clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME\n");
+        term_puts(c, "py pystat = EXPR ps kill PID\n");
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
         term_puts(c, "modtest mod NAME utest reboot halt\n");
@@ -694,6 +728,10 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Loading kernel module from MiniFS...\n");
         gui_redraw();
         run_module(line + 4);
+    } else if (*line == '=') {
+        run_python_expr(c, line + 1);
+    } else if (streq(line, "pystat")) {
+        py_stats(c);
     } else if (streq(line, "py") || streq(line, "python")) {
         launch_python(c, "");
     } else if (starts_with(line, "py ")) {
