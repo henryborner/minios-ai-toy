@@ -1,29 +1,49 @@
-# MiniOS 2.0 — C kernel prototype
+# MiniOS 2.0 — C kernel + GUI prototype
 
 This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not replace
 `main` (MiniOS 1.0, the real-mode assembly OS) yet.
 
 ## What works
 
-- 16-bit boot sector loads 64 sectors to `0x10000`
-- A20 enable, flat GDT, 32-bit protected mode
+- 16-bit boot sector loads the kernel to `0x10000`, enables A20 and enters
+  flat 32-bit protected mode
 - Freestanding C kernel compiled with clang (`i386-unknown-none-elf`)
-- 80x25 VGA text output at `0xB8000`, hardware cursor
-- IDT with 256 entries and dedicated IRQ0/IRQ1 stubs
-- PIC remapped to vectors `0x20` / `0x21`
-- PIT channel 0 at 100 Hz, uptime counter
-- PS/2 keyboard on IRQ1, Shift handling, 64-byte ring buffer
-- HLT idle loop (no busy waiting)
-- Shell commands: `HELP`, `VER`, `CPU`, `MEM`, `UPTIME`, `CLEAR`, `ECHO`,
-  `ABOUT`, `REBOOT`, `HALT`
-- CPUID vendor string, 64 KB static kernel heap
+- VGA mode 13h, 320×200×256, custom 16-colour palette
+- VGA ROM 8×8 font, 1× and 2× scaling
+- IDT/PIC/PIT: IRQ0 timer at 100 Hz, IRQ1 keyboard, IRQ12 PS/2 mouse
+- PS/2 mouse: 3-byte packets, cursor, click, title dragging, close buttons
+- Graphical desktop, taskbar, Start menu, clock
+- Console window with C-shell commands
+- System Information window, About dialog (OK button)
+- HLT idle loop
 - Exact 1.44 MB image: `MiniOS-C.img`
 
 Screenshots:
 
-- [`../screenshots/c-kernel-irq-shell-boot.png`](../screenshots/c-kernel-irq-shell-boot.png)
-- [`../screenshots/c-kernel-irq-shell-help.png`](../screenshots/c-kernel-irq-shell-help.png)
-- [`../screenshots/c-kernel-irq-shell-mem.png`](../screenshots/c-kernel-irq-shell-mem.png)
+- [`../screenshots/c-gui-boot.png`](../screenshots/c-gui-boot.png)
+- [`../screenshots/c-gui-help.png`](../screenshots/c-gui-help.png)
+- [`../screenshots/c-gui-startmenu.png`](../screenshots/c-gui-startmenu.png)
+- [`../screenshots/c-gui-system.png`](../screenshots/c-gui-system.png)
+- [`../screenshots/c-gui-about.png`](../screenshots/c-gui-about.png)
+
+## Controls
+
+| Input | Action |
+|---|---|
+| Mouse click `Start` | open/close the Start menu |
+| Click menu items | System / Console / About / Reboot |
+| Click taskbar `Console` / `System` | reopen window |
+| Drag a title bar | move window |
+| Click `x` | close window |
+| Click `OK` in About | close dialog |
+| `F1` / `F2` / `F3` | About / System / Console |
+| `Esc` | close About, then System, then menu |
+| Keyboard | Console shell input |
+
+## Shell commands
+
+`help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`, `echo`,
+`sysinfo`, `about`, `reboot`, `halt`.
 
 ## Build
 
@@ -41,7 +61,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~3.9 KB
+- `c/build/kernel.bin` — currently ~10 KB
 - `MiniOS-C.img` — 1,474,560 bytes
 
 ## Run
@@ -49,26 +69,27 @@ Outputs:
 ```powershell
 qemu-system-i386 `
   -drive "file=MiniOS-C.img,if=floppy,format=raw,readonly=on" `
-  -boot a -m 128
+  -boot a -m 128 -rtc base=localtime
 ```
 
 ## Language split
 
-- assembly: `boot.asm`, `entry.asm`, `interrupts.asm` (boot, BSS, IRQ stubs)
-- C: IDT/PIC/PIT, keyboard, VGA, shell, heap, future filesystem/GUI
+- assembly: `boot.asm`, `entry.asm`, `interrupts.asm`
+- C: kernel, IDT/PIC/PIT, keyboard/mouse, VGA framebuffer, GUI, shell
 - later: on-device interpreter for applications
 
 ## Next milestones
 
-1. VGA mode 13h graphics + double buffer
-2. PS/2 mouse on IRQ12 + cursor + window system
-3. Memory map/heap allocator and simple filesystem
-4. Port the v1 GUI and shell commands to C
+1. Window z-order/focus and taskbar state
+2. Filesystem and loadable programs
+3. Memory map/heap allocator beyond the static 64 KB
+4. Port remaining v1 OS behaviours and polish the GUI
 5. On-device MiniBASIC / Python-subset interpreter
 
 ## Status / caveats
 
-- Text-mode only; no GUI in the C kernel yet.
 - No paging; flat 4 GB segments, static 64 KB heap.
-- 16-bit boot loader currently loads 64 floppy sectors (32 KB max).
-- This is a bootable prototype, not a replacement for `v1.0.0`.
+- Boot loader loads 64 floppy sectors (32 KB max); the C kernel is currently
+  around 10 KB, so there is room.
+- No filesystem yet; shell commands are built-in.
+- This is a prototype, not a replacement for `v1.0.0`.

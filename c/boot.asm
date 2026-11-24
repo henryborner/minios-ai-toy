@@ -71,6 +71,9 @@ start:
         dec     byte [left]
         jnz     .load
 
+        mov     ax, 0x0013       ; VGA 320x200x256 graphics mode
+        int     0x10
+
         cli
         ; Fast A20 gate
         in      al, 0x92
