@@ -57,6 +57,7 @@
 #define HIT_MIN_BASE 800
 #define HIT_MAX_BASE 900
 #define HIT_CTX_BASE 1000
+#define HIT_RESIZE_BASE 1500
 
 struct console {
     int x, y, w, h;
@@ -65,6 +66,7 @@ struct console {
     int cur;
     int col;
     int scroll;
+    int cols, rows;
     u8 esc;
     char cmd_buf[128];
     char history[8][128];
@@ -116,6 +118,9 @@ static u8 canvas_ev_pending;
 static int pressed_hit;
 static int drag_win;
 static int drag_dx, drag_dy;
+static int resize_win = -1;
+static int resize_dir;
+static int resize_sx, resize_sy, resize_sw, resize_sh;
 static int scroll_drag = -1;
 static int last_buttons;
 
@@ -533,7 +538,7 @@ static void term_newline(struct console *c) {
     }
     if (was_scrolled) {
         c->scroll++;
-        int max = c->n > term_vis ? c->n - term_vis : 0;
+        int max = c->n > c->rows ? c->n - c->rows : 0;
         if (c->scroll > max)
             c->scroll = max;
     }
@@ -541,7 +546,7 @@ static void term_newline(struct console *c) {
 }
 
 static void term_scroll_by(struct console *c, int delta) {
-    int max = c->n > term_vis ? c->n - term_vis : 0;
+    int max = c->n > c->rows ? c->n - c->rows : 0;
     c->scroll += delta;
     if (c->scroll < 0)
         c->scroll = 0;
@@ -551,11 +556,11 @@ static void term_scroll_by(struct console *c, int delta) {
 
 static void scroll_metrics(struct console *c, int *bx, int *by, int *bh,
                            int *thumb, int *pos) {
-    int track_h = term_vis * 9 - 2;
-    int t = track_h * term_vis / (c->n > 0 ? c->n : 1);
+    int track_h = c->rows * 9 - 2;
+    int t = track_h * c->rows / (c->n > 0 ? c->n : 1);
     if (t < 8) t = 8;
     if (t > track_h) t = track_h;
-    int max = c->n > term_vis ? c->n - term_vis : 0;
+    int max = c->n > c->rows ? c->n - c->rows : 0;
     int travel = track_h - t;
     int p = max > 0 ? travel * (max - c->scroll) / max : 0;
     *bx = c->x + c->w - 8;
@@ -566,7 +571,7 @@ static void scroll_metrics(struct console *c, int *bx, int *by, int *bh,
 }
 
 static int scrollbar_hit(struct console *c, int x, int y) {
-    if (c->n <= term_vis)
+    if (c->n <= c->rows)
         return 0;
     int bx, by, bh, thumb, pos;
     scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
@@ -576,13 +581,13 @@ static int scrollbar_hit(struct console *c, int x, int y) {
 }
 
 static void scrollbar_set_from_y(struct console *c, int y) {
-    if (c->n <= term_vis)
+    if (c->n <= c->rows)
         return;
     int bx, by, bh, thumb, pos;
     scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
     (void)bx;
     (void)pos;
-    int max = c->n - term_vis;
+    int max = c->n - c->rows;
     int travel = bh - thumb;
     int rel = y - by - thumb / 2;
     if (rel < 0) rel = 0;
@@ -593,7 +598,7 @@ static void scrollbar_set_from_y(struct console *c, int y) {
 }
 
 static void scrollbar_draw(struct console *c) {
-    if (c->n <= term_vis)
+    if (c->n <= c->rows)
         return;
     int bx, by, bh, thumb, pos;
     scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
@@ -606,7 +611,7 @@ static int term_ansi_final(struct console *c, char ch) {
         if (c->col > 0)
             c->col--;
     } else if (ch == 'C') {
-        if (c->col < term_width - 1)
+        if (c->col < c->cols - 1)
             c->col++;
     } else if (ch == 'H') {
         c->col = 0;
@@ -662,7 +667,7 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     }
     if (ch < 32)
         return;
-    if (c->col >= term_width)
+    if (c->col >= c->cols)
         term_newline(c);
     int len = line_len(c, c->cur);
     if (insert && c->col < len && len < TERM_COLS - 2) {
@@ -701,7 +706,7 @@ static void term_prompt(struct console *c) {
 }
 
 static void cmd_render(struct console *c) {
-    int w = term_width;
+    int w = c->cols;
     int newrows = (5 + c->cmd_len + w - 1) / w;
     int rows = newrows > c->cmd_rows ? newrows : c->cmd_rows;
     if (newrows < 1) newrows = 1;
@@ -1164,8 +1169,8 @@ static void term_key(struct console *c, char ch) {
             i++;
         }
         command[i] = 0;
-        c->cur = c->cmd_start + (5 + c->cmd_len) / term_width;
-        c->col = (5 + c->cmd_len) % term_width;
+        c->cur = c->cmd_start + (5 + c->cmd_len) / c->cols;
+        c->col = (5 + c->cmd_len) % c->cols;
         sys_output = c;
         term_newline(c);
         run_command(c, command);
@@ -1346,13 +1351,15 @@ static void window_frame(int id) {
         raise_box_col(w->x + w->w - 14, w->y + 2, 12, 8, 7);
     draw_char(w->x + w->w - 12, w->y + 2, 'x', 0, 1);
     fill_rect(w->x + 1, w->y + 11, w->w - 2, w->h - 12, 15);
+    for (int i = 0; i < 4; i++)
+        fill_rect(w->x + w->w - 3 - i, w->y + w->h - 3 - i, 2, 2, 8);
 }
 
 static void draw_console(int id) {
     struct console *c = &consoles[id];
     window_frame(id);
-    int start = c->n > term_vis ? c->n - term_vis - c->scroll : 0;
-    for (int r = 0; r < term_vis; r++) {
+    int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
+    for (int r = 0; r < c->rows; r++) {
         int idx = start + r;
         if (idx >= 0 && idx < c->n)
             text(c->x + 4, c->y + 14 + r * 9, c->term[idx], 0);
@@ -1360,7 +1367,7 @@ static void draw_console(int id) {
     scrollbar_draw(c);
     if (focus_win == id && c->scroll == 0 && ((ticks / 50) & 1)) {
         int row = c->cur - start;
-        if (row >= 0 && row < term_vis)
+        if (row >= 0 && row < c->rows)
             fill_rect(c->x + 4 + c->col * 8, c->y + 14 + row * 9, 1, 8, 0);
     }
 }
@@ -1740,7 +1747,7 @@ static void draw_cursor(void) {
 int gui_cursor_only_motion(int x, int y, int buttons) {
     if ((buttons & 7) || (last_buttons & 7) ||
         menu_open || list_open || ctx_open ||
-        drag_win >= 0 || scroll_drag >= 0)
+        drag_win >= 0 || resize_win >= 0 || scroll_drag >= 0)
         return 0;
     if (x == mouse_x && y == mouse_y)
         return 1;
@@ -1864,6 +1871,27 @@ static int hit_test(int x, int y) {
             return HIT_CLOSE_BASE + id;
         if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 77, 48, 19))
             return HIT_OK;
+        if (!w->maximized && id != WIN_APP) {
+            int edge = 4;
+            int n = (y >= w->y - edge && y <= w->y + edge);
+            int s = (y >= w->y + w->h - edge && y <= w->y + w->h + edge);
+            int l = (x >= w->x - edge && x <= w->x + edge);
+            int r = (x >= w->x + w->w - edge && x <= w->x + w->w + edge);
+            if ((n || s || l || r) &&
+                x >= w->x - edge && x <= w->x + w->w + edge &&
+                y >= w->y - edge && y <= w->y + w->h + edge) {
+                int d = 0;
+                if (n) d = 1;
+                else if (s) d = 2;
+                else if (r) d = 3;
+                else d = 4;
+                if (n && r) d = 5;
+                else if (n && l) d = 6;
+                else if (s && r) d = 7;
+                else if (s && l) d = 8;
+                return HIT_RESIZE_BASE + id * 9 + d;
+            }
+        }
         if (inside(x, y, w->x + 1, w->y + 1, w->w - 2, 10))
             return HIT_TITLE_BASE + id;
         if (id >= WIN_C0 && id <= WIN_C2 &&
@@ -1927,6 +1955,59 @@ static void drag_move(int x, int y) {
         consoles[drag_win].x = nx;
         consoles[drag_win].y = ny;
     }
+}
+
+static void resize_move(int x, int y) {
+    if (resize_win < 0)
+        return;
+    struct window *w = &wins[resize_win];
+    int left = resize_sx;
+    int top = resize_sy;
+    int right = resize_sx + resize_sw;
+    int bottom = resize_sy + resize_sh;
+    int d = resize_dir;
+    int west = (d == 4 || d == 6 || d == 8);
+    int east = (d == 3 || d == 5 || d == 7);
+    int north = (d == 1 || d == 5 || d == 6);
+    int south = (d == 2 || d == 7 || d == 8);
+    if (west) left = x;
+    if (east) right = x;
+    if (north) top = y;
+    if (south) bottom = y;
+    int minw = (resize_win <= WIN_C2) ? 208 : 160;
+    int minh = (resize_win <= WIN_C2) ? 96 : 90;
+    if (right - left < minw) {
+        if (west) left = right - minw;
+        else right = left + minw;
+    }
+    if (bottom - top < minh) {
+        if (north) top = bottom - minh;
+        else bottom = top + minh;
+    }
+    if (left < 0) left = 0;
+    if (top < 18) top = 18;
+    if (right > scr_w) right = scr_w;
+    if (bottom > scr_h - 14) bottom = scr_h - 14;
+    w->x = left;
+    w->y = top;
+    w->w = right - left;
+    w->h = bottom - top;
+    if (resize_win >= WIN_C0 && resize_win <= WIN_C2) {
+        struct console *c = &consoles[resize_win];
+        c->x = w->x;
+        c->y = w->y;
+        c->w = w->w;
+        c->h = w->h;
+        int cols = (w->w - 16) / 8;
+        int rows = (w->h - 18) / 9;
+        if (cols < 24) cols = 24;
+        if (cols > 76) cols = 76;
+        if (rows < 6) rows = 6;
+        if (rows > 46) rows = 46;
+        c->cols = cols;
+        c->rows = rows;
+    }
+    gui_dirty = 1;
 }
 
 static void activate_hit(int hit) {
@@ -2098,6 +2179,17 @@ void gui_mouse_event(int x, int y, int buttons) {
             focus_window(id);
             scroll_drag = id;
             scrollbar_set_from_y(&consoles[id], y);
+        } else if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + WIN_COUNT * 9) {
+            int off = hit - HIT_RESIZE_BASE;
+            int id = off / 9;
+            int d = off % 9;
+            focus_window(id);
+            resize_win = id;
+            resize_dir = d;
+            resize_sx = wins[id].x;
+            resize_sy = wins[id].y;
+            resize_sw = wins[id].w;
+            resize_sh = wins[id].h;
         } else if (hit >= HIT_TITLE_BASE && hit < HIT_TITLE_BASE + WIN_COUNT) {
             static u32 last_title_tick;
             static int last_title_id = -1;
@@ -2118,7 +2210,9 @@ void gui_mouse_event(int x, int y, int buttons) {
         }
     }
 
-    if ((buttons & 1) && scroll_drag >= 0) {
+    if ((buttons & 1) && resize_win >= 0) {
+        resize_move(x, y);
+    } else if ((buttons & 1) && scroll_drag >= 0) {
         scrollbar_set_from_y(&consoles[scroll_drag], y);
     } else if ((buttons & 1) && drag_win >= 0) {
         drag_move(x, y);
@@ -2129,6 +2223,7 @@ void gui_mouse_event(int x, int y, int buttons) {
             activate_hit(pressed_hit);
         pressed_hit = HIT_NONE;
         drag_win = -1;
+        resize_win = -1;
         scroll_drag = -1;
     }
     last_buttons = buttons;
@@ -2184,11 +2279,11 @@ void gui_key(char ch) {
             return;
         }
         if (key == GUI_KEY_PGUP) {
-            term_scroll_by(&consoles[focus_win], term_vis - 1);
+            term_scroll_by(&consoles[focus_win], consoles[focus_win].rows - 1);
             return;
         }
         if (key == GUI_KEY_PGDN) {
-            term_scroll_by(&consoles[focus_win], -(term_vis - 1));
+            term_scroll_by(&consoles[focus_win], -(consoles[focus_win].rows - 1));
             return;
         }
         term_key(&consoles[focus_win], ch);
@@ -2263,6 +2358,8 @@ void gui_init(void) {
         consoles[i].y = wins[i].y;
         consoles[i].w = wins[i].w;
         consoles[i].h = wins[i].h;
+        consoles[i].cols = term_width;
+        consoles[i].rows = term_vis;
         term_init(&consoles[i], i);
     }
     sys_output = &consoles[0];
@@ -2275,6 +2372,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
