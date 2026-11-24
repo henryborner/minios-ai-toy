@@ -114,6 +114,9 @@ Notes:
   the task's parent sees exit status `0xDEAD`. Kernel-mode faults halt.
 - COM1 host bridge: shell `upload NAME` / `download NAME`; RAMFS is still
   session-only.
+- A task is bound to the console it was launched from: syscall 1/4 output goes
+  there, and syscall 5 reads that console's keyboard queue. Other consoles can
+  run safe shell commands while a task is blocked/running.
 
 ## HAL mapping for MicroPython
 

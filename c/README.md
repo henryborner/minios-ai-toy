@@ -18,9 +18,13 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Terminal**: CR/LF, backspace, TAB expansion and ANSI CSI swallowing
 - **CPU exceptions**: `#DE`, `#UD`, `#GP`, `#PF` kill the current Ring 3 task
   and return to the Shell; kernel-mode faults still halt
-- **Runtime mouse**: while a task/module runs or blocks in `getchar`, IRQ0
-  polls mouse packets so windows can still be clicked/dragged and Start/taskbar
-  remain usable (keyboard focus/routing is still task-bound)
+- **Runtime desktop**: while a task/module runs or blocks in `getchar`, IRQ0
+  services mouse packets and per-console keyboard queues; windows/taskbar remain
+  usable and a non-owning console can run safe shell commands (`ver`, `mem`,
+  `help`, `clear`, `sysinfo`, ...). Dangerous commands return `[busy]`.
+- **Console-bound tasks**: each task remembers the console it was launched
+  from; its keyboard input and output stay on that console. F1–F6 still switch
+  windows while a task runs.
 - **COM1 serial**: shell `serial`, `upload NAME` (Ctrl-Z terminates) and
   `download NAME` for host file exchange
 - **Window manager**: focus, Z-order, active/inactive title bars, taskbar state
@@ -109,6 +113,9 @@ Screenshots:
 - [`../screenshots/c-exc-pf.png`](../screenshots/c-exc-pf.png)
 - [`../screenshots/c-exc-div0.png`](../screenshots/c-exc-div0.png)
 - [`../screenshots/c-runtime-menu.png`](../screenshots/c-runtime-menu.png)
+- [`../screenshots/c-runtime-shell.png`](../screenshots/c-runtime-shell.png)
+- [`../screenshots/c-runtime-tasks-mem.png`](../screenshots/c-runtime-tasks-mem.png)
+- [`../screenshots/c-kbdroute-console2.png`](../screenshots/c-kbdroute-console2.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -295,7 +302,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~29.8 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~30.9 KB (64 KB loader limit)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
@@ -358,9 +365,10 @@ qemu-system-i386 `
 - GUI focus/Z-order is fixed-list (5 windows), not a general compositor.
 - Taskbar shows Console 1/2; Console 3 is via Start menu or the Windows list.
 - FDC DMA buffer is at `0x8000`; kernel BSS ends at `0x5f1c8`, so it is safe.
-- Mouse/window events are serviced during blocking tasks, but **keyboard input
-  is still task-owned**: switched consoles do not get independent input queues
-  yet, and shell commands cannot run in Console 2 while Python owns Console 1.
+- During a running task, only safe shell commands are accepted in another
+  console; task/FDC/serial/reboot commands are refused with `[busy]`.
+- There is no kernel task-kill/foreground-control UI yet; Python must exit via
+  `Ctrl-C`/`Ctrl-D` or its own prompt.
 - RAMFS is session-only; serial upload/download is the current host bridge,
   not persistent storage.
 - FDC is still read-only; there is no writable MiniFS/FAT12.

@@ -20,8 +20,12 @@ u32 heap_used;
 
 static u8 heap[64 * 1024];
 
-static volatile u8 kbd_buf[64];
-static volatile u8 kbd_head, kbd_tail;
+#define KBD_CONSOLES 3
+static volatile u8 kbd_buf[KBD_CONSOLES][64];
+static volatile u8 kbd_head[KBD_CONSOLES], kbd_tail[KBD_CONSOLES];
+static volatile u8 gui_special_pending;
+static int current_console_id(void);
+static int console_has_live_task(int cid);
 static u8 shift_down, ctrl_down, extended;
 
 static volatile u8 mouse_cycle;
@@ -191,10 +195,13 @@ static const char keymap[128] = {
 };
 
 static void kbd_push(u8 ch) {
-    u8 next = (u8)((kbd_head + 1) & 63);
-    if (next != kbd_tail) {
-        kbd_buf[kbd_head] = ch;
-        kbd_head = next;
+    int c = gui_focused_console();
+    if (c < 0 || c >= KBD_CONSOLES)
+        c = 0;
+    u8 next = (u8)((kbd_head[c] + 1) & 63);
+    if (next != kbd_tail[c]) {
+        kbd_buf[c][kbd_head[c]] = ch;
+        kbd_head[c] = next;
     }
 }
 
@@ -256,12 +263,12 @@ static void keyboard_scancode(u8 sc) {
         ctrl_down = 1;
         return;
     }
-    if (sc == 0x3B) { kbd_push(0xF1); return; }
-    if (sc == 0x3C) { kbd_push(0xF2); return; }
-    if (sc == 0x3D) { kbd_push(0xF3); return; }
-    if (sc == 0x3E) { kbd_push(0xF4); return; }
-    if (sc == 0x3F) { kbd_push(0xF5); return; }
-    if (sc == 0x40) { kbd_push(0xF6); return; }
+    if (sc == 0x3B) { gui_special_pending = 1; return; }
+    if (sc == 0x3C) { gui_special_pending = 2; return; }
+    if (sc == 0x3D) { gui_special_pending = 3; return; }
+    if (sc == 0x3E) { gui_special_pending = 4; return; }
+    if (sc == 0x3F) { gui_special_pending = 5; return; }
+    if (sc == 0x40) { gui_special_pending = 6; return; }
 
     char ch = keymap[sc];
     if (!ch)
@@ -385,11 +392,33 @@ static void sched_timer_tick(u32 *frame);
 static volatile u8 runtime_busy;
 
 static void gui_poll_runtime(void) {
-    if (!mouse_event)
-        return;
-    mouse_event = 0;
-    gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
-    gui_redraw();
+    int changed = 0;
+    if (gui_special_pending) {
+        u8 special = gui_special_pending;
+        gui_special_pending = 0;
+        gui_special(special);
+        changed = 1;
+    }
+    if (mouse_event) {
+        mouse_event = 0;
+        gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
+        changed = 1;
+    }
+
+    int cid = gui_focused_console();
+    if (cid < 0 || cid >= KBD_CONSOLES)
+        cid = 0;
+    if (gui_runtime_keyboard_wanted() || !console_has_live_task(cid)) {
+        while (kbd_tail[cid] != kbd_head[cid]) {
+            u8 ch = kbd_buf[cid][kbd_tail[cid]];
+            kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
+            gui_key((char)ch);
+            changed = 1;
+        }
+    }
+
+    if (changed)
+        gui_redraw();
 }
 
 void irq0_handler(u32 *frame) {
@@ -840,9 +869,12 @@ static int module_getchar(void) {
         return (int)seq[seq_pos++];
 
     for (;;) {
-        while (kbd_tail != kbd_head) {
-            u8 ch = kbd_buf[kbd_tail];
-            kbd_tail = (u8)((kbd_tail + 1) & 63);
+        int cid = current_console_id();
+        if (cid < 0 || cid >= KBD_CONSOLES)
+            cid = 0;
+        while (kbd_tail[cid] != kbd_head[cid]) {
+            u8 ch = kbd_buf[cid][kbd_tail[cid]];
+            kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
             if (ch >= 0xF1 && ch <= 0xF6)
                 continue;
 
@@ -972,13 +1004,32 @@ struct task {
     u32 waiting_pid;
     u32 sleep_until;
     u32 exit_code;
+    u8 console_id;
 };
 
 static struct task tasks[NTASKS];
 static int current_task;
-static volatile u8 scheduler_active;
 static u32 quantum_ticks;
 static u32 next_pid = 1;
+
+static int current_console_id(void) {
+    if (scheduler_active && current_task >= 0 && current_task < NTASKS)
+        return tasks[current_task].console_id;
+    return gui_focused_console();
+}
+
+int scheduler_active_now(void) {
+    return scheduler_active;
+}
+
+static int console_has_live_task(int cid) {
+    for (int t = 0; t < NTASKS; t++) {
+        if (tasks[t].state != TASK_FREE && tasks[t].state != TASK_DONE &&
+            tasks[t].console_id == cid)
+            return 1;
+    }
+    return 0;
+}
 
 #define MAX_FDS 8
 struct fd_entry {
@@ -1152,6 +1203,7 @@ static void task_clear_all(void) {
         tasks[t].waiting_pid = WAIT_NONE;
         tasks[t].sleep_until = 0;
         tasks[t].exit_code = 0;
+        tasks[t].console_id = 0;
         for (int f = 0; f < MAX_FDS; f++)
             fd_table[t][f].used = 0;
     }
@@ -1237,6 +1289,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].waiting_pid = WAIT_NONE;
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
+    tasks[slot].console_id = (u8)gui_focused_console();
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
     task_set_name(slot, name);
@@ -1310,6 +1363,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].waiting_pid = WAIT_NONE;
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
+    tasks[slot].console_id = (u8)gui_focused_console();
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
     task_set_name(slot, name);
@@ -1493,6 +1547,7 @@ static int task_spawn_user(const char *name) {
     if (child < 0)
         return 0;
     tasks[child].parent_pid = tasks[current_task].pid;
+    tasks[child].console_id = tasks[current_task].console_id;
     return (int)tasks[child].pid;
 }
 
@@ -1512,6 +1567,7 @@ static int task_spawn_args(const char *name, u32 argv, u32 argc) {
     if (child < 0)
         return 0;
     tasks[child].parent_pid = tasks[current_task].pid;
+    tasks[child].console_id = tasks[current_task].console_id;
 
     u8 *stackv = (u8 *)direct_ptr(tasks[child].stack_phys);
     u32 sp = 0x402000;
@@ -2115,7 +2171,8 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     }
 
     if (number == 1) {
-        gui_sys_print((const char *)arg);
+        int cid = current_console_id();
+        gui_sys_print_console(cid, (const char *)arg);
     } else if (number == 2) {
         if (scheduler_active) {
             gui_sys_print("[task] exit; scheduler.\n");
@@ -2132,7 +2189,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 len = ((u32 *)frame)[6];
         if (ptr >= 0x400000 && ptr < 0x800000 && len <= 4096 &&
             ptr + len <= 0x800000)
-            gui_sys_write((const char *)ptr, len);
+            gui_sys_write_console(current_console_id(), (const char *)ptr, len);
         ((u32 *)frame)[7] = len;
     } else if (number == 5) {
         ((u32 *)frame)[7] = (u32)module_getchar();
@@ -2286,13 +2343,20 @@ void kmain(void) {
     for (;;) {
         int event = 0;
 
-        while (kbd_tail != kbd_head) {
-            u8 ch = kbd_buf[kbd_tail];
-            kbd_tail = (u8)((kbd_tail + 1) & 63);
-            if (ch >= 0xF1 && ch <= 0xF6)
-                gui_special(ch - 0xF0);
-            else
-                gui_key((char)ch);
+        if (gui_special_pending) {
+            u8 special = gui_special_pending;
+            gui_special_pending = 0;
+            gui_special(special);
+            event = 1;
+        }
+
+        int cid = gui_focused_console();
+        if (cid < 0 || cid >= KBD_CONSOLES)
+            cid = 0;
+        while (kbd_tail[cid] != kbd_head[cid]) {
+            u8 ch = kbd_buf[cid][kbd_tail[cid]];
+            kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
+            gui_key((char)ch);
             event = 1;
         }
 

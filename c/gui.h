@@ -12,6 +12,10 @@ void gui_special(int key);
 void gui_mouse_event(int x, int y, int buttons);
 void gui_sys_print(const char *s);
 void gui_sys_write(const char *s, u32 len);
+void gui_sys_print_console(int console, const char *s);
+void gui_sys_write_console(int console, const char *s, u32 len);
+int gui_focused_console(void);
+int gui_runtime_keyboard_wanted(void);
 
 extern volatile u32 ticks;
 extern char cpu[13];

@@ -65,6 +65,7 @@ static struct window wins[WIN_COUNT];
 static struct console consoles[NCONS];
 static int zorder[WIN_COUNT];
 static int focus_win;
+static int last_console;
 static struct console *sys_output;
 
 static int menu_open;
@@ -279,8 +280,20 @@ static void focus_window(int id) {
     wins[id].visible = 1;
     focus_win = id;
     bring_front(id);
-    if (id >= WIN_C0 && id <= WIN_C2)
+    if (id >= WIN_C0 && id <= WIN_C2) {
         sys_output = &consoles[id];
+        last_console = id;
+    }
+}
+
+int gui_focused_console(void) {
+    if (focus_win >= WIN_C0 && focus_win <= WIN_C2)
+        return focus_win;
+    return last_console;
+}
+
+int gui_runtime_keyboard_wanted(void) {
+    return menu_open || list_open || focus_win == WIN_ABOUT || focus_win == WIN_SYS;
 }
 
 static void focus_fallback(void) {
@@ -467,6 +480,19 @@ static void run_command(struct console *c, char *line) {
         line++;
     if (!*line)
         return;
+
+    extern int scheduler_active_now(void);
+    if (scheduler_active_now() &&
+        (streq(line, "ls") || streq(line, "disktest") ||
+         streq(line, "ring3") || streq(line, "tasks") ||
+         streq(line, "progs") || streq(line, "utest") ||
+         streq(line, "serial") || streq(line, "reboot") ||
+         streq(line, "halt") || starts_with(line, "exec ") ||
+         starts_with(line, "run ") || starts_with(line, "mod ") ||
+         starts_with(line, "upload ") || starts_with(line, "download "))) {
+        term_puts(c, "[busy] command unavailable while a task is running.\n");
+        return;
+    }
 
     if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
@@ -1130,6 +1156,24 @@ void gui_sys_print(const char *s) {
     gui_redraw();
 }
 
+void gui_sys_write_console(int console, const char *s, u32 len) {
+    if (console < WIN_C0 || console > WIN_C2)
+        return;
+    struct console *c = &consoles[console];
+    for (u32 i = 0; i < len; i++)
+        term_putc(c, s[i]);
+    gui_redraw();
+}
+
+void gui_sys_print_console(int console, const char *s) {
+    if (console < WIN_C0 || console > WIN_C2)
+        return;
+    struct console *c = &consoles[console];
+    while (*s)
+        term_putc(c, *s++);
+    gui_redraw();
+}
+
 void gui_init(void) {
     set_palette();
     init_windows();
@@ -1142,6 +1186,7 @@ void gui_init(void) {
     }
     sys_output = &consoles[0];
     focus_win = WIN_C0;
+    last_console = WIN_C0;
     menu_open = 0;
     list_open = 0;
     list_sel = 0;
