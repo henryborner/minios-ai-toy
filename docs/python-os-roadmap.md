@@ -177,7 +177,7 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 7：特色王牌 ④ —— 零寻道冻结日常瑞士军刀集（Frozen Suite）
 **目标**：将最常用的日常生产力工具预编译冻结进 `MPY.BIN`，开机零延迟即调即用。
 
-- [ ] **7.1 在构建流中集成 `mpy-cross` 字节码冻结**（`c/build_mpy.py`）
+- [x] **7.1 在构建流中集成 `mpy-cross` 字节码冻结**（`c/build_mpy.py`）
   - 编译宿主机 `mpy-cross`（输出置于 `tools/micropython/mpy-cross/`），自动将 `c/pylib/*.py` 编译为冻结字节码链接进 `MPY.BIN`，实现 **0 软盘读取、0 编译期 GC 堆开销**。
 - [x] **7.2 编写并冻结 5 个核心日常工具模块（`c/pylib/`）**（CALC/TOP/DEMOS/XXD/ED/FUTIL 已 mpy-cross 冻结并链接进 MPY.BIN，工具源码不再放 MiniFS）
   - `calc.py`：程序员速算器（同时展示十进制、十六进制、分组二进制、位宽、字节序拆分）。
@@ -205,3 +205,4 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
     - **1.44 MB 软盘镜像精确空间账单**（Boot / Kernel / Pack / MiniFS + `MPY.BIN` / SaveFS / 剩余空闲扇区）；
     - **速度指标**：冷启动耗时、首次冷加载 `MPY.BIN` 耗时、**二次热驻留启动耗时（`< 2 ms`）**、Python 算力与 GC 吞吐、高清桌面合成帧率；
     - 实测验证 VBE `640×480` 高清模式与强制回退 `320×200` 模式双路径均完美工作。
+

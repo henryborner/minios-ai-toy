@@ -421,7 +421,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~45.2 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~45.3 KB (64 KB loader limit)
 - `c/build/mpy.bin` — **186,064 bytes** (181.7 KB, image+BSS 186,624 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
@@ -516,3 +516,4 @@ qemu-system-i386 `
 3. Writable VFS and real `open/read/write/seek`.
 4. Per-process windows / graphics syscalls.
 5. More big-task slots, priorities, SMP.
+
