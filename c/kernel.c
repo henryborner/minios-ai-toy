@@ -2485,6 +2485,22 @@ static int fd_write(int fd, const u8 *buf, u32 len) {
     return (int)len;
 }
 
+struct user_sysinfo {
+    u32 ticks;
+    u32 uptime_s;
+    u32 free_frames;
+    u32 total_frames;
+    u32 heap_used;
+    u32 tasks;
+    u32 last_module_ticks;
+};
+
+struct user_canvas_event {
+    int x, y;
+    u32 buttons;
+    u32 closed;
+};
+
 struct user_stat {
     u32 size;
     u32 kind;
@@ -2556,6 +2572,22 @@ static int sys_readdir(u32 index, struct user_dirent *out) {
         pos++;
     }
     return 0;
+}
+
+static void pc_beep(u32 freq, u32 ms) {
+    if (freq < 20)
+        return;
+    u32 div = 1193180u / freq;
+    outb(0x43, 0xB6);
+    outb(0x42, (u8)(div & 0xFF));
+    outb(0x42, (u8)((div >> 8) & 0xFF));
+    outb(0x61, (u8)(inb(0x61) | 3));
+    u32 until = ticks + ms / 10 + 1;
+    __asm__ __volatile__("sti");
+    while ((int)(ticks - until) < 0)
+        __asm__ __volatile__("hlt");
+    __asm__ __volatile__("cli");
+    outb(0x61, (u8)(inb(0x61) & ~3));
 }
 
 static u32 task_brk(u32 addr) {
@@ -2775,6 +2807,86 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         int r = savefs_sync();
         __asm__ __volatile__("cli");
         ((u32 *)frame)[7] = r ? 0 : 0xFFFFFFFFu;
+    } else if (number == 24) {
+        u32 out = ((u32 *)frame)[4];
+        if (out >= 0x400000 && out + sizeof(struct user_sysinfo) <= 0x800000) {
+            struct user_sysinfo *si = (struct user_sysinfo *)out;
+            u32 free_frames = 0;
+            for (u32 i = 0; i < FRAME_COUNT; i++)
+                if (!(frame_bitmap[i / 32] & (1u << (i % 32))))
+                    free_frames++;
+            u32 ntasks = 0;
+            for (int i = 0; i < NTASKS; i++)
+                if (tasks[i].state != TASK_FREE)
+                    ntasks++;
+            si->ticks = ticks;
+            si->uptime_s = ticks / 100;
+            si->free_frames = free_frames;
+            si->total_frames = FRAME_COUNT;
+            si->heap_used = heap_used;
+            si->tasks = ntasks;
+            si->last_module_ticks = user_module_last_ticks;
+            ((u32 *)frame)[7] = 0;
+        } else {
+            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+        }
+    } else if (number == 25) {
+        u32 op = ((u32 *)frame)[4];
+        u32 title = ((u32 *)frame)[6];
+        if (op == 0) {
+            gui_canvas_close();
+            ((u32 *)frame)[7] = 0;
+        } else if (op == 1) {
+            if (title >= 0x400000 && title < 0x800000) {
+                gui_canvas_open((const char *)title);
+                ((u32 *)frame)[7] = 0;
+            } else {
+                ((u32 *)frame)[7] = 0xFFFFFFFFu;
+            }
+        } else {
+            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+        }
+    } else if (number == 26) {
+        u32 ptr = ((u32 *)frame)[4];
+        if (ptr >= 0x400000 && ptr + sizeof(struct gui_canvas_cmd) <= 0x800000) {
+            struct gui_canvas_cmd cmd;
+            u8 *dst = (u8 *)&cmd;
+            const u8 *src = (const u8 *)ptr;
+            for (u32 i = 0; i < sizeof(cmd); i++)
+                dst[i] = src[i];
+            int r = -1;
+            if (cmd.text &&
+                (u32)cmd.text >= 0x400000 &&
+                (u32)cmd.text + cmd.len <= 0x800000)
+                r = gui_canvas_cmd(&cmd);
+            else if (!cmd.text && cmd.op != 4)
+                r = gui_canvas_cmd(&cmd);
+            ((u32 *)frame)[7] = (u32)r;
+        } else {
+            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+        }
+    } else if (number == 27) {
+        u32 out = ((u32 *)frame)[4];
+        int r = 0;
+        if (out >= 0x400000 && out + sizeof(struct gui_canvas_event) <= 0x800000) {
+            struct gui_canvas_event ev;
+            if (gui_canvas_event(&ev)) {
+                struct user_canvas_event *ue = (struct user_canvas_event *)out;
+                ue->x = ev.x;
+                ue->y = ev.y;
+                ue->buttons = ev.buttons;
+                ue->closed = ev.closed;
+                r = 1;
+            }
+        }
+        ((u32 *)frame)[7] = (u32)r;
+    } else if (number == 28) {
+        u32 op = ((u32 *)frame)[4];
+        u32 a = ((u32 *)frame)[6];
+        u32 b = ((u32 *)frame)[5];
+        if (op == 0)
+            pc_beep(a, b);
+        ((u32 *)frame)[7] = 0;
     } else if (number == 29) {
         int cid = current_console_id();
         if (cid < 0 || cid >= KBD_CONSOLES)
@@ -2889,6 +3001,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

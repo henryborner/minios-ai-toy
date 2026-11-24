@@ -26,6 +26,11 @@
 #define SYS_STAT         21
 #define SYS_READDIR      22
 #define SYS_SYNC         23
+#define SYS_SYSINFO      24
+#define SYS_CANVAS_CTL   25
+#define SYS_CANVAS_DRAW  26
+#define SYS_CANVAS_EVENT 27
+#define SYS_HW_IO        28
 #define SYS_POLL_CTRL_C  29
 
 #define MINIOS_O_CREAT   1u
@@ -41,6 +46,25 @@ struct minios_dirent {
     char name[16];
     uint32_t size;
     uint32_t kind;
+};
+
+struct minios_sysinfo {
+    uint32_t ticks, uptime_s, free_frames, total_frames;
+    uint32_t heap_used, tasks, last_module_ticks;
+};
+
+struct minios_canvas_cmd {
+    uint32_t op;
+    uint32_t x, y, w, h;
+    uint32_t color;
+    const char *text;
+    uint32_t len;
+};
+
+struct minios_canvas_event {
+    int32_t x, y;
+    uint32_t buttons;
+    uint32_t closed;
 };
 
 static inline uint32_t minios_syscall0(uint32_t num) {
@@ -140,8 +164,29 @@ static inline int sys_sync_fs(void) {
     return (int)(int32_t)minios_syscall0(SYS_SYNC);
 }
 
+static inline int sys_sysinfo(struct minios_sysinfo *si) {
+    return (int)(int32_t)minios_syscall1(SYS_SYSINFO, (uint32_t)si);
+}
+
+static inline int sys_canvas_ctl(uint32_t op, const char *title) {
+    return (int)(int32_t)minios_syscall2(SYS_CANVAS_CTL, op, (uint32_t)title);
+}
+
+static inline int sys_canvas_draw(const struct minios_canvas_cmd *cmd) {
+    return (int)(int32_t)minios_syscall1(SYS_CANVAS_DRAW, (uint32_t)cmd);
+}
+
+static inline int sys_canvas_event(struct minios_canvas_event *ev) {
+    return (int)(int32_t)minios_syscall1(SYS_CANVAS_EVENT, (uint32_t)ev);
+}
+
+static inline void sys_beep(uint32_t freq, uint32_t ms) {
+    (void)minios_syscall3(SYS_HW_IO, 0, freq, ms);
+}
+
 static inline int sys_poll_ctrl_c(void) {
     return (int)minios_syscall0(SYS_POLL_CTRL_C);
 }
 
 #endif
+

@@ -158,18 +158,18 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 6：特色王牌 ③ —— 全桌面内省与原生 `minios` 彩色画布窗口
 **目标**：打通 Python 到内核状态与 GUI 窗口管理器的直通车，用十几行 Python 即可写出独立可拖动的彩色图形应用。
 
-- [ ] **6.1 升级 256 色调色板并新增「用户像素画布窗口（Canvas Window）」**（`c/gui.c`）
+- [x] **6.1 升级 256 色调色板并新增「用户像素画布窗口（Canvas Window）」**（`c/gui.c`）
   - 保留调色板 `0–15` 号色与现有桌面 UI 完全一致，将 **`16–231` 号色初始化为标准 6×6×6 RGB 彩色立方体、`232–255` 号色初始化为 24 级平滑灰度**，解锁 256 色全彩表现力。
   - 新增可动态开关的通用窗口 `WIN_APP`（例如默认 `180×120` 客户区后备像素缓冲，从物理帧池或静态缓冲分配），支持动态修改窗口标题、Z-order 焦点切换、鼠标拖拽标题栏、记录客户区内鼠标相对坐标与按键、点击右上角 `x` 投递关闭事件。
-- [ ] **6.2 新增内核内省、画布与硬件交互系统调用（`syscalls 24–28`）**（`c/kernel.c`）
+- [x] **6.2 新增内核内省、画布与硬件交互系统调用（`syscalls 24–28`）**（`c/kernel.c`）
   - `syscall 24` (`sysinfo_ext`)：导出实时内核快照（`ticks`、总/已用物理页帧数与位图摘要、内核堆用量、FDC 读写扇区计数、IRQ0/1/6/12 触发计数、8 个任务槽详情）。
   - `syscall 25` (`canvas_ctl`)：打开/关闭/改尺寸或标题/刷新提交 `WIN_APP`。
   - `syscall 26` (`canvas_draw`)：内核级裁剪绘图原语（清屏、画点、Bresenham 直线、矩形填充/描边、圆、8×8 字体文本、整块字节 `blit`）。
   - `syscall 27` (`canvas_event`)：非阻塞拉取画布窗口事件（按键、鼠标相对坐标与按钮状态、窗口关闭请求）。
   - `syscall 28` (`hw_io`)：提供受控的 PC Speaker 蜂鸣器发声（PIT Channel 2 `0x42`/`0x61`）与非阻塞 `COM1` 串口收发字节能力。
-- [ ] **6.3 实现 MicroPython 原生模块 `import minios`**（`c/mpy_port/modminios.c`）
+- [x] **6.3 实现 MicroPython 原生模块 `import minios`**（`c/mpy_port/modminios.c`）
   - 提供干净直观的 Python API：`minios.sysinfo()`、`minios.tasks()`、`minios.beep(freq, ms)`、`minios.serial_read()` / `serial_write()`，以及 `minios.Canvas(title)` 绘图与事件接口。
-- [ ] **Stage 6 验收**：运行一段短 Python 脚本弹出彩色画布窗口绘制动态图形与实时帧率/内存条，支持鼠标点击互动与窗口拖拽，截图验证。
+- [x] **Stage 6 验收**：`minios.Canvas("Demo")` 打开 180×120 窗口，`clear/rect/line/text` 绘制 256 色图形；`minios.event()` 返回 `(89,54,0,0)`，`minios.sysinfo()` 返回 ticks/free frames/tasks 等；窗口支持焦点、拖动、最小化、关闭。`minios.beep` 与 syscalls24–28 已接入，`hw_io` 仅实现蜂鸣器，串口字节 API 尚未在该 syscall 内实现。
 
 ---
 

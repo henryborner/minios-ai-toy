@@ -98,6 +98,7 @@ PORT_C_FILES = [
     "mphalport.c",
     "minilibc.c",
     "vfs_minios.c",
+    "modminios.c",
 ]
 
 
@@ -361,3 +362,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
+

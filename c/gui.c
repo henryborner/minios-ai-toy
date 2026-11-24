@@ -30,7 +30,13 @@
 #define WIN_C2 2
 #define WIN_SYS 3
 #define WIN_ABOUT 4
-#define WIN_COUNT 5
+#define WIN_APP 5
+#define WIN_COUNT 6
+
+#define CANVAS_W 180
+#define CANVAS_H 120
+#define CANVAS_BUF_W (CANVAS_W + 4)
+#define CANVAS_BUF_H (CANVAS_H + 12)
 
 #define MENU_X 2
 #define MENU_Y 94
@@ -95,6 +101,12 @@ static int ctx_x, ctx_y;
 static int ctx_count;
 static int ctx_target;
 
+static u8 canvas_buf[CANVAS_W * CANVAS_H];
+static int canvas_open;
+static char canvas_title[32] = "Canvas";
+static struct gui_canvas_event canvas_ev;
+static u8 canvas_ev_pending;
+
 static int pressed_hit;
 static int drag_win;
 static int drag_dx, drag_dy;
@@ -133,7 +145,7 @@ static inline void outb(u16 port, u8 value) {
 /* -----------------------------------------------------------------------------
  * Framebuffer primitives
  * ----------------------------------------------------------------------------- */
-static const u8 palette[48] = {
+static const u8 base_palette[48] = {
     0, 0, 0,       0, 0, 42,      0, 42, 0,       0, 42, 42,
     42, 0, 0,      42, 0, 42,     42, 42, 0,      42, 42, 42,
     21, 21, 21,    0, 0, 63,      0, 63, 0,       0, 63, 63,
@@ -141,9 +153,29 @@ static const u8 palette[48] = {
 };
 
 static void set_palette(void) {
-    outb(0x3C8, 0);
+    u8 pal[768];
     for (int i = 0; i < 48; i++)
-        outb(0x3C9, palette[i]);
+        pal[i] = base_palette[i];
+    for (int r = 0; r < 6; r++) {
+        for (int g = 0; g < 6; g++) {
+            for (int b = 0; b < 6; b++) {
+                int i = 16 + r * 36 + g * 6 + b;
+                pal[i * 3 + 0] = (u8)(r * 51);
+                pal[i * 3 + 1] = (u8)(g * 51);
+                pal[i * 3 + 2] = (u8)(b * 51);
+            }
+        }
+    }
+    for (int i = 232; i < 256; i++) {
+        int v = 8 + (i - 232) * 10;
+        if (v > 255) v = 255;
+        pal[i * 3 + 0] = (u8)v;
+        pal[i * 3 + 1] = (u8)v;
+        pal[i * 3 + 2] = (u8)v;
+    }
+    outb(0x3C8, 0);
+    for (int i = 0; i < 768; i++)
+        outb(0x3C9, pal[i]);
 }
 
 static void plot(int x, int y, u8 color) {
@@ -403,6 +435,12 @@ static void init_windows(void) {
     wins[WIN_ABOUT].visible = 0;
     wins[WIN_ABOUT].minimized = 0;
     wins[WIN_ABOUT].title = "About MiniOS";
+
+    wins[WIN_APP].x = 68; wins[WIN_APP].y = 34;
+    wins[WIN_APP].w = CANVAS_BUF_W; wins[WIN_APP].h = CANVAS_BUF_H;
+    wins[WIN_APP].visible = 0;
+    wins[WIN_APP].minimized = 0;
+    wins[WIN_APP].title = canvas_title;
 
     for (int i = 0; i < WIN_COUNT; i++)
         zorder[i] = i;
@@ -1095,6 +1133,17 @@ static void draw_system(void) {
     text(x + 54, y + 77, date_str, 0);
 }
 
+static void draw_canvas(void) {
+    struct window *w = &wins[WIN_APP];
+    window_frame(WIN_APP);
+    int cx = w->x + 2;
+    int cy = w->y + 12;
+    for (int y = 0; y < CANVAS_H; y++) {
+        for (int x = 0; x < CANVAS_W; x++)
+            fb[(cy + y) * W + cx + x] = canvas_buf[y * CANVAS_W + x];
+    }
+}
+
 static void draw_about(void) {
     struct window *w = &wins[WIN_ABOUT];
     window_frame(WIN_ABOUT);
@@ -1296,6 +1345,101 @@ static void draw_context(void) {
     }
 }
 
+static void canvas_pixel(int x, int y, u8 color) {
+    if ((unsigned)x < CANVAS_W && (unsigned)y < CANVAS_H)
+        canvas_buf[y * CANVAS_W + x] = color;
+}
+
+static void canvas_rect(int x, int y, int w, int h, u8 color) {
+    if (w <= 0 || h <= 0)
+        return;
+    for (int yy = y; yy < y + h; yy++)
+        for (int xx = x; xx < x + w; xx++)
+            canvas_pixel(xx, yy, color);
+}
+
+static void canvas_line(int x0, int y0, int x1, int y1, u8 color) {
+    int dx = x1 > x0 ? x1 - x0 : x0 - x1;
+    int sx = x0 < x1 ? 1 : -1;
+    int dy = y1 > y0 ? y0 - y1 : y1 - y0;
+    int sy = y0 < y1 ? 1 : -1;
+    int err = dx + dy;
+    for (;;) {
+        canvas_pixel(x0, y0, color);
+        if (x0 == x1 && y0 == y1)
+            break;
+        int e2 = err * 2;
+        if (e2 >= dy) { err += dy; x0 += sx; }
+        if (e2 <= dx) { err += dx; y0 += sy; }
+    }
+}
+
+void gui_canvas_open(const char *title) {
+    int i = 0;
+    if (title) {
+        while (i < 31 && title[i]) {
+            canvas_title[i] = title[i];
+            i++;
+        }
+    }
+    canvas_title[i] = 0;
+    wins[WIN_APP].title = canvas_title;
+    canvas_open = 1;
+    canvas_ev.closed = 0;
+    focus_window(WIN_APP);
+    gui_dirty = 1;
+}
+
+void gui_canvas_close(void) {
+    canvas_open = 0;
+    canvas_ev.closed = 1;
+    canvas_ev_pending = 1;
+    hide_window(WIN_APP);
+    gui_dirty = 1;
+}
+
+int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
+    if (!cmd)
+        return -1;
+    if (cmd->op == 0) {
+        for (int i = 0; i < CANVAS_W * CANVAS_H; i++)
+            canvas_buf[i] = (u8)cmd->color;
+    } else if (cmd->op == 1) {
+        canvas_pixel((int)cmd->x, (int)cmd->y, (u8)cmd->color);
+    } else if (cmd->op == 2) {
+        canvas_rect((int)cmd->x, (int)cmd->y, (int)cmd->w, (int)cmd->h,
+                    (u8)cmd->color);
+    } else if (cmd->op == 3) {
+        canvas_line((int)cmd->x, (int)cmd->y, (int)cmd->w, (int)cmd->h,
+                    (u8)cmd->color);
+    } else if (cmd->op == 4) {
+        if (!cmd->text || cmd->len > 256)
+            return -1;
+        int px = (int)cmd->x;
+        int py = (int)cmd->y;
+        for (u32 i = 0; i < cmd->len; i++) {
+            const u8 *glyph = FONT + (u8)cmd->text[i] * 8;
+            for (int r = 0; r < 8; r++)
+                for (int c = 0; c < 8; c++)
+                    if (glyph[r] & (0x80u >> c))
+                        canvas_pixel(px + c, py + r, (u8)cmd->color);
+            px += 8;
+        }
+    } else {
+        return -1;
+    }
+    gui_dirty = 1;
+    return 0;
+}
+
+int gui_canvas_event(struct gui_canvas_event *out) {
+    if (!canvas_ev_pending || !out)
+        return 0;
+    *out = canvas_ev;
+    canvas_ev_pending = 0;
+    return 1;
+}
+
 static void draw_cursor(void) {
     cursor_capture();
     cursor_draw_art();
@@ -1337,6 +1481,8 @@ void gui_redraw(void) {
             draw_system();
         else if (id == WIN_ABOUT)
             draw_about();
+        else if (id == WIN_APP)
+            draw_canvas();
     }
     draw_menu();
     draw_list();
@@ -1466,7 +1612,13 @@ static void activate_hit(int hit) {
         return;
     }
     if (hit >= HIT_CLOSE_BASE && hit < HIT_CLOSE_BASE + WIN_COUNT) {
-        hide_window(hit - HIT_CLOSE_BASE);
+        int id = hit - HIT_CLOSE_BASE;
+        if (id == WIN_APP) {
+            canvas_open = 0;
+            canvas_ev.closed = 1;
+            canvas_ev_pending = 1;
+        }
+        hide_window(id);
         return;
     }
     if (hit == HIT_OK) {
@@ -1570,6 +1722,15 @@ void gui_mouse_event(int x, int y, int buttons) {
         }
         last_buttons = buttons;
         return;
+    }
+
+    if (wins[WIN_APP].visible &&
+        inside(x, y, wins[WIN_APP].x + 2, wins[WIN_APP].y + 12,
+               CANVAS_W, CANVAS_H)) {
+        canvas_ev.x = x - (wins[WIN_APP].x + 2);
+        canvas_ev.y = y - (wins[WIN_APP].y + 12);
+        canvas_ev.buttons = (u32)buttons;
+        canvas_ev_pending = 1;
     }
 
     if (press) {

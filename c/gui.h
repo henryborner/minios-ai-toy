@@ -21,6 +21,25 @@ int gui_dirty_pending(void);
 void gui_mark_dirty(void);
 void gui_flush(void);
 
+struct gui_canvas_cmd {
+    u32 op;
+    u32 x, y, w, h;
+    u32 color;
+    const char *text;
+    u32 len;
+};
+
+struct gui_canvas_event {
+    int x, y;
+    u32 buttons;
+    u32 closed;
+};
+
+void gui_canvas_open(const char *title);
+void gui_canvas_close(void);
+int gui_canvas_cmd(const struct gui_canvas_cmd *cmd);
+int gui_canvas_event(struct gui_canvas_event *out);
+
 extern volatile u32 ticks;
 extern char cpu[13];
 extern u32 heap_used;

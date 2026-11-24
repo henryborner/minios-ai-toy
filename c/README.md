@@ -61,6 +61,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Stage 5 SaveFS persistence**: `sync` / Python `os.sync()` writes a
   CRC32-checked RAMFS snapshot to LBA 2560–2819; boot restores it
   automatically. MiniFS remains read-only.
+- **Stage 6 Canvas/minios**: 256-color palette, draggable 180×120 Canvas
+  window, Python `minios.Canvas` with clear/pixel/rect/line/text/event,
+  `minios.sysinfo()` and PC-speaker beep; syscalls 24–28.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -168,6 +171,9 @@ Screenshots:
 - [`../screenshots/c-savefs-sync.png`](../screenshots/c-savefs-sync.png)
 - [`../screenshots/c-savefs-restored2.png`](../screenshots/c-savefs-restored2.png)
 - [`../screenshots/c-savefs-persisted.png`](../screenshots/c-savefs-persisted.png)
+- [`../screenshots/c-stage6-canvas3.png`](../screenshots/c-stage6-canvas3.png)
+- [`../screenshots/c-stage6-event2.png`](../screenshots/c-stage6-event2.png)
+- [`../screenshots/c-stage6-sysinfo.png`](../screenshots/c-stage6-sysinfo.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -351,6 +357,19 @@ py TOOL.PY         # execute a RAMFS/MiniFS script
 pystat             # last MPY load: cold/warm, ticks, bytes
 ```
 
+Canvas example:
+
+```python
+import minios
+c = minios.Canvas("Demo")
+c.clear(16)                    # 6x6x6 palette index
+c.rect(20, 20, 140, 80, 196)
+c.line(10, 110, 170, 10, 226)
+c.text(30, 30, "Canvas API", 15)
+print(c.event())               # (x, y, buttons, closed) or None
+print(minios.sysinfo())
+```
+
 ## Window manager
 
 - 3 console windows, Console 1 visible at boot; `F5`/`F6`, Start menu, taskbar,
@@ -379,8 +398,8 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~42.2 KB (64 KB loader limit)
-- `c/build/mpy.bin` — **181,696 bytes** (177.4 KB, image+BSS 182,256 B)
+- `c/build/kernel.bin` — currently ~44.0 KB (64 KB loader limit)
+- `c/build/mpy.bin` — **183,488 bytes** (179.2 KB, image+BSS 184,048 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
