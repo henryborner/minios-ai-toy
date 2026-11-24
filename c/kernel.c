@@ -1253,6 +1253,18 @@ static void frame_zero(u32 phys, u32 pages) {
         p[i] = 0;
 }
 
+u32 kernel_free_frames(void) {
+    u32 n = 0;
+    for (u32 i = 0; i < FRAME_COUNT; i++)
+        if (!(frame_bitmap[i / 32] & (1u << (i % 32))))
+            n++;
+    return n;
+}
+
+u32 kernel_total_frames(void) {
+    return FRAME_COUNT;
+}
+
 /* Used by the GUI for large optional buffers after paging/direct-map init. */
 void *kernel_alloc_pages_zero(u32 pages) {
     u32 phys = frame_alloc_pages(pages);

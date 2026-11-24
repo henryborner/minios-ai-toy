@@ -1302,6 +1302,18 @@ static void draw_desktop(void) {
         text(8, 5, "MiniOS 2.0", 15);
         text(188, 5, "F4 windows", 11);
     }
+    extern u32 kernel_free_frames(void);
+    extern u32 kernel_total_frames(void);
+    u32 ff = kernel_free_frames();
+    u32 ft = kernel_total_frames();
+    int bw = 40;
+    int bx = scr_w - bw - 4;
+    fill_rect(bx, 4, bw, 7, 0);
+    if (ft) {
+        int used = (int)(((ft - ff) * (u32)(bw - 2)) / ft);
+        fill_rect(bx + 1, 5, bw - 2, 5, 8);
+        fill_rect(bx + 1, 5, used, 5, 2);
+    }
     fill_rect(0, 17, scr_w, 1, 2);
 }
 
@@ -1427,7 +1439,7 @@ static void draw_canvas(void) {
         for (int x = 0; x < canvas_w; x++) {
             int px = cx + x;
             if ((unsigned)px < (unsigned)scr_w)
-                fb[py * scr_w + px] = canvas_buf[y * CANVAS_MAX_W + x];
+                plot(px, py, canvas_buf[y * CANVAS_MAX_W + x]);
         }
     }
 }
@@ -1987,6 +1999,8 @@ void gui_toggle_maximize(int id) {
 
 static void start_drag(int id, int x, int y) {
     snap_mode = 0;
+    if (wins[id].maximized)
+        gui_toggle_maximize(id);
     drag_win = id;
     drag_dx = x - wins[id].x;
     drag_dy = y - wins[id].y;
@@ -1998,10 +2012,11 @@ static void drag_move(int x, int y) {
     struct window *w = &wins[drag_win];
     int nx = x - drag_dx;
     int ny = y - drag_dy;
-    if (nx < 0) nx = 0;
-    if (ny < 0) ny = 0;
-    if (nx > scr_w - w->w) nx = scr_w - w->w;
-    if (ny > TASKBAR_Y - w->h) ny = TASKBAR_Y - w->h;
+    int minx = -(w->w - 40);
+    if (nx < minx) nx = minx;
+    if (nx > scr_w - 40) nx = scr_w - 40;
+    if (ny < 18) ny = 18;
+    if (ny > TASKBAR_Y - 10) ny = TASKBAR_Y - 10;
     snap_mode = 0;
     if (ny <= 19)
         snap_mode = 3;
