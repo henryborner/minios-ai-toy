@@ -2753,6 +2753,12 @@ static int sys_readdir(u32 index, struct user_dirent *out) {
     return 0;
 }
 
+static int fd_unlink(const char *name);
+
+int kernel_unlink_gui(const char *name) {
+    return fd_unlink(name);
+}
+
 int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind) {
     struct user_dirent d;
     if (!sys_readdir(index, &d))

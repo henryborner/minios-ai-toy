@@ -63,6 +63,8 @@
 #define HIT_SYS_TAB_BASE 1600
 #define HIT_SYS_ROW_BASE 1700
 #define HIT_SYS_KILL 1800
+#define HIT_FILES_ROW_BASE 1900
+#define HIT_FILES_BTN_BASE 2000
 #define CANVAS_MAX_W 600
 #define CANVAS_MAX_H 420
 
@@ -1548,13 +1550,23 @@ static void draw_files(void) {
     window_frame(WIN_FILES);
     int x = w->x, y = w->y;
     extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
-    int rows = (w->h - 26) / 9;
+    const char *btns[4] = { "Open", "Hex", "Del", "Sync" };
+    int bx = x + 6;
+    for (int i = 0; i < 4; i++) {
+        int bw = (i == 1 || i == 2) ? 30 : 38;
+        fill_rect(bx, y + 14, bw, 12, 7);
+        fill_rect(bx + 1, y + 15, bw - 2, 1, 15);
+        fill_rect(bx + 1, y + 25, bw - 2, 1, 8);
+        text(bx + 4, y + 16, btns[i], 0);
+        bx += bw + 4;
+    }
+    int rows = (w->h - 36) / 9;
     for (int r = 0; r < rows; r++) {
         char name[17];
         u32 size = 0, kind = 0;
         if (!kernel_readdir_gui((u32)(files_scroll + r), name, &size, &kind))
             break;
-        int ry = y + 22 + r * 9;
+        int ry = y + 30 + r * 9;
         if (r == files_sel)
             fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
         int c = (kind == 2) ? 10 : 3;
@@ -1569,7 +1581,6 @@ static void draw_files(void) {
             draw_char(sx + n * 8, ry, sz[n], 8, 1);
         }
     }
-    text(x + 6, y + w->h - 11, "files: wheel/scroll  [RW]=green", 8);
 }
 
 static void num_text(int x, int y, u32 v, u8 col) {
@@ -2219,6 +2230,19 @@ static int hit_test(int x, int y) {
             return HIT_CLOSE_BASE + id;
         if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 77, 48, 19))
             return HIT_OK;
+        if (id == WIN_FILES) {
+            int bx = w->x + 6;
+            for (int b = 0; b < 4; b++) {
+                int bw = (b == 1 || b == 2) ? 30 : 38;
+                if (inside(x, y, bx, w->y + 14, bw, 12))
+                    return HIT_FILES_BTN_BASE + b;
+                bx += bw + 4;
+            }
+            int rows = (w->h - 36) / 9;
+            for (int r = 0; r < rows; r++)
+                if (inside(x, y, w->x + 2, w->y + 29 + r * 9, w->w - 4, 9))
+                    return HIT_FILES_ROW_BASE + r;
+        }
         if (id == WIN_SYS) {
             for (int t = 0; t < 3; t++)
                 if (inside(x, y, w->x + 6 + t * 66, w->y + 13, 62, 13))
@@ -2482,6 +2506,42 @@ static void activate_hit(int hit) {
     if (hit >= HIT_SYS_ROW_BASE && hit < HIT_SYS_ROW_BASE + 8) {
         sys_task_sel = hit - HIT_SYS_ROW_BASE;
         gui_dirty = 1;
+        return;
+    }
+    if (hit >= HIT_FILES_ROW_BASE && hit < HIT_FILES_ROW_BASE + 32) {
+        files_sel = hit - HIT_FILES_ROW_BASE;
+        gui_dirty = 1;
+        return;
+    }
+    if (hit >= HIT_FILES_BTN_BASE && hit < HIT_FILES_BTN_BASE + 4) {
+        extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
+        extern int kernel_unlink_gui(const char *name);
+        extern int run_user_module(const char *name);
+        extern void sync_savefs(void);
+        char name[17];
+        u32 size = 0, kind = 0;
+        if (!kernel_readdir_gui((u32)(files_scroll + files_sel), name, &size, &kind))
+            return;
+        int b = hit - HIT_FILES_BTN_BASE;
+        if (b == 0) {
+            int py = 0;
+            for (int i = 0; name[i]; i++)
+                if (name[i] == '.' && (name[i + 1] == 'P' || name[i + 1] == 'p'))
+                    py = 1;
+            focus_window(WIN_C0);
+            if (py)
+                launch_python(&consoles[WIN_C0], name);
+            else
+                run_user_module(name);
+        } else if (b == 1) {
+            focus_window(WIN_C0);
+            launch_tool(&consoles[WIN_C0], "-m xxd", name);
+        } else if (b == 2) {
+            kernel_unlink_gui(name);
+            gui_dirty = 1;
+        } else {
+            sync_savefs();
+        }
         return;
     }
     if (hit == HIT_SYS_KILL) {
