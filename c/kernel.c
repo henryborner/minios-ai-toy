@@ -2658,6 +2658,7 @@ struct user_canvas_event {
     int x, y;
     u32 buttons;
     u32 closed;
+    u32 width, height;
 };
 
 struct user_stat {
@@ -3044,6 +3045,8 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
                 ue->y = ev.y;
                 ue->buttons = ev.buttons;
                 ue->closed = ev.closed;
+                ue->width = ev.width;
+                ue->height = ev.height;
                 r = 1;
             }
         }

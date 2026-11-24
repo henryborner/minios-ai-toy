@@ -35,6 +35,7 @@ struct gui_canvas_event {
     int x, y;
     u32 buttons;
     u32 closed;
+    u32 width, height;
 };
 
 void gui_canvas_open(const char *title);

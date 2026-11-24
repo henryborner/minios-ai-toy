@@ -65,6 +65,7 @@ struct minios_canvas_event {
     int32_t x, y;
     uint32_t buttons;
     uint32_t closed;
+    uint32_t width, height;
 };
 
 static inline uint32_t minios_syscall0(uint32_t num) {

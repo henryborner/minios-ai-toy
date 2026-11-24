@@ -700,6 +700,7 @@ static void term_puts(struct console *c, const char *s) {
 static int streq(const char *a, const char *b);
 static int hit_test(int x, int y);
 static void draw_snap_preview(void);
+static void sync_console_layout(int id);
 
 static void term_prompt(struct console *c) {
     c->cmd_start = c->cur;
@@ -1607,10 +1608,11 @@ static const char *ctx_label(int i) {
         };
         return (i >= 0 && i < 5) ? items[i] : "";
     }
-    static const char *items[6] = {
-        "Console 1", "Console 2", "Console 3", "Windows", "System", "About"
+    static const char *items[8] = {
+        "Console 1", "Console 2", "Console 3", "Windows", "System", "About",
+        "Tile Windows", "Cascade"
     };
-    return (i >= 0 && i < 6) ? items[i] : "";
+    return (i >= 0 && i < 8) ? items[i] : "";
 }
 
 static int ctx_height(void) {
@@ -1627,7 +1629,7 @@ static void open_context(int x, int y) {
             break;
         }
     }
-    ctx_count = ctx_target >= 0 ? 5 : 6;
+    ctx_count = ctx_target >= 0 ? 5 : 8;
     ctx_x = x + 2;
     ctx_y = y + 2;
     if (ctx_x + 128 > scr_w) ctx_x = scr_w - 128;
@@ -1656,6 +1658,40 @@ static void activate_context(int idx) {
     else if (idx == 3) { list_open = 1; list_sel = focus_win >= 0 ? focus_win : 0; }
     else if (idx == 4) focus_window(WIN_SYS);
     else if (idx == 5) focus_window(WIN_ABOUT);
+    else if (idx == 6) {
+        int top = 18;
+        int bottom = TASKBAR_Y;
+        for (int id = WIN_C0; id <= WIN_C1; id++) {
+            struct window *w = &wins[id];
+            w->visible = 1;
+            w->minimized = 0;
+            w->maximized = 0;
+            w->x = (id == WIN_C0) ? 0 : scr_w / 2;
+            w->y = top;
+            w->w = scr_w / 2;
+            w->h = bottom - top;
+            sync_console_layout(id);
+        }
+        focus_window(WIN_C1);
+    } else if (idx == 7) {
+        int ox = 20, oy = 24;
+        for (int id = 0; id < WIN_COUNT; id++) {
+            if (!wins[id].visible)
+                continue;
+            struct window *w = &wins[id];
+            w->maximized = 0;
+            w->x = ox;
+            w->y = oy;
+            if (w->x + w->w > scr_w)
+                w->x = scr_w - w->w;
+            if (w->y + w->h > TASKBAR_Y)
+                w->y = TASKBAR_Y - w->h;
+            sync_console_layout(id);
+            ox += 20;
+            oy += 18;
+        }
+    }
+    gui_dirty = 1;
 }
 
 static void draw_context(void) {
@@ -1738,6 +1774,8 @@ void gui_canvas_open(const char *title) {
     wins[WIN_APP].title = canvas_title;
     canvas_open = 1;
     canvas_ev.closed = 0;
+    canvas_ev.width = (u32)canvas_w;
+    canvas_ev.height = (u32)canvas_h;
     focus_window(WIN_APP);
     gui_dirty = 1;
 }
@@ -2090,6 +2128,9 @@ static void resize_move(int x, int y) {
         if (canvas_h > CANVAS_MAX_H) canvas_h = CANVAS_MAX_H;
         w->w = canvas_w + 4;
         w->h = canvas_h + 14;
+        canvas_ev.width = (u32)canvas_w;
+        canvas_ev.height = (u32)canvas_h;
+        canvas_ev_pending = 1;
     }
     gui_dirty = 1;
 }
