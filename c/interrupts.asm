@@ -38,15 +38,17 @@ syscall_stub:
         mov     ax, 0x10
         mov     ds, ax
         mov     es, ax
+        mov     edx, esp            ; pointer to the saved task frame
 
         mov     eax, [esp + 28]     ; saved EAX = syscall number
         mov     ebx, [esp + 16]     ; saved EBX = argument
         mov     ecx, [esp + 36]     ; saved CS from the privilege transition
-        push    ecx
-        push    ebx
-        push    eax
+        push    edx                 ; frame pointer
+        push    ecx                 ; CS
+        push    ebx                 ; argument
+        push    eax                 ; syscall number
         call    syscall_handler
-        add     esp, 12
+        add     esp, 16
 
         mov     ax, 0x23            ; back to user data segments
         mov     ds, ax

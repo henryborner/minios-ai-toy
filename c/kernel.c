@@ -257,8 +257,15 @@ extern void syscall_stub(void);
 extern void isr_default(void);
 extern void run_user(u32 entry, u32 user_stack);
 extern void user_exit_to_kernel(void);
+extern void scheduler_start(u32 first_task_esp);
+extern void scheduler_exit_to_kernel(void);
+extern void switch_to(u32 task_esp);
 extern const u8 user_blob_start[];
 extern const u8 user_blob_end[];
+extern const u8 task_a_start[];
+extern const u8 task_a_end[];
+extern const u8 task_b_start[];
+extern const u8 task_b_end[];
 
 static void idt_set_flags(int n, u32 handler, u8 flags) {
     idt[n].base_lo = (u16)(handler & 0xFFFF);
@@ -353,6 +360,7 @@ struct tss_entry {
 static struct gdt_entry gdt[6];
 static struct gdt_ptr_t gdtp;
 static struct tss_entry tss;
+static u8 tss_loaded;
 
 static void gdt_set(int n, u32 base, u32 limit, u8 access, u8 gran) {
     gdt[n].limit_lo = (u16)(limit & 0xFFFF);
@@ -389,8 +397,11 @@ static void gdt_install(void) {
     gdtp.base = (u32)&gdt;
     __asm__ __volatile__("lgdt %0" : : "m"(gdtp));
 
-    u16 tr = 0x28;
-    __asm__ __volatile__("ltr %0" : : "rm"(tr));
+    if (!tss_loaded) {
+        u16 tr = 0x28;
+        __asm__ __volatile__("ltr %0" : : "rm"(tr));
+        tss_loaded = 1;
+    }
 }
 
 /* -----------------------------------------------------------------------------
@@ -417,6 +428,10 @@ static void paging_install(void) {
     for (int i = 0; i < 4; i++)
         page_table1[i] |= 0x004;                    /* user code + stack */
 
+    /* Switch to the new identity mapping before touching 0x400000: under a
+       task page directory that virtual address points at the task's page. */
+    __asm__ __volatile__("mov %0, %%cr3" : : "r"((u32)page_directory));
+
     u32 len = (u32)(user_blob_end - user_blob_start);
     if (len > 4096)
         len = 4096;
@@ -424,14 +439,183 @@ static void paging_install(void) {
     for (u32 i = 0; i < len; i++)
         dst[i] = user_blob_start[i];
 
-    __asm__ __volatile__("mov %0, %%cr3" : : "r"((u32)page_directory));
     u32 cr0;
     __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
     cr0 |= 0x80000000u;
     __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0));
 }
 
-void syscall_handler(u32 number, u32 arg, u32 cs) {
+/* -----------------------------------------------------------------------------
+ * Cooperative tasks: two user address spaces, round-robin on SYS_YIELD.
+ * ----------------------------------------------------------------------------- */
+#define NTASKS 2
+#define TASK_READY   1
+#define TASK_RUNNING 2
+#define TASK_DONE    3
+
+#define TASK_A_CODE  0x00300000u
+#define TASK_A_STACK 0x00301000u
+#define TASK_B_CODE  0x00302000u
+#define TASK_B_STACK 0x00303000u
+
+struct task {
+    u32 esp;
+    u32 cr3;
+    u32 kstack_top;
+    u8  state;
+};
+
+static struct task tasks[NTASKS];
+static int current_task;
+static volatile u8 scheduler_active;
+
+static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
+static u32 task_pd[NTASKS][1024] __attribute__((aligned(4096)));
+static u32 task_user_pt[NTASKS][1024] __attribute__((aligned(4096)));
+static u8 task_kstack[NTASKS][4096] __attribute__((aligned(16)));
+
+/* Never modified while active: safe kernel mapping used during task setup. */
+static u32 sched_safe_pd[1024] __attribute__((aligned(4096)));
+static u32 sched_safe_pt[1024] __attribute__((aligned(4096)));
+static u8 sched_safe_ready;
+
+static void set_cr3(u32 value) {
+    __asm__ __volatile__("mov %0, %%cr3" : : "r"(value));
+}
+
+static void task_copy_page(u32 dst, const u8 *src, const u8 *end) {
+    u32 len = (u32)(end - src);
+    if (len > 4096)
+        len = 4096;
+    u8 *d = (u8 *)dst;
+    for (u32 i = 0; i < 4096; i++)
+        d[i] = 0;
+    for (u32 i = 0; i < len; i++)
+        d[i] = src[i];
+}
+
+static void task_setup(void) {
+    if (!sched_safe_ready) {
+        for (int i = 0; i < 1024; i++) {
+            sched_safe_pt[i] = (u32)(i * 0x1000) | 0x003;
+            sched_safe_pd[i] = 0;
+        }
+        sched_safe_pd[0] = (u32)sched_safe_pt | 0x003;
+        sched_safe_ready = 1;
+    }
+    set_cr3((u32)sched_safe_pd);
+
+    for (int i = 0; i < 1024; i++)
+        task_kernel_pt[i] = (u32)(i * 0x1000) | 0x003;
+
+    for (int t = 0; t < NTASKS; t++) {
+        for (int i = 0; i < 1024; i++) {
+            task_pd[t][i] = 0;
+            task_user_pt[t][i] = 0;
+        }
+        task_pd[t][0] = (u32)task_kernel_pt | 0x003;
+        task_pd[t][1] = (u32)task_user_pt[t] | 0x007;
+        task_user_pt[t][0] = (t == 0 ? TASK_A_CODE : TASK_B_CODE) | 0x007;
+        task_user_pt[t][1] = (t == 0 ? TASK_A_STACK : TASK_B_STACK) | 0x007;
+
+        if (t == 0)
+            task_copy_page(TASK_A_CODE, task_a_start, task_a_end);
+        else
+            task_copy_page(TASK_B_CODE, task_b_start, task_b_end);
+
+        u8 *stack = (u8 *)(t == 0 ? TASK_A_STACK : TASK_B_STACK);
+        for (int i = 0; i < 4096; i++)
+            stack[i] = 0;
+
+        u32 top = (u32)(task_kstack[t] + 4096);
+        u32 *frame = (u32 *)(top - 52);
+        for (int i = 0; i < 13; i++)
+            frame[i] = 0;
+        frame[8] = 0x00400000;      /* EIP */
+        frame[9] = 0x1B;            /* CS, RPL3 */
+        frame[10] = 0x202;          /* EFLAGS, IF=1 */
+        frame[11] = 0x00402000;     /* user ESP */
+        frame[12] = 0x23;           /* SS, RPL3 */
+
+        tasks[t].esp = (u32)frame;
+        tasks[t].kstack_top = top;
+        tasks[t].cr3 = (u32)task_pd[t];
+        tasks[t].state = TASK_READY;
+    }
+
+    set_cr3((u32)task_pd[0]);
+    u32 cr0;
+    __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
+    if (!(cr0 & 0x80000000u)) {
+        cr0 |= 0x80000000u;
+        __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0));
+    }
+}
+
+static int next_ready(void) {
+    for (int k = 1; k <= NTASKS; k++) {
+        int t = (current_task + k) % NTASKS;
+        if (tasks[t].state == TASK_READY)
+            return t;
+    }
+    return -1;
+}
+
+static void switch_task(int next) {
+    current_task = next;
+    tasks[next].state = TASK_RUNNING;
+    tss.esp0 = tasks[next].kstack_top;
+    set_cr3(tasks[next].cr3);
+    switch_to(tasks[next].esp);
+    for (;;) {}
+}
+
+static void task_yield(u32 frame) {
+    tasks[current_task].esp = frame;
+    tasks[current_task].state = TASK_READY;
+    int next = next_ready();
+    if (next < 0) {
+        tasks[current_task].state = TASK_RUNNING;
+        tss.esp0 = tasks[current_task].kstack_top;
+        switch_to(frame);
+        for (;;) {}
+    }
+    switch_task(next);
+}
+
+static void task_exit(void) {
+    tasks[current_task].state = TASK_DONE;
+    int next = next_ready();
+    if (next < 0) {
+        scheduler_active = 0;
+        tss.esp0 = 0x00080000;
+        scheduler_exit_to_kernel();
+        for (;;) {}
+    }
+    switch_task(next);
+}
+
+void run_task_demo(void) {
+    __asm__ __volatile__("cli");
+    gdt_install();
+    idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
+    task_setup();
+
+    scheduler_active = 1;
+    current_task = 0;
+    tasks[0].state = TASK_RUNNING;
+    tasks[1].state = TASK_READY;
+    tss.esp0 = tasks[0].kstack_top;
+    set_cr3(tasks[0].cr3);
+
+    scheduler_start(tasks[0].esp);
+
+    scheduler_active = 0;
+    tss.esp0 = 0x00080000;
+    __asm__ __volatile__("sti");
+}
+
+void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     static u8 cpl_reported;
     if (!cpl_reported) {
         cpl_reported = 1;
@@ -444,8 +628,16 @@ void syscall_handler(u32 number, u32 arg, u32 cs) {
     if (number == 1) {
         gui_sys_print((const char *)arg);
     } else if (number == 2) {
+        if (scheduler_active) {
+            gui_sys_print("[task] exit; scheduler.\n");
+            task_exit();
+        }
         gui_sys_print("[ring3] exit syscall; returning to GUI.\n");
         user_exit_to_kernel();
+    } else if (number == 3) {
+        if (scheduler_active)
+            task_yield(frame);
+        gui_sys_print("[ring3] yield ignored.\n");
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }

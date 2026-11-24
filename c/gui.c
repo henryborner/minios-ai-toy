@@ -293,7 +293,7 @@ static void run_command(char *line) {
         term_puts("Commands:\n");
         term_puts("help ver cpu mem time date\n");
         term_puts("uptime clear echo sysinfo\n");
-        term_puts("about ring3 reboot halt\n");
+        term_puts("about ring3 tasks reboot halt\n");
     } else if (streq(line, "ver")) {
         term_puts("MiniOS 2.0 C GUI (32-bit)\n");
     } else if (streq(line, "cpu")) {
@@ -338,6 +338,11 @@ static void run_command(char *line) {
         term_puts("Entering Ring 3 (paging on)...\n");
         gui_redraw();
         enter_ring3_demo();
+    } else if (streq(line, "tasks")) {
+        extern void run_task_demo(void);
+        term_puts("Starting two cooperative Ring 3 tasks...\n");
+        gui_redraw();
+        run_task_demo();
     } else if (streq(line, "reboot")) {
         term_puts("Rebooting...\n");
         machine_reboot();

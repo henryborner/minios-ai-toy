@@ -56,6 +56,10 @@ def main() -> int:
     user_bin = BUILD / "user.bin"
     user_blob_o = BUILD / "user_blob.o"
     usermode_o = BUILD / "usermode.o"
+    task_a_bin = BUILD / "task_a.bin"
+    task_b_bin = BUILD / "task_b.bin"
+    task_blob_o = BUILD / "task_blob.o"
+    sched_o = BUILD / "sched.o"
     gui_o = BUILD / "gui.o"
     kernel_o = BUILD / "kernel.o"
     kernel_elf = BUILD / "kernel.elf"
@@ -67,6 +71,10 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(user_bin), "user.asm"])
     run([nasm, "-f", "elf32", "-o", str(user_blob_o), "user_blob.asm"])
     run([nasm, "-f", "elf32", "-o", str(usermode_o), "usermode.asm"])
+    run([nasm, "-f", "bin", "-o", str(task_a_bin), "task_a.asm"])
+    run([nasm, "-f", "bin", "-o", str(task_b_bin), "task_b.asm"])
+    run([nasm, "-f", "elf32", "-o", str(task_blob_o), "task_blob.asm"])
+    run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
     run([
         clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
         "-ffreestanding", "-fno-pic", "-fno-pie", "-fno-stack-protector",
@@ -84,7 +92,8 @@ def main() -> int:
     run([
         ld, "-m", "elf_i386", "-T", "linker.ld",
         "-o", str(kernel_elf), str(entry), str(interrupts_o),
-        str(usermode_o), str(user_blob_o), str(kernel_o), str(gui_o),
+        str(usermode_o), str(sched_o), str(user_blob_o), str(task_blob_o),
+        str(kernel_o), str(gui_o),
     ])
     run([objcopy, "-O", "binary", str(kernel_elf), str(kernel_bin)])
 
