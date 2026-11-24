@@ -31,7 +31,7 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **COM1 serial**: shell `serial`, `upload NAME` (Ctrl-Z terminates) and
   `download NAME` for host file exchange
 - **Window manager**: focus, Z-order, active/inactive title bars, taskbar state
-- **Stage 11 partial (ANSI clipboard)**: per-cell 16-color attributes, ANSI SGR rendering, and Console context Copy/Paste. Dark theme and mouse drag-select remain.\n- **Stage 10 complete (WM 2.0)**: title-bar maximize/restore and double-click
+- **Stage 11 complete (ANSI clipboard)**: per-cell 16-color attributes, ANSI SGR rendering, light/dark themes, colored ls/errors, mouse drag-select, and Console Copy/Paste.\n- **Stage 10 complete (WM 2.0)**: title-bar maximize/restore and double-click
   toggle with saved geometry; 8-way border/corner resize with dynamic Console
   columns/rows and scrollbar geometry; resize-shape cursors; Canvas preallocated
   at 600×420 and resized in place with a fixed row stride. Snap, negative-
@@ -575,6 +575,7 @@ qemu-system-i386 `
 3. Writable VFS and real `open/read/write/seek`.
 4. Per-process windows / graphics syscalls.
 5. More big-task slots, priorities, SMP.
+
 
 
 

@@ -116,7 +116,7 @@
 - [x] **11.2 系统剪贴板（Clipboard）与鼠标拖选复制 / 右键粘贴**（`c/gui.c`、`c/kernel.c`）
   - 已完成：256B 系统剪贴板、Console 鼠标拖选反色复制、右键 `Copy line`/`Paste`；可粘贴到 Shell/Python/编辑器。
   - 新增 256 字节系统剪贴板缓冲；支持在 Console 客户区内按住左键拖选文本（反色高亮选中区域，松开鼠标自动复制选中文本至剪贴板），并在 Console 右键菜单新增 `Paste`（将剪贴板字符逐一推入当前 Console 的 `kbd_buf`，使其对 Shell、MicroPython REPL 和编辑器全部透明生效！）。
-- [ ] **Stage 11 验收**：Python 执行带 `\x1b[31m..\x1b[36m` 的彩色文本输出正常渲染；在 Console 1 鼠标拖选一段表达式复制，右键粘贴到 Console 2 的 Python REPL 中直接算出结果。
+- [x] **Stage 11 验收**：Python 彩色输出、dark/light 主题、彩色列文件、红色错误、鼠标拖选复制和跨 Console 右键粘贴均已接通；直接 `=6*7` → `42`、`= 6*8` → `48` 实测通过。
 
 ---
 
@@ -224,6 +224,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 
