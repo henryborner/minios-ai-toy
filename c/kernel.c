@@ -4,6 +4,7 @@
  * ============================================================================= */
 
 #include "gui.h"
+#include "fdc.h"
 
 typedef unsigned char  u8;
 typedef unsigned short u16;
@@ -196,6 +197,11 @@ void irq1_handler(void) {
     outb(0x20, 0x20);
 }
 
+void irq6_handler(void) {
+    fdc_on_irq();
+    outb(0x20, 0x20);
+}
+
 /* -----------------------------------------------------------------------------
  * Mouse
  * ----------------------------------------------------------------------------- */
@@ -252,6 +258,7 @@ static struct idt_ptr idtp;
 
 extern void irq0_stub(void);
 extern void irq1_stub(void);
+extern void irq6_stub(void);
 extern void irq12_stub(void);
 extern void syscall_stub(void);
 extern void isr_default(void);
@@ -293,8 +300,8 @@ static void pic_remap(void) {
     outb(0x21, 0x01); io_wait();
     outb(0xA1, 0x01); io_wait();
 
-    outb(0x21, 0xF8);       /* IRQ0, IRQ1, cascade IRQ2 */
-    outb(0xA1, 0xEF);       /* IRQ12 only */
+    outb(0x21, 0xB8);       /* IRQ0, IRQ1, cascade IRQ2, IRQ6 (FDC) */
+    outb(0xA1, 0xEF);       /* IRQ12 (mouse) */
 }
 
 static void pit_init(void) {
@@ -311,6 +318,7 @@ static void interrupts_setup(void) {
         idt_set(i, (u32)isr_default);
     idt_set(0x20, (u32)irq0_stub);
     idt_set(0x21, (u32)irq1_stub);
+    idt_set(0x26, (u32)irq6_stub);
     idt_set(0x2C, (u32)irq12_stub);
 
     idtp.limit = (u16)(sizeof(idt) - 1);
@@ -531,6 +539,103 @@ void list_programs(void) {
         char name[17];
         for (int j = 0; j < 16; j++)
             name[j] = e->name[j];
+        name[16] = 0;
+        gui_sys_print("  ");
+        gui_sys_print(name);
+        gui_sys_print("\n");
+    }
+}
+
+/* -----------------------------------------------------------------------------
+ * Runtime MiniFS at LBA 200: header, directory, file data.
+ * ----------------------------------------------------------------------------- */
+#define FS_LBA 200u
+#define FS_MAX_ENTRIES 32
+#define FS_MAX_FILE 4096
+
+struct fs_header {
+    u8 magic[4];
+    u16 count;
+    u16 reserved;
+} __attribute__((packed));
+
+struct fs_entry {
+    char name[16];
+    u32 start_lba;
+    u32 size;
+} __attribute__((packed));
+
+static u8 fs_dir[512];
+static u8 fs_sector[512];
+static u8 fs_program[FS_MAX_FILE];
+
+static int fs_name_eq(const struct fs_entry *e, const char *name) {
+    for (int i = 0; i < 16; i++) {
+        u8 a = (u8)e->name[i];
+        u8 b = (u8)name[i];
+        if (a == 0 && b == 0)
+            return 1;
+        if (a == 0 || b == 0)
+            return 0;
+        if (upper_char(a) != upper_char(b))
+            return 0;
+    }
+    return 1;
+}
+
+static int fs_load_dir(void) {
+    if (!fdc_read_sector(FS_LBA, fs_dir))
+        return 0;
+    struct fs_header *h = (struct fs_header *)fs_dir;
+    if (h->magic[0] != 'M' || h->magic[1] != 'F' ||
+        h->magic[2] != 'S' || h->magic[3] != '1')
+        return 0;
+    if (h->count == 0 || h->count > FS_MAX_ENTRIES)
+        return 0;
+    return 1;
+}
+
+static int fs_load_file(const char *name, u8 *dst, u32 max, u32 *out_size) {
+    if (!fs_load_dir())
+        return 0;
+    struct fs_header *h = (struct fs_header *)fs_dir;
+    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+    for (int i = 0; i < h->count; i++) {
+        struct fs_entry *e = &entries[i];
+        if (!fs_name_eq(e, name))
+            continue;
+        if (e->size > max)
+            return 0;
+        u32 sectors = (e->size + 511) / 512;
+        u32 done = 0;
+        for (u32 s = 0; s < sectors; s++) {
+            if (!fdc_read_sector(e->start_lba + s, fs_sector))
+                return 0;
+            u32 chunk = e->size - done;
+            if (chunk > 512)
+                chunk = 512;
+            for (u32 j = 0; j < chunk; j++)
+                dst[done + j] = fs_sector[j];
+            done += chunk;
+        }
+        *out_size = e->size;
+        return 1;
+    }
+    return 0;
+}
+
+void list_disk_files(void) {
+    if (!fs_load_dir()) {
+        gui_sys_print("[disk] MiniFS read failed.\n");
+        return;
+    }
+    struct fs_header *h = (struct fs_header *)fs_dir;
+    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+    gui_sys_print("[disk] MiniFS files:\n");
+    for (int i = 0; i < h->count; i++) {
+        char name[17];
+        for (int j = 0; j < 16; j++)
+            name[j] = entries[i].name[j];
         name[16] = 0;
         gui_sys_print("  ");
         gui_sys_print(name);
@@ -809,6 +914,29 @@ void run_task_demo(void) {
     start_tasks(a);
 }
 
+int exec_disk(const char *name) {
+    u32 size = 0;
+    if (!fs_load_file(name, fs_program, FS_MAX_FILE, &size)) {
+        gui_sys_print("[disk] file not found or read failed.\n");
+        return 0;
+    }
+
+    __asm__ __volatile__("cli");
+    gdt_install();
+    idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
+    task_system_init();
+    task_clear_all();
+
+    int slot = task_create(name, fs_program, fs_program + size);
+    if (slot < 0) {
+        gui_sys_print("[task] no free task slot.\n");
+        __asm__ __volatile__("sti");
+        return 0;
+    }
+    start_tasks(slot);
+    return 1;
+}
+
 void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     static u8 cpl_reported;
     if (!cpl_reported) {
@@ -835,6 +963,18 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }
+}
+
+void disk_test(void) {
+    u8 sector[512];
+    if (!fdc_read_sector(0, sector)) {
+        gui_sys_print("[fdc] read failed.\n");
+        return;
+    }
+    if (sector[510] == 0x55 && sector[511] == 0xAA)
+        gui_sys_print("[fdc] boot sector OK.\n");
+    else
+        gui_sys_print("[fdc] bad boot signature.\n");
 }
 
 void enter_ring3_demo(void) {

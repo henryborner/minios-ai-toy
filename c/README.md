@@ -1,4 +1,4 @@
-# MiniOS 2.0 — C kernel, GUI, Ring 3, preemptive tasks and program pack
+# MiniOS 2.0 — C kernel, GUI, Ring 3, preemptive tasks, program pack and MiniFS
 
 This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not replace
 `main` (MiniOS 1.0, the real-mode assembly OS) yet.
@@ -23,6 +23,11 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   `A.BIN`, `B.BIN`, `C.BIN`, `HELLO.BIN`
 - Shell `progs` lists pack programs; `run NAME` creates and runs one task;
   `tasks` creates and preempts three tasks from the pack
+- **Runtime FDC floppy driver**: IRQ6 on the master PIC (`0x26`), 8237 DMA
+  channel 2, CHS reads of 512-byte sectors from the 1.44 MB image
+- **Read-only MiniFS at LBA 200**: `ls` reads the directory from floppy,
+  `exec NAME` reads file sectors through the FDC and creates a Ring 3 task
+- `disktest` reads the boot sector at runtime and verifies `0x55AA`
 
 Screenshots:
 
@@ -31,6 +36,10 @@ Screenshots:
 - [`../screenshots/c-pack3-progs.png`](../screenshots/c-pack3-progs.png)
 - [`../screenshots/c-pack3-tasks.png`](../screenshots/c-pack3-tasks.png)
 - [`../screenshots/c-pack-run.png`](../screenshots/c-pack-run.png)
+- [`../screenshots/c-fdc-test3.png`](../screenshots/c-fdc-test3.png)
+- [`../screenshots/c-minifs-ls.png`](../screenshots/c-minifs-ls.png)
+- [`../screenshots/c-minifs-exec.png`](../screenshots/c-minifs-exec.png)
+- [`../screenshots/c-minifs-clean.png`](../screenshots/c-minifs-clean.png)
 - [`../screenshots/c-ring3-cpl.png`](../screenshots/c-ring3-cpl.png)
 - [`../screenshots/c-ring3-return.png`](../screenshots/c-ring3-return.png)
 
@@ -43,6 +52,7 @@ The image layout is:
 | `0` | 512-byte boot sector |
 | `512` | kernel, up to 64 sectors (32 KB) |
 | `33280` | MPK1 program pack, 64 sectors (32 KB) |
+| `102400` | read-only MiniFS (LBA 200), directory + data sectors |
 
 Pack format:
 
@@ -64,8 +74,33 @@ run HELLO.BIN
 tasks
 ```
 
-This is a **boot-loaded read-only pack**, not a runtime floppy filesystem yet.
-There is no FDC/FAT12 driver; programs are loaded from the in-memory pack.
+The program pack is **boot-loaded**. The separate MiniFS below is read from
+the floppy at runtime.
+
+## Runtime MiniFS
+
+At LBA 200 the image contains a tiny read-only filesystem:
+
+```text
+magic "MFS1" | u16 count | u16 reserved
+count × { char name[16]; u32 start_lba; u32 size; }
+file data sectors
+```
+
+`c/build_c.py` packs `DISK.BIN` (a Ring 3 program) and `HELLO.BIN`.
+`ls` reads the directory sector through the FDC; `exec NAME` reads the file
+sectors, copies the flat program into a clean task code page and starts it.
+
+Shell:
+
+```text
+disktest          # read LBA 0, verify 0x55AA
+ls                # list MiniFS files from floppy
+exec DISK.BIN     # load and run a Ring 3 task from floppy
+exec HELLO.BIN
+```
+
+This is a custom read-only filesystem, not FAT12. There is no write support.
 
 ## Preemptive task demo
 
@@ -111,7 +146,8 @@ directory and a saved kernel ESP. It exits back to the GUI shell.
 | Keyboard | Console shell input |
 
 Shell commands: `help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`,
-`echo`, `sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ring3`, `reboot`, `halt`.
+`echo`, `sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ls`, `exec NAME`,
+`disktest`, `ring3`, `reboot`, `halt`.
 
 ## Build
 
@@ -129,10 +165,11 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~13.8 KB
+- `c/build/kernel.bin` — currently ~16.4 KB
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
-- `MiniOS-C.img` — 1,474,560 bytes (pack at offset 33280)
+- `c/build/disk_task.bin` — MiniFS disk task
+- `MiniOS-C.img` — 1,474,560 bytes (pack at 33280, MiniFS at 102400)
 
 ## Run
 
@@ -148,13 +185,15 @@ qemu-system-i386 `
 |---|---|
 | `boot.asm` | real-mode loader: kernel + pack, A20, flat GDT, protected mode, mode 13h |
 | `entry.asm` | 32-bit entry, stack, BSS zero, `kmain` |
-| `interrupts.asm` | IRQ0/IRQ1/IRQ12 stubs + `int 0x80` syscall stub |
+| `interrupts.asm` | IRQ0/IRQ1/IRQ6/IRQ12 stubs + `int 0x80` syscall stub |
 | `usermode.asm` | Ring 3 entry and exit-to-kernel context restore |
 | `sched.asm` | scheduler start/exit, per-task `switch_to` |
 | `user.asm` | single Ring 3 demo, linked at `0x400000` |
 | `user_blob.asm` | embeds `user.bin` for the `ring3` command |
 | `task_a.asm`, `task_b.asm`, `task_c.asm` | pack task programs |
-| `kernel.c` | IDT/PIC/PIT, keyboard/mouse, GDT/TSS, paging, tasks, pack, syscalls |
+| `disk_task.asm` | Ring 3 task stored in MiniFS |
+| `fdc.c`, `fdc.h` | IRQ6/DMA/CHS floppy sector driver |
+| `kernel.c` | IDT/PIC/PIT, keyboard/mouse, GDT/TSS, paging, tasks, pack, MiniFS, syscalls |
 | `gui.c` | VGA framebuffer, font, windows, shell, mouse UI |
 | `gui.h` | GUI API and kernel/GUI globals |
 | `linker.ld` | kernel at `0x10000`, BSS NOLOAD |
@@ -165,14 +204,16 @@ qemu-system-i386 `
 - Dynamic table has **4 slots**; `tasks` uses three, `run` uses one.
 - Scheduler is timer-preemptive with a fixed 10 ms slice; no priorities/sleep/wait.
 - Task code/stack physical pages are statically reserved per slot.
-- Program pack is read-only and boot-loaded; no runtime filesystem/FDC driver.
-- No fork/exec, arguments, or per-task heap.
+- Program pack is read-only and boot-loaded; MiniFS is read-only at runtime.
+- MiniFS is custom, not FAT12; no write support or directory updates.
+- FDC driver reads one 512-byte sector per command (seeks between tracks).
+- `exec` supports flat programs ≤4 KB; no arguments, fork/exec or per-task heap.
 - Single `ring3` demo still uses a separate page-directory scheme.
-- Boot loader loads 64 kernel sectors + 64 pack sectors; all within 1.44 MB.
+- Boot loader loads 64 kernel + 64 pack sectors; MiniFS is read on demand.
 
 ## Next milestones
 
-1. Runtime floppy filesystem (FDC/FAT12 or MiniFS) and dynamic `exec`.
+1. Write support / FAT12 compatibility (or a larger MiniFS).
 2. More than four tasks, priorities and blocking.
 3. More syscalls (keyboard input, window/VGA drawing, file I/O).
 4. Per-task heap and cleanup.

@@ -2,11 +2,13 @@
         BITS 32
         global irq0_stub
         global irq1_stub
+        global irq6_stub
         global irq12_stub
         global syscall_stub
         global isr_default
         extern irq0_handler
         extern irq1_handler
+        extern irq6_handler
         extern irq12_handler
         extern syscall_handler
 
@@ -25,6 +27,13 @@ irq1_stub:
         pusha
         cld
         call    irq1_handler
+        popa
+        iretd
+
+irq6_stub:
+        pusha
+        cld
+        call    irq6_handler
         popa
         iretd
 

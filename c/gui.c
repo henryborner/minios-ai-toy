@@ -293,8 +293,8 @@ static void run_command(char *line) {
         term_puts("Commands:\n");
         term_puts("help ver cpu mem time date\n");
         term_puts("uptime clear echo sysinfo\n");
-        term_puts("about ring3 tasks progs run reboot\n");
-        term_puts("halt\n");
+        term_puts("about ring3 tasks progs run ls exec\n");
+        term_puts("disktest reboot halt\n");
     } else if (streq(line, "ver")) {
         term_puts("MiniOS 2.0 C GUI (32-bit)\n");
     } else if (streq(line, "cpu")) {
@@ -347,6 +347,18 @@ static void run_command(char *line) {
     } else if (streq(line, "progs")) {
         extern void list_programs(void);
         list_programs();
+    } else if (streq(line, "disktest")) {
+        extern void disk_test(void);
+        disk_test();
+    } else if (streq(line, "ls")) {
+        extern void list_disk_files(void);
+        list_disk_files();
+    } else if (starts_with(line, "exec ")) {
+        extern int exec_disk(const char *name);
+        term_puts("Reading MiniFS from floppy...\n");
+        gui_redraw();
+        if (!exec_disk(line + 5))
+            term_puts("Exec failed.\n");
     } else if (starts_with(line, "run ")) {
         extern int run_pack_program(const char *name);
         term_puts("Loading from program pack...\n");

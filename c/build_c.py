@@ -20,7 +20,35 @@ KERNEL_MAX = KERNEL_SECTORS * 512
 PACK_SECTORS = 64
 PACK_BYTES = PACK_SECTORS * 512
 PACK_OFFSET = (1 + KERNEL_SECTORS) * 512
+FS_LBA = 200
+FS_OFFSET = FS_LBA * 512
+FS_MAX_BYTES = 64 * 1024
 
+
+def build_minifs(files: list[tuple[str, Path]]) -> bytes:
+    dir_bytes = 8 + len(files) * 24
+    dir_sectors = (dir_bytes + 511) // 512
+    header = bytearray(b"MFS1") + struct.pack("<HH", len(files), 0)
+    entries = bytearray()
+    data = bytearray()
+    next_lba = FS_LBA + dir_sectors
+    for name, path in files:
+        payload = path.read_bytes()
+        raw_name = name.upper().encode("ascii")
+        if len(raw_name) > 15:
+            raise SystemExit(f"fs name too long: {name}")
+        entries += raw_name.ljust(16, b"\0")
+        entries += struct.pack("<II", next_lba, len(payload))
+        sectors = (len(payload) + 511) // 512
+        data += payload
+        data += bytes(sectors * 512 - len(payload))
+        next_lba += sectors
+    fs = header + entries
+    fs += bytes(dir_sectors * 512 - len(fs))
+    fs += data
+    if len(fs) > FS_MAX_BYTES:
+        raise SystemExit(f"MiniFS too large: {len(fs)}")
+    return bytes(fs)
 
 def build_pack(files: list[tuple[str, Path]]) -> bytes:
     data_base = 8 + len(files) * 24
@@ -88,8 +116,10 @@ def main() -> int:
     task_a_bin = BUILD / "task_a.bin"
     task_b_bin = BUILD / "task_b.bin"
     task_c_bin = BUILD / "task_c.bin"
+    disk_task_bin = BUILD / "disk_task.bin"
     sched_o = BUILD / "sched.o"
     gui_o = BUILD / "gui.o"
+    fdc_o = BUILD / "fdc.o"
     kernel_o = BUILD / "kernel.o"
     kernel_elf = BUILD / "kernel.elf"
     kernel_bin = BUILD / "kernel.bin"
@@ -103,6 +133,7 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(task_a_bin), "task_a.asm"])
     run([nasm, "-f", "bin", "-o", str(task_b_bin), "task_b.asm"])
     run([nasm, "-f", "bin", "-o", str(task_c_bin), "task_c.asm"])
+    run([nasm, "-f", "bin", "-o", str(disk_task_bin), "disk_task.asm"])
     run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
     run([
         clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
@@ -119,10 +150,17 @@ def main() -> int:
         "-Os", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "gui.c", "-o", str(gui_o),
     ])
     run([
+        clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
+        "-ffreestanding", "-fno-pic", "-fno-pie", "-fno-stack-protector",
+        "-fno-builtin", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
+        "-mno-sse", "-mno-mmx", "-mno-80387", "-msoft-float",
+        "-Os", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "fdc.c", "-o", str(fdc_o),
+    ])
+    run([
         ld, "-m", "elf_i386", "-T", "linker.ld",
         "-o", str(kernel_elf), str(entry), str(interrupts_o),
         str(usermode_o), str(sched_o), str(user_blob_o),
-        str(kernel_o), str(gui_o),
+        str(kernel_o), str(gui_o), str(fdc_o),
     ])
     run([objcopy, "-O", "binary", str(kernel_elf), str(kernel_bin)])
 
@@ -143,13 +181,19 @@ def main() -> int:
     image = bytearray(FLOPPY_SIZE)
     image[0:BOOT_SIZE] = boot_data
     image[BOOT_SIZE:BOOT_SIZE + len(kernel_data)] = kernel_data
+    fs = build_minifs([
+        ("DISK.BIN", disk_task_bin),
+        ("HELLO.BIN", user_bin),
+    ])
     image[PACK_OFFSET:PACK_OFFSET + len(pack)] = pack
+    image[FS_OFFSET:FS_OFFSET + len(fs)] = fs
     IMAGE.write_bytes(image)
 
     digest = hashlib.sha256(image).hexdigest()
     print(f"[boot]   {len(boot_data):>6} bytes")
     print(f"[kernel] {len(kernel_data):>6} bytes")
     print(f"[pack]   {len(pack):>6} bytes at offset {PACK_OFFSET}")
+    print(f"[minifs] {len(fs):>6} bytes at offset {FS_OFFSET}")
     print(f"[image]  {IMAGE.name}: {len(image):,} bytes")
     print(f"[sha256] {digest}")
     return 0
@@ -157,6 +201,9 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
+
 
 
 
