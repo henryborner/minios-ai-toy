@@ -789,6 +789,18 @@ int run_module(const char *name) {
 #define TASK_FRAME_STRIDE 0x00002000u
 #define TIME_SLICE_TICKS 1
 
+/* One large Ring 3 task for the MicroPython-class layout. */
+#define BIG_TASK_SLOT    3
+#define BIG_CODE_PHYS    0x00100000u
+#define BIG_CODE_MAX     0x00040000u
+#define BIG_STACK_PHYS   0x00140000u
+#define BIG_STACK_SIZE   0x00010000u
+#define BIG_HEAP_PHYS    0x00150000u
+#define BIG_HEAP_SIZE    0x00100000u
+#define BIG_USER_CODE    0x00400000u
+#define BIG_USER_STACK   0x00480000u
+#define BIG_USER_HEAP    0x00500000u
+
 struct task {
     u32 esp;
     u32 cr3;
@@ -806,6 +818,7 @@ static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
 static u32 task_pd[NTASKS][1024] __attribute__((aligned(4096)));
 static u32 task_user_pt[NTASKS][1024] __attribute__((aligned(4096)));
 static u8 task_kstack[NTASKS][4096] __attribute__((aligned(16)));
+static u8 big_kstack[8192] __attribute__((aligned(16)));
 
 /* Never modified while active: safe kernel mapping used during task setup. */
 static u32 sched_safe_pd[1024] __attribute__((aligned(4096)));
@@ -899,6 +912,67 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].cr3 = (u32)task_pd[slot];
     tasks[slot].state = TASK_READY;
 
+    int i = 0;
+    while (i < 15 && name[i]) {
+        tasks[slot].name[i] = name[i];
+        i++;
+    }
+    tasks[slot].name[i] = 0;
+    return slot;
+}
+
+static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
+    int slot = BIG_TASK_SLOT;
+    if (tasks[slot].state != TASK_FREE && tasks[slot].state != TASK_DONE)
+        return -1;
+    if (image > BIG_CODE_MAX || bss > BIG_CODE_MAX - image)
+        return -1;
+
+    u8 *bssp = (u8 *)(BIG_CODE_PHYS + image);
+    for (u32 i = 0; i < bss; i++)
+        bssp[i] = 0;
+    u8 *stk = (u8 *)BIG_STACK_PHYS;
+    for (u32 i = 0; i < BIG_STACK_SIZE; i++)
+        stk[i] = 0;
+    u8 *heap = (u8 *)BIG_HEAP_PHYS;
+    for (u32 i = 0; i < BIG_HEAP_SIZE; i++)
+        heap[i] = 0;
+
+    for (int i = 0; i < 1024; i++) {
+        task_pd[slot][i] = 0;
+        task_user_pt[slot][i] = 0;
+    }
+    task_pd[slot][0] = (u32)task_kernel_pt | 0x003;
+    task_pd[slot][1] = (u32)task_user_pt[slot] | 0x007;
+
+    u32 code_pages = (image + bss + 4095) / 4096;
+    if (code_pages > BIG_CODE_MAX / 4096)
+        return -1;
+    for (u32 i = 0; i < code_pages; i++)
+        task_user_pt[slot][i] = (BIG_CODE_PHYS + i * 0x1000) | 0x007;
+
+    u32 stack_page = (BIG_USER_STACK - BIG_USER_CODE) / 0x1000;
+    for (u32 i = 0; i < BIG_STACK_SIZE / 0x1000; i++)
+        task_user_pt[slot][stack_page + i] = (BIG_STACK_PHYS + i * 0x1000) | 0x007;
+
+    u32 heap_page = (BIG_USER_HEAP - BIG_USER_CODE) / 0x1000;
+    for (u32 i = 0; i < BIG_HEAP_SIZE / 0x1000; i++)
+        task_user_pt[slot][heap_page + i] = (BIG_HEAP_PHYS + i * 0x1000) | 0x007;
+
+    u32 top = (u32)(big_kstack + sizeof(big_kstack));
+    u32 *frame = (u32 *)(top - 52);
+    for (int i = 0; i < 13; i++)
+        frame[i] = 0;
+    frame[8] = BIG_USER_CODE + entry;
+    frame[9] = 0x1B;
+    frame[10] = 0x202;
+    frame[11] = BIG_USER_STACK + BIG_STACK_SIZE;
+    frame[12] = 0x23;
+
+    tasks[slot].esp = (u32)frame;
+    tasks[slot].kstack_top = top;
+    tasks[slot].cr3 = (u32)task_pd[slot];
+    tasks[slot].state = TASK_READY;
     int i = 0;
     while (i < 15 && name[i]) {
         tasks[slot].name[i] = name[i];
@@ -1047,6 +1121,41 @@ void run_task_demo(void) {
     start_tasks(a);
 }
 
+int run_user_module(const char *name) {
+    u32 size = 0;
+    if (!fs_load_file_to(name, (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size)) {
+        gui_sys_print("[user-mod] load failed.\n");
+        return 0;
+    }
+
+    struct module_header *h = (struct module_header *)BIG_CODE_PHYS;
+    if (h->magic[0] != 'U' || h->magic[1] != 'M' ||
+        h->magic[2] != 'P' || h->magic[3] != '1') {
+        gui_sys_print("[user-mod] bad UMP1 header.\n");
+        return 0;
+    }
+    if (h->image_size > size || h->entry_offset >= h->image_size ||
+        h->image_size > BIG_CODE_MAX || h->bss_size > BIG_CODE_MAX - h->image_size) {
+        gui_sys_print("[user-mod] bad sizes.\n");
+        return 0;
+    }
+
+    __asm__ __volatile__("cli");
+    gdt_install();
+    idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
+    task_system_init();
+    task_clear_all();
+
+    int slot = task_create_big(name, h->image_size, h->bss_size, h->entry_offset);
+    if (slot < 0) {
+        gui_sys_print("[user-mod] cannot create big task.\n");
+        __asm__ __volatile__("sti");
+        return 0;
+    }
+    start_tasks(slot);
+    return 1;
+}
+
 int exec_disk(const char *name) {
     u32 size = 0;
     if (!fs_load_file(name, fs_program, FS_MAX_FILE, &size)) {
@@ -1093,6 +1202,32 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         if (scheduler_active)
             task_yield(frame);
         gui_sys_print("[ring3] yield ignored.\n");
+    } else if (number == 4) {
+        u32 ptr = ((u32 *)frame)[4];
+        u32 len = ((u32 *)frame)[6];
+        if (ptr >= 0x400000 && ptr < 0x800000 && len <= 4096 &&
+            ptr + len <= 0x800000)
+            gui_sys_write((const char *)ptr, len);
+        ((u32 *)frame)[7] = len;
+    } else if (number == 5) {
+        ((u32 *)frame)[7] = (u32)module_getchar();
+    } else if (number == 6) {
+        ((u32 *)frame)[7] = ticks * 10;
+    } else if (number == 7) {
+        u32 name = ((u32 *)frame)[4];
+        u32 dst = ((u32 *)frame)[6];
+        u32 max = ((u32 *)frame)[5];
+        u32 size = 0;
+        if (name >= 0x400000 && name < 0x800000 &&
+            dst >= 0x400000 && dst < 0x800000 &&
+            max <= BIG_HEAP_SIZE && dst + max <= 0x800000) {
+            __asm__ __volatile__("sti");
+            int ok = fs_load_file_to((const char *)name, (u8 *)dst, max, &size);
+            __asm__ __volatile__("cli");
+            ((u32 *)frame)[7] = ok ? size : 0;
+        } else {
+            ((u32 *)frame)[7] = 0;
+        }
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }
@@ -1178,6 +1313,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

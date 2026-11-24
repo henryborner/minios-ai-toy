@@ -294,8 +294,8 @@ static void run_command(char *line) {
         term_puts("help ver cpu mem time date\n");
         term_puts("uptime clear echo sysinfo\n");
         term_puts("about ring3 tasks progs run ls exec\n");
-        term_puts("modtest mod NAME disktest reboot\n");
-        term_puts("halt\n");
+        term_puts("modtest mod NAME utest disktest\n");
+        term_puts("reboot halt\n");
     } else if (streq(line, "ver")) {
         term_puts("MiniOS 2.0 C GUI (32-bit)\n");
     } else if (streq(line, "cpu")) {
@@ -361,6 +361,11 @@ static void run_command(char *line) {
         term_puts("Loading kernel module from MiniFS...\n");
         gui_redraw();
         run_module(line + 4);
+    } else if (streq(line, "utest")) {
+        extern int run_user_module(const char *name);
+        term_puts("Loading large Ring3 module from MiniFS...\n");
+        gui_redraw();
+        run_user_module("UMTEST.BIN");
     } else if (streq(line, "ls")) {
         extern void list_disk_files(void);
         list_disk_files();

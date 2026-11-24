@@ -118,6 +118,7 @@ def main() -> int:
     task_c_bin = BUILD / "task_c.bin"
     disk_task_bin = BUILD / "disk_task.bin"
     modtest_bin = BUILD / "modtest.bin"
+    umtest_bin = BUILD / "umtest.bin"
     sched_o = BUILD / "sched.o"
     gui_o = BUILD / "gui.o"
     fdc_o = BUILD / "fdc.o"
@@ -136,6 +137,7 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(task_c_bin), "task_c.asm"])
     run([nasm, "-f", "bin", "-o", str(disk_task_bin), "disk_task.asm"])
     run([nasm, "-f", "bin", "-o", str(modtest_bin), "modtest.asm"])
+    run([nasm, "-f", "bin", "-o", str(umtest_bin), "umtest.asm"])
     run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
     run([
         clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
@@ -187,6 +189,8 @@ def main() -> int:
         ("DISK.BIN", disk_task_bin),
         ("HELLO.BIN", user_bin),
         ("MODTEST.BIN", modtest_bin),
+        ("UMTEST.BIN", umtest_bin),
+        ("UMTEST.BIN", umtest_bin),
     ])
     image[PACK_OFFSET:PACK_OFFSET + len(pack)] = pack
     image[FS_OFFSET:FS_OFFSET + len(fs)] = fs
@@ -204,6 +208,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
 
 
 

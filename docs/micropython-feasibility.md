@@ -59,7 +59,19 @@ The ABI is documented in [`micropython-module-abi.md`](micropython-module-abi.md
 with C declarations in `c/module_api.h`.
 
 This is deliberately **Ring 0** for the first bring-up. A crash in the module
-takes down MiniOS. Ring 3 isolation is a later hardening step.
+takes down MiniOS.
+
+A second, **Ring 3** layout is also implemented:
+
+- `UMP1` module linked at `0x400000`
+- 256 KB code window, 64 KB stack, 1 MB user heap at `0x500000`
+- one big task slot (slot 3), loaded from MiniFS
+- syscalls: write string, write bytes, blocking getchar, ticks_ms, whole-file
+  read, exit, yield
+- test command `utest` verifies multi-page code, heap, console, time and file
+  read
+
+See [`micropython-user-abi.md`](micropython-user-abi.md).
 
 ## 3. Current gaps
 
@@ -67,12 +79,15 @@ takes down MiniOS. Ring 3 isolation is a later hardening step.
 
 | Gap | Status |
 |---|---|
-| Loader for >4 KB module | **done** (up to 1 MB) |
-| Fixed GC heap | **done** (1 MB at 0x200000) |
-| Console output (length-aware) | **done** (API `write`) |
-| Blocking console input | **done** (API `getchar`) |
-| Millisecond time | **done** (PIT ticks × 10) |
+| Loader for >4 KB module | **done** (kernel module up to 1 MB, Ring 3 code 256 KB) |
+| Fixed GC heap | **done** (kernel 1 MB at 0x200000; Ring 3 1 MB at 0x500000) |
+| Console output (length-aware) | **done** (API `write`, syscall 4) |
+| Blocking console input | **done** (API `getchar`, syscall 5) |
+| Millisecond time | **done** (API ticks, syscall 6) |
 | Module BSS handling | **done** (header + loader) |
+| User-mode multi-page code/stack/heap | **done** (one big task, `utest`) |
+| Whole-file read API | **done** (syscall 7, MiniFS) |
+| Ring 3 isolation | **done for the big task**; kernel module is Ring 0 |
 | i386 `nlr` | available upstream, not yet compiled into a port |
 | Minimal libc/headers | **not integrated**; port must provide `string0.c`/`printf.c`/`alloca`/headers |
 | MicroPython i386 port config + linker | **not done** — this is the adaptation task |
@@ -81,42 +96,53 @@ takes down MiniOS. Ring 3 isolation is a later hardening step.
 
 ### Needed for a useful (not just REPL) MicroPython
 
-- read-only VFS/imports from MiniFS (current MiniFS has no file API exposed to
-  modules)
+- read-only VFS/imports from MiniFS (currently only whole-file read syscall 7;
+  no open/read/seek)
 - writable temp/cache (optional if `__pycache__` disabled)
-- more stack (kernel stack is shared; deep recursion needs auditing)
+- deeper stack audit (big task has 64 KB user stack + 8 KB syscall stack)
 - float policy (disable float or use soft-float; current kernel is
   `-mno-sse -mno-80387 -msoft-float`)
-- larger/streamed module loading if the final MicroPython core exceeds 1 MB
+- larger/streamed module loading if the final MicroPython core exceeds 256 KB
+  for the Ring 3 path (kernel module path allows 1 MB)
 - more heap for larger scripts/data
 
-### Needed for isolation / production
+### Remaining hardening
 
-- Ring 3 MicroPython task instead of Ring 0
-- per-task user heap and multi-page code/data/stack mappings
-- console read/write/time syscalls for user mode
-- file read syscalls / VFS
-- fault handling and cleanup
+- only one big Ring 3 task slot (slot 3) and fixed physical frames
+- no demand paging or per-task frame allocator
+- user-mode file writes, mmap/brk, open/read/seek are not implemented
+- kernel module and big user task contend for physical `0x100000`; not
+  simultaneous
+- fault handling/cleanup for a crashed Python task
 
 ## 4. Recommended bring-up order
 
+Two bring-up routes are available:
+
+- **fastest:** kernel-mode module at `0x00100000` (API in
+  `micropython-module-abi.md`), Ring 0;
+- **cleaner:** Ring 3 big task at `0x00400000` with 1 MB heap
+  (`micropython-user-abi.md`), using syscalls 4/5/6/7.
+
+Recommended first steps for the Ring 3 route:
+
 1. Build `ports/minimal`-style MicroPython for **i386 bare metal** at
-   `0x00100000`, with:
+   `0x00400000`, with:
    - `MICROPY_ENABLE_GC=1`
    - `MICROPY_ENABLE_COMPILER=1`
    - `MICROPY_HELPER_REPL=1`
    - frozen modules, no external import
    - floats disabled initially
-2. Link a flat image with the `MPM1` header at `0x100000`; report BSS through
+2. Link a flat image with the `UMP1` header at `0x400000`; report BSS through
    the header.
-3. Implement the HAL in terms of `minios_api`:
-   - `mp_hal_stdin_rx_chr` -> `api->getchar()`
-   - `mp_hal_stdout_tx_strn` -> `api->write(s, len)`
-   - `mp_hal_ticks_ms` -> `api->ticks_ms()`
-4. Package the binary as `MPY.BIN` in MiniFS (increase the file size limit as
-   needed) and run `mod MPY.BIN`.
+3. Implement the HAL in terms of syscalls:
+   - `mp_hal_stdin_rx_chr` -> `int 0x80`, EAX=5
+   - `mp_hal_stdout_tx_strn` -> `int 0x80`, EAX=4
+   - `mp_hal_ticks_ms` -> `int 0x80`, EAX=6
+4. Package the binary as `MPY.BIN` in MiniFS and run it through the Ring 3
+   loader (currently `utest` loads `UMTEST.BIN`; add a name/command).
 5. Verify REPL, `print`, loops, functions, exceptions, GC.
-6. Only then move to Ring 3 and replace the synchronous API with syscalls.
+6. For kernel-mode bring-up, use the `MPM1` path and `mod MPY.BIN` instead.
 
 ## 5. Handoff checklist for the adaptation model
 
