@@ -49,6 +49,7 @@ struct console {
     char term[14][40];
     int n;
     int cur;
+    u8 esc;
 };
 
 struct window {
@@ -343,6 +344,7 @@ static void term_clear(struct console *c) {
             c->term[r][col] = 0;
     c->n = 1;
     c->cur = 0;
+    c->esc = 0;
 }
 
 static void term_newline(struct console *c) {
@@ -362,8 +364,40 @@ static void term_newline(struct console *c) {
 }
 
 static void term_putc(struct console *c, char ch) {
+    if (c->esc) {
+        if (c->esc == 1) {
+            if (ch == '[')
+                c->esc = 2;
+            else
+                c->esc = 0;
+        } else {
+            if ((ch >= '0' && ch <= '9') || ch == ';')
+                return;
+            c->esc = 0;
+        }
+        return;
+    }
+    if (ch == 27) {
+        c->esc = 1;
+        return;
+    }
+    if (ch == '\r')
+        return;
     if (ch == '\n') {
         term_newline(c);
+        return;
+    }
+    if (ch == '\b') {
+        int len = line_len(c, c->cur);
+        if (len > 0)
+            c->term[c->cur][len - 1] = 0;
+        return;
+    }
+    if (ch == '\t') {
+        int len = line_len(c, c->cur);
+        int spaces = 4 - (len & 3);
+        while (spaces-- > 0)
+            term_putc(c, ' ');
         return;
     }
     int len = line_len(c, c->cur);

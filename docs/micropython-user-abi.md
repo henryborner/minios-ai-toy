@@ -106,7 +106,10 @@ Notes:
 - `sleep` blocks the task; IRQ0 wakes it. If no other task is ready, the
   syscall busy-waits with `sti; hlt`.
 - Syscall 2 exits with status 0; syscall 11 exits with EBX.
-- Syscall 5 skips F1–F6 keyboard events; ASCII bytes are returned.
+- Syscall 5 skips F1–F6 keyboard events. Arrow/Home/End/Delete are translated
+  to ANSI sequences: `ESC [ A/B/C/D/H/F`, `ESC [ 3 ~`.
+- Ctrl combinations arrive as control bytes (`Ctrl-C` = 3, `Ctrl-D` = 4).
+- Terminal output handles `\r`, `\n`, `\b`, `\t` and swallows ANSI CSI sequences.
 
 ## HAL mapping for MicroPython
 

@@ -11,7 +11,8 @@ extern volatile u32 ticks;
 #define FDC_MSR   0x3F4
 #define FDC_FIFO  0x3F5
 
-#define FDC_DMA_BUF 0x00050000u
+/* Low conventional memory, outside the kernel image/BSS and below 0x10000. */
+#define FDC_DMA_BUF 0x00008000u
 
 static volatile u8 fdc_irq_seen;
 static u8 fdc_ready;

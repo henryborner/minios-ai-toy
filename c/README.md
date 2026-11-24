@@ -11,6 +11,10 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - VGA 320×200×256 GUI, custom palette, ROM font
 - IDT/PIC/PIT: IRQ0 timer 100 Hz, IRQ1 keyboard, IRQ12 PS/2 mouse
 - Mouse cursor, Start menu, taskbar, draggable windows, close/OK buttons
+- **Keyboard**: full US Shift symbols, Ctrl combinations (`Ctrl-C`/`Ctrl-D`/
+  `Ctrl-L`/`Ctrl-Z`, `Ctrl-[`), extended arrow/Home/End/Delete keys mapped to
+  ANSI sequences for `getchar`
+- **Terminal**: CR/LF, backspace, TAB expansion and ANSI CSI swallowing
 - **Window manager**: focus, Z-order, active/inactive title bars, taskbar state
 - **Three independent consoles** with per-console shell history and input focus
 - **F4 / taskbar Wins window list**: Tab cycles, Enter activates, mouse click,
@@ -90,6 +94,9 @@ Screenshots:
 - [`../screenshots/c-ramfs-ls.png`](../screenshots/c-ramfs-ls.png)
 - [`../screenshots/c-argv-test.png`](../screenshots/c-argv-test.png)
 - [`../screenshots/c-brk-test.png`](../screenshots/c-brk-test.png)
+- [`../screenshots/c-term-test.png`](../screenshots/c-term-test.png)
+- [`../screenshots/c-dma-fd.png`](../screenshots/c-dma-fd.png)
+- [`../screenshots/c-keyboard-symbols.png`](../screenshots/c-keyboard-symbols.png)
 
 ## Program pack
 
@@ -264,7 +271,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~27 KB
+- `c/build/kernel.bin` — currently ~28.2 KB (32 KB loader ceiling)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
@@ -326,6 +333,13 @@ qemu-system-i386 `
 - `exec` supports flat programs ≤4 KB; no arguments, fork/exec or per-task heap.
 - GUI focus/Z-order is fixed-list (5 windows), not a general compositor.
 - Taskbar shows Console 1/2; Console 3 is via Start menu or the Windows list.
+- FDC DMA buffer is at `0x8000`; kernel BSS ends at `0x5f1c8`, so it is safe.
+- GUI event processing is still blocking while `mod`/`utest`/`exec` runs; the
+  mouse and window manager freeze during an interactive Python REPL.
+- Kernel CPU exceptions still route to `cli; hlt`; a bad user task can halt
+  the machine.
+- Kernel binary is close to the 32 KB bootloader ceiling; the next growth needs
+  a larger/second-stage loader.
 - Kernel module loader runs in **Ring 0**; big Ring 3 task has real user isolation.
 - Big Ring 3 task: one slot, fixed 256 KB code / 64 KB stack / 1 MB heap.
 - File API is whole-file read only (syscall 7); no open/read/seek/write.

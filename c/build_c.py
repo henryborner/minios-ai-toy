@@ -128,6 +128,7 @@ def main() -> int:
     arg_child_bin = BUILD / "arg_child.bin"
     parent_args_bin = BUILD / "parent_args.bin"
     heap_test_bin = BUILD / "heap_test.bin"
+    term_test_bin = BUILD / "term_test.bin"
     sched_o = BUILD / "sched.o"
     gui_o = BUILD / "gui.o"
     fdc_o = BUILD / "fdc.o"
@@ -156,6 +157,7 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(arg_child_bin), "arg_child.asm"])
     run([nasm, "-f", "bin", "-o", str(parent_args_bin), "parent_args.asm"])
     run([nasm, "-f", "bin", "-o", str(heap_test_bin), "heap_test.asm"])
+    run([nasm, "-f", "bin", "-o", str(term_test_bin), "term_test.asm"])
     run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
     run([
         clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
@@ -217,17 +219,7 @@ def main() -> int:
         ("ARG.BIN", arg_child_bin),
         ("ARGS.BIN", parent_args_bin),
         ("HEAP.BIN", heap_test_bin),
-        ("TEST.TXT", CDIR / "test.txt"),
-        ("UMTEST.BIN", umtest_bin),
-        ("PARENT.BIN", parent_bin),
-        ("PARENT2.BIN", parent_block_bin),
-        ("FD.BIN", fd_test_bin),
-        ("CHILD5.BIN", child5_bin),
-        ("STATUS.BIN", parent_status_bin),
-        ("RAMFS.BIN", ramfs_test_bin),
-        ("ARG.BIN", arg_child_bin),
-        ("ARGS.BIN", parent_args_bin),
-        ("HEAP.BIN", heap_test_bin),
+        ("TERM.BIN", term_test_bin),
         ("TEST.TXT", CDIR / "test.txt"),
     ])
     image[PACK_OFFSET:PACK_OFFSET + len(pack)] = pack
@@ -246,6 +238,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 

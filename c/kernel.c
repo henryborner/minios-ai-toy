@@ -21,7 +21,7 @@ static u8 heap[64 * 1024];
 
 static volatile u8 kbd_buf[64];
 static volatile u8 kbd_head, kbd_tail;
-static u8 shift_down, extended;
+static u8 shift_down, ctrl_down, extended;
 
 static volatile u8 mouse_cycle;
 static volatile u8 mouse_packet[3];
@@ -160,6 +160,30 @@ static void kbd_push(u8 ch) {
     }
 }
 
+#define KEY_UP    0xF7
+#define KEY_DOWN  0xF8
+#define KEY_LEFT  0xF9
+#define KEY_RIGHT 0xFA
+#define KEY_HOME  0xFB
+#define KEY_END   0xFC
+#define KEY_DEL   0xFD
+
+static char shift_char(char ch) {
+    switch (ch) {
+        case '1': return '!'; case '2': return '@'; case '3': return '#';
+        case '4': return '$'; case '5': return '%'; case '6': return '^';
+        case '7': return '&'; case '8': return '*'; case '9': return '(';
+        case '0': return ')'; case '-': return '_'; case '=': return '+';
+        case '[': return '{'; case ']': return '}'; case '\\': return '|';
+        case ';': return ':'; case '\'': return '"'; case '`': return '~';
+        case ',': return '<'; case '.': return '>'; case '/': return '?';
+        default:
+            if (ch >= 'a' && ch <= 'z')
+                return (char)(ch - 32);
+            return ch;
+    }
+}
+
 static void keyboard_scancode(u8 sc) {
     if (sc == 0xE0) {
         extended = 1;
@@ -167,16 +191,31 @@ static void keyboard_scancode(u8 sc) {
     }
     if (extended) {
         extended = 0;
+        if (sc & 0x80)
+            return;
+        if (sc == 0x48) kbd_push(KEY_UP);
+        else if (sc == 0x50) kbd_push(KEY_DOWN);
+        else if (sc == 0x4B) kbd_push(KEY_LEFT);
+        else if (sc == 0x4D) kbd_push(KEY_RIGHT);
+        else if (sc == 0x47) kbd_push(KEY_HOME);
+        else if (sc == 0x4F) kbd_push(KEY_END);
+        else if (sc == 0x53) kbd_push(KEY_DEL);
         return;
     }
     if (sc & 0x80) {
         u8 make = sc & 0x7F;
         if (make == 0x2A || make == 0x36)
             shift_down = 0;
+        else if (make == 0x1D)
+            ctrl_down = 0;
         return;
     }
     if (sc == 0x2A || sc == 0x36) {
         shift_down = 1;
+        return;
+    }
+    if (sc == 0x1D) {
+        ctrl_down = 1;
         return;
     }
     if (sc == 0x3B) { kbd_push(0xF1); return; }
@@ -189,8 +228,22 @@ static void keyboard_scancode(u8 sc) {
     char ch = keymap[sc];
     if (!ch)
         return;
-    if (shift_down && ch >= 'a' && ch <= 'z')
-        ch = (char)(ch - 32);
+    if (ctrl_down) {
+        if (ch >= 'a' && ch <= 'z') {
+            kbd_push((u8)(ch - 'a' + 1));
+            return;
+        }
+        if (ch == '[') {
+            kbd_push(27);
+            return;
+        }
+        if (ch == '\\') {
+            kbd_push(28);
+            return;
+        }
+    }
+    if (shift_down)
+        ch = shift_char(ch);
     kbd_push((u8)ch);
 }
 
@@ -723,13 +776,41 @@ static u32 module_ticks_ms(void) {
 }
 
 static int module_getchar(void) {
+    static u8 seq[4];
+    static u8 seq_pos, seq_len;
+    if (seq_pos < seq_len)
+        return (int)seq[seq_pos++];
+
     for (;;) {
         while (kbd_tail != kbd_head) {
             u8 ch = kbd_buf[kbd_tail];
             kbd_tail = (u8)((kbd_tail + 1) & 63);
             if (ch >= 0xF1 && ch <= 0xF6)
                 continue;
-            return (int)ch;
+
+            seq_len = 0;
+            seq_pos = 0;
+            seq[0] = 27;
+            seq[1] = '[';
+            if (ch == KEY_UP) {
+                seq[2] = 'A'; seq_len = 3;
+            } else if (ch == KEY_DOWN) {
+                seq[2] = 'B'; seq_len = 3;
+            } else if (ch == KEY_RIGHT) {
+                seq[2] = 'C'; seq_len = 3;
+            } else if (ch == KEY_LEFT) {
+                seq[2] = 'D'; seq_len = 3;
+            } else if (ch == KEY_HOME) {
+                seq[2] = 'H'; seq_len = 3;
+            } else if (ch == KEY_END) {
+                seq[2] = 'F'; seq_len = 3;
+            } else if (ch == KEY_DEL) {
+                seq[2] = '3'; seq[3] = '~'; seq_len = 4;
+            } else {
+                return (int)ch;
+            }
+            seq_pos = 1;
+            return (int)seq[0];
         }
         __asm__ __volatile__("sti; hlt");
     }
