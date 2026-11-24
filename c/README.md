@@ -21,8 +21,14 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - 4 KB paging; kernel pages supervisor, user pages U/S
 - GDT with DPL3 user code/data descriptors and a TSS
 - Ring 3 entry via `iret`; DPL3 `int 0x80` syscall gate; CPL=3 verified
-- **Dynamic task table with 4 slots**, task creation/reuse and per-task
+- **Dynamic task table with 8 slots**, task creation/reuse and per-task
   page directories/user page tables/kernel stacks
+- **Dynamic physical frame allocator** for code/stack/heap pages:
+  frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
+- **Process lifecycle**: PIDs, parent/child, `spawn`, `wait`, `sleep`,
+  `exit(status)`, blocking task states, timer wakeups and frame reclamation
+- **Per-task file descriptors**: `open/read/close/seek` on read-only MiniFS
+  files, 8 FDs per task
 - **Timer-preemptive round-robin** scheduling: IRQ0 every 10 ms saves the user
   trap frame, switches CR3/TSS `esp0` and `iretd`s into the next task
 - **Read-only program pack (MPK1)** loaded by the boot sector:
@@ -70,6 +76,12 @@ Screenshots:
 - [`../screenshots/c-wm-about.png`](../screenshots/c-wm-about.png)
 - [`../screenshots/c-wm-start-pressed2.png`](../screenshots/c-wm-start-pressed2.png)
 - [`../screenshots/c-wm-close-pressed-zoom.png`](../screenshots/c-wm-close-pressed-zoom.png)
+- [`../screenshots/c-frames-tasks.png`](../screenshots/c-frames-tasks.png)
+- [`../screenshots/c-proc-parent.png`](../screenshots/c-proc-parent.png)
+- [`../screenshots/c-proc-wait.png`](../screenshots/c-proc-wait.png)
+- [`../screenshots/c-proc-status.png`](../screenshots/c-proc-status.png)
+- [`../screenshots/c-proc-utest.png`](../screenshots/c-proc-utest.png)
+- [`../screenshots/c-fd-test.png`](../screenshots/c-fd-test.png)
 
 ## Program pack
 
@@ -204,6 +216,14 @@ Shell commands: `help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`,
 `tasks`, `ls`, `exec NAME`, `disktest`, `ring3`, `modtest`, `mod NAME`, `utest`,
 `reboot`, `halt`.
 
+Process/FD test programs in MiniFS:
+
+```text
+exec PARENT.BIN    # spawn + sleep + wait
+exec PARENT2.BIN   # spawn + blocking wait
+exec FD.BIN        # open/read/close TEST.TXT
+```
+
 ## Window manager
 
 - 3 console windows, Console 1 visible at boot; `F5`/`F6`, Start menu, taskbar,
@@ -232,7 +252,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~21.8 KB
+- `c/build/kernel.bin` — currently ~24.5 KB
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
@@ -261,6 +281,8 @@ qemu-system-i386 `
 | `user_blob.asm` | embeds `user.bin` for the `ring3` command |
 | `task_a.asm`, `task_b.asm`, `task_c.asm` | pack task programs |
 | `disk_task.asm` | Ring 3 task stored in MiniFS |
+| `parent_test.asm`, `parent_block.asm` | spawn/sleep/wait process tests |
+| `fd_test.asm`, `test.txt` | open/read/close test |
 | `modtest.asm` | kernel-module ABI test at `0x100000` |
 | `umtest.asm` | large Ring 3 user-module test at `0x400000` |
 | `module_api.h` | MicroPython module header/API layout |
@@ -276,9 +298,12 @@ qemu-system-i386 `
 ## Status / caveats
 
 - Ring 1/2 unused (normal; only Ring 0/3 matter here).
-- Dynamic table has **4 slots**; `tasks` uses three, `run` uses one.
-- Scheduler is timer-preemptive with a fixed 10 ms slice; no priorities/sleep/wait.
-- Task code/stack physical pages are statically reserved per slot.
+- Dynamic table has **8 slots**; 7 small slots + 1 big Ring 3 slot.
+- Scheduler is timer-preemptive with a fixed 10 ms slice; no priorities.
+- Task code/stack/heap pages come from a frame allocator (5–16 MB).
+- `spawn` supports flat MiniFS programs ≤4 KB only; no argv/fork.
+- `wait` is parent/child only; exit status is available through syscall 11.
+- File descriptors are read-only and whole-file backed by MiniFS.
 - Program pack is read-only and boot-loaded; MiniFS is read-only at runtime.
 - MiniFS is custom, not FAT12; no write support or directory updates.
 - FDC driver reads one 512-byte sector per command (seeks between tracks).
@@ -297,7 +322,7 @@ qemu-system-i386 `
 
 1. Build the minimal i386 MicroPython port against `micropython-user-abi.md`
    (or the kernel-module ABI for a faster Ring 0 bring-up).
-2. VFS/import API and writable temp (optional).
-3. More than four tasks / more big-task slots, priorities and blocking.
-4. Per-task frame allocator and demand paging.
-5. Write support / FAT12 compatibility.
+2. `fork`/`exec` with argv, user heap `brk/mmap`, demand paging.
+3. Writable VFS and real `open/read/write/seek`.
+4. Per-process windows / graphics syscalls.
+5. More big-task slots, priorities, SMP.

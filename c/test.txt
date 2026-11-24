@@ -1,0 +1,2 @@
+MiniFS file read through open/read/close syscalls.
+This line came from the floppy at LBA 201.

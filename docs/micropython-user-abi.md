@@ -17,20 +17,22 @@ All pages in the window are mapped with U/S=1 only where needed.
 
 ## Physical backing (current implementation)
 
-| Physical | Size | Use |
-|---:|---:|---|
-| `0x00100000` | 256 KB | code/image |
-| `0x00140000` | 64 KB | stack |
-| `0x00150000` | 1 MB | heap |
+Code, stack and heap pages are allocated dynamically from a frame allocator:
 
-The kernel identity-maps 0–4 MB, so it can load/copy/zero these frames.
+| Physical | Use |
+|---:|---|
+| `0x00500000–0x00FFFFFF` | 11 MB frame pool |
+| `0x01000000–0x01BFFFFF` | kernel direct map of physical 4–16 MB |
 
-**Conflict:** the kernel-mode module loader also uses `0x00100000` and
-`0x00200000`. Do not run `mod NAME` and `utest` at the same time; the big user
-task owns `0x00100000`+ while active.
+The kernel direct map is supervisor-only. The user page table maps virtual
+`0x400000+` to allocated frames with U/S=1; the kernel copies through the
+direct map.
 
-Only **task slot 3** is used for this big task. Small tasks use their own
-frames at `0x00300000`.
+The old fixed `0x00100000/0x00140000/0x00150000` layout is no longer used for
+task memory. `0x00100000` remains the temporary load address for the kernel
+module / large user image.
+
+Only **one big task slot** exists (slot 7). Small tasks use slots 0–6.
 
 ## Module file header
 
@@ -69,14 +71,29 @@ by replacing the saved EAX, so the user sees it in EAX after `int 0x80`.
 | 5 | blocking read char | — | EAX = byte |
 | 6 | ticks_ms | — | EAX = PIT ms |
 | 7 | read whole file | EBX = name, ECX = dst, EDX = max | EAX = size or 0 |
+| 8 | spawn | EBX = name | EAX = child PID or 0 |
+| 9 | wait | EBX = PID (0 = any child) | EAX = exit status or -1 |
+| 10 | sleep ms | EBX = ms | EAX = 0 |
+| 11 | exit(status) | EBX = status | does not return |
+| 12 | open | EBX = name | EAX = fd (1..8) or -1 |
+| 13 | read | EBX = fd, ECX = buf, EDX = len | EAX = bytes or -1 |
+| 14 | close | EBX = fd | EAX = 0 or -1 |
+| 15 | seek | EBX = fd, ECX = offset, EDX = whence | EAX = new offset or -1 |
 
 Notes:
 
-- Syscalls 4/5/6/7 require pointers in the user window `0x400000–0x7FFFFF`.
+- Syscalls 4/5/6/7/12/13/14/15 require pointers in the user window
+  `0x400000–0x7FFFFF`.
 - Syscall 5 enables interrupts while waiting; keyboard IRQs feed it.
-- Syscall 7 reads a MiniFS file (whole file, read-only) into the user buffer.
-- There is no open/read/seek/close or write-to-disk API yet.
-- Syscall 5 skips F1–F3 keyboard events; ASCII bytes are returned.
+- Syscall 7 reads a whole MiniFS file into the user buffer.
+- Syscalls 12–15 are the read-only FD API. FDs are per-task (8 per task),
+  backed by MiniFS extents; `read` copies sectors through the FDC.
+- `spawn` loads a flat MiniFS program ≤4 KB, assigns a PID and parent PID,
+  and returns immediately. `wait` blocks until a child exits.
+- `sleep` blocks the task; IRQ0 wakes it. If no other task is ready, the
+  syscall busy-waits with `sti; hlt`.
+- Syscall 2 exits with status 0; syscall 11 exits with EBX.
+- Syscall 5 skips F1–F6 keyboard events; ASCII bytes are returned.
 
 ## HAL mapping for MicroPython
 
@@ -105,6 +122,14 @@ It verifies:
 - syscall 5 (blocking key)
 - syscall 2 (exit back to shell)
 
+Process/FD tests:
+
+```text
+exec PARENT.BIN    # spawn + sleep + wait
+exec PARENT2.BIN   # spawn + blocking wait
+exec FD.BIN        # open/read/close TEST.TXT
+```
+
 Expected output includes:
 
 ```text
@@ -117,12 +142,14 @@ Heap, read_file, getchar and ticks_ms OK.
 
 ## Limitations
 
-- One big task only (slot 3).
-- Physical frames are fixed; no demand paging or per-task frame allocator.
-- No user-mode file writes, mmap/brk, open/read/seek.
+- One big task only (slot 7).
+- Physical frames are dynamically allocated, but there is no demand paging,
+  `mmap` or `brk`; the big heap is a fixed 1 MB region.
+- FDs are read-only; no file writes, no writable VFS.
+- `spawn` supports flat programs ≤4 KB; no argv/fork/exec.
 - Kernel syscall stack is 8 KB for the big task; deep MicroPython C recursion
   needs auditing.
-- The kernel module ABI at `0x100000` and this user task contend for the same
-  physical pages; run one at a time.
-- Ring 3 isolation is real for the user task, but the kernel/user boundary is
-  only these seven syscalls.
+- `0x00100000` remains a temporary image load address; don't run the kernel
+  module and a large user image at the same instant.
+- Ring 3 isolation is real for the user task; the kernel/user boundary is
+  syscalls 1–15.
