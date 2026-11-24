@@ -2904,6 +2904,37 @@ void gui_key(char ch) {
         }
         return;
     }
+    if (focus_win == WIN_FILES) {
+        extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
+        extern int kernel_unlink_gui(const char *name);
+        extern void sync_savefs(void);
+        if (key == GUI_KEY_UP) {
+            if (files_sel > 0) files_sel--;
+            gui_dirty = 1;
+        } else if (key == GUI_KEY_DOWN) {
+            char n[17]; u32 s, k;
+            if (kernel_readdir_gui((u32)(files_scroll + files_sel + 1), n, &s, &k))
+                files_sel++;
+            gui_dirty = 1;
+        } else if (ch == '\n') {
+            files_open_selected();
+        } else if (ch == 'x' || ch == 'X') {
+            char n[17]; u32 s, k;
+            if (kernel_readdir_gui((u32)(files_scroll + files_sel), n, &s, &k)) {
+                focus_window(WIN_C0);
+                launch_tool(&consoles[WIN_C0], "-m xxd", n);
+            }
+        } else if (ch == 'd' || ch == 'D') {
+            char n[17]; u32 s, k;
+            if (kernel_readdir_gui((u32)(files_scroll + files_sel), n, &s, &k)) {
+                kernel_unlink_gui(n);
+                gui_dirty = 1;
+            }
+        } else if (ch == 's' || ch == 'S') {
+            sync_savefs();
+        }
+        return;
+    }
     if (focus_win >= WIN_C0 && focus_win <= WIN_C2) {
         if (ch == '\t') {
             list_open = 1;
