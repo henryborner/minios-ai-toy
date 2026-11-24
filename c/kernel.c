@@ -1164,6 +1164,15 @@ static void frame_zero(u32 phys, u32 pages) {
         p[i] = 0;
 }
 
+/* Used by the GUI for large optional buffers after paging/direct-map init. */
+void *kernel_alloc_pages_zero(u32 pages) {
+    u32 phys = frame_alloc_pages(pages);
+    if (!phys)
+        return 0;
+    frame_zero(phys, pages);
+    return direct_ptr(phys);
+}
+
 static void task_copy_page(u32 dst, const u8 *src, const u8 *end) {
     u32 len = (u32)(end - src);
     if (len > 4096)

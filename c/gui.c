@@ -101,7 +101,7 @@ static int ctx_x, ctx_y;
 static int ctx_count;
 static int ctx_target;
 
-static u8 canvas_buf[CANVAS_W * CANVAS_H];
+static u8 *canvas_buf;
 static int canvas_open;
 static char canvas_title[32] = "Canvas";
 static struct gui_canvas_event canvas_ev;
@@ -1174,6 +1174,12 @@ static void draw_canvas(void) {
     window_frame(WIN_APP);
     int cx = w->x + 2;
     int cy = w->y + 12;
+    if (!canvas_buf) {
+        for (int y = 0; y < CANVAS_H; y++)
+            for (int x = 0; x < CANVAS_W; x++)
+                fb[(cy + y) * W + cx + x] = 0;
+        return;
+    }
     for (int y = 0; y < CANVAS_H; y++) {
         for (int x = 0; x < CANVAS_W; x++)
             fb[(cy + y) * W + cx + x] = canvas_buf[y * CANVAS_W + x];
@@ -1382,7 +1388,7 @@ static void draw_context(void) {
 }
 
 static void canvas_pixel(int x, int y, u8 color) {
-    if ((unsigned)x < CANVAS_W && (unsigned)y < CANVAS_H)
+    if (canvas_buf && (unsigned)x < CANVAS_W && (unsigned)y < CANVAS_H)
         canvas_buf[y * CANVAS_W + x] = color;
 }
 
@@ -1411,6 +1417,9 @@ static void canvas_line(int x0, int y0, int x1, int y1, u8 color) {
 }
 
 void gui_canvas_open(const char *title) {
+    extern void *kernel_alloc_pages_zero(u32 pages);
+    if (!canvas_buf)
+        canvas_buf = (u8 *)kernel_alloc_pages_zero(6);
     int i = 0;
     if (title) {
         while (i < 31 && title[i]) {
@@ -1435,7 +1444,7 @@ void gui_canvas_close(void) {
 }
 
 int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
-    if (!cmd)
+    if (!cmd || !canvas_buf)
         return -1;
     if (cmd->op == 0) {
         for (int i = 0; i < CANVAS_W * CANVAS_H; i++)

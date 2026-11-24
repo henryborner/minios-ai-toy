@@ -64,6 +64,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Stage 6 Canvas/minios**: 256-color palette, draggable 180×120 Canvas
   window, Python `minios.Canvas` with clear/pixel/rect/line/text/event,
   `minios.sysinfo()` and PC-speaker beep; syscalls 24–28.
+- **Dynamic Canvas buffer**: the 21.6 KB pixel buffer is allocated from the
+  frame pool through `kernel_alloc_pages_zero(6)`; kernel BSS dropped from
+  `0x6dde3` to `0x68987`.
 - **Stage 7 tools (partial)**: `calc`, `top`, `demos`, `xxd`, `edit`, `futil`
   Python tools in MiniFS with native Shell shortcuts. Frozen-bytecode
   integration with `mpy-cross` is not done yet.
@@ -416,7 +419,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~45.1 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~45.2 KB (64 KB loader limit)
 - `c/build/mpy.bin` — **183,488 bytes** (179.2 KB, image+BSS 184,048 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
