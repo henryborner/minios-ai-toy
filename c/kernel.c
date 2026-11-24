@@ -392,6 +392,7 @@ static void sched_timer_tick(u32 *frame);
 static volatile u8 runtime_busy;
 
 static void gui_poll_runtime(void) {
+    static u32 last_frame;
     int changed = 0;
     if (gui_special_pending) {
         u8 special = gui_special_pending;
@@ -401,14 +402,18 @@ static void gui_poll_runtime(void) {
     }
     if (mouse_event) {
         mouse_event = 0;
-        gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
-        changed = 1;
+        if (!gui_cursor_only_motion(mouse_x, mouse_y, mouse_buttons)) {
+            gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
+            changed = 1;
+        }
     }
 
     int cid = gui_focused_console();
     if (cid < 0 || cid >= KBD_CONSOLES)
         cid = 0;
-    if (gui_runtime_keyboard_wanted() || !console_has_live_task(cid)) {
+    int ring0_runtime = runtime_busy && !scheduler_active;
+    if (!ring0_runtime &&
+        (gui_runtime_keyboard_wanted() || !console_has_live_task(cid))) {
         while (kbd_tail[cid] != kbd_head[cid]) {
             u8 ch = kbd_buf[cid][kbd_tail[cid]];
             kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
@@ -418,7 +423,11 @@ static void gui_poll_runtime(void) {
     }
 
     if (changed)
+        gui_mark_dirty();
+    if (gui_dirty_pending() && (u32)(ticks - last_frame) >= 2) {
         gui_redraw();
+        last_frame = ticks;
+    }
 }
 
 void irq0_handler(u32 *frame) {
@@ -902,6 +911,7 @@ static int module_getchar(void) {
             seq_pos = 1;
             return (int)seq[0];
         }
+        gui_flush();
         __asm__ __volatile__("sti; hlt");
     }
 }
@@ -1020,6 +1030,10 @@ static int current_console_id(void) {
 
 int scheduler_active_now(void) {
     return scheduler_active;
+}
+
+int kernel_runtime_busy(void) {
+    return scheduler_active || runtime_busy;
 }
 
 static int console_has_live_task(int cid) {
@@ -2362,11 +2376,13 @@ void kmain(void) {
 
         if (mouse_event) {
             mouse_event = 0;
-            gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
-            event = 1;
+            if (!gui_cursor_only_motion(mouse_x, mouse_y, mouse_buttons)) {
+                gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
+                event = 1;
+            }
         }
 
-        if (event || (u32)(ticks - last_draw) >= 10) {
+        if (event || gui_dirty_pending() || (u32)(ticks - last_draw) >= 10) {
             gui_redraw();
             last_draw = ticks;
         }

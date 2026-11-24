@@ -81,6 +81,20 @@ static char clock_hm[6];
 static char clock_hms[9];
 static char date_str[11];
 static char uptime_str[9];
+static volatile u8 gui_dirty = 1;
+static u32 rtc_last_tick;
+static u8 rtc_valid;
+
+static const char cursor_art[18][13] = {
+    "X...........", "XX..........", "XWX.........", "XWWX........",
+    "XWWWX.......", "XWWWWX......", "XWWWWWX.....", "XWWWWWWX....",
+    "XWWWWWWWX...", "XWWWWWWWWX..", "XWWWWWWWWWX.", "XWWWWWXXXXXX",
+    "XWWWXWX.....", "XWWX.XWX....", "XWX..XWX....", "XX....XWX...",
+    "X.....XWX...", "......XXX..."
+};
+static u8 cursor_bg[18][12];
+static int cursor_px = -1, cursor_py = -1;
+static u8 cursor_bg_valid;
 
 static inline u8 inb(u16 port) {
     u8 value;
@@ -192,6 +206,20 @@ static void blit(void) {
         dst[i] = src[i];
 }
 
+static void blit_rect(int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > W) w = W - x;
+    if (y + h > H) h = H - y;
+    if (w <= 0 || h <= 0)
+        return;
+    u8 *dst = (u8 *)0x000A0000;
+    for (int yy = 0; yy < h; yy++) {
+        for (int xx = 0; xx < w; xx++)
+            dst[(y + yy) * W + x + xx] = fb[(y + yy) * W + x + xx];
+    }
+}
+
 /* -----------------------------------------------------------------------------
  * RTC / time strings
  * ----------------------------------------------------------------------------- */
@@ -209,7 +237,11 @@ static void two_digits(char *out, int value) {
     out[1] = (char)('0' + value % 10);
 }
 
-static void update_clock(void) {
+static void update_clock(int force) {
+    if (!force && rtc_valid && (u32)(ticks - rtc_last_tick) < 50)
+        return;
+    rtc_last_tick = ticks;
+    rtc_valid = 1;
     int sec = bcd2(cmos_read(0x00));
     int min = bcd2(cmos_read(0x02));
     int hour = bcd2(cmos_read(0x04));
@@ -481,15 +513,16 @@ static void run_command(struct console *c, char *line) {
     if (!*line)
         return;
 
-    extern int scheduler_active_now(void);
-    if (scheduler_active_now() &&
+    extern int kernel_runtime_busy(void);
+    if (kernel_runtime_busy() &&
         (streq(line, "ls") || streq(line, "disktest") ||
          streq(line, "ring3") || streq(line, "tasks") ||
          streq(line, "progs") || streq(line, "utest") ||
-         streq(line, "serial") || streq(line, "reboot") ||
-         streq(line, "halt") || starts_with(line, "exec ") ||
-         starts_with(line, "run ") || starts_with(line, "mod ") ||
-         starts_with(line, "upload ") || starts_with(line, "download "))) {
+         streq(line, "modtest") || streq(line, "serial") ||
+         streq(line, "reboot") || streq(line, "halt") ||
+         starts_with(line, "exec ") || starts_with(line, "run ") ||
+         starts_with(line, "mod ") || starts_with(line, "upload ") ||
+         starts_with(line, "download "))) {
         term_puts(c, "[busy] command unavailable while a task is running.\n");
         return;
     }
@@ -513,12 +546,12 @@ static void run_command(struct console *c, char *line) {
         term_u32(c, heap_used);
         term_puts(c, " / 65536 bytes\n");
     } else if (streq(line, "time")) {
-        update_clock();
+        update_clock(1);
         term_puts(c, "Time: ");
         term_puts(c, clock_hms);
         term_puts(c, "\n");
     } else if (streq(line, "date")) {
-        update_clock();
+        update_clock(1);
         term_puts(c, "Date: ");
         term_puts(c, date_str);
         term_puts(c, "\n");
@@ -825,14 +858,21 @@ static void draw_list(void) {
     text(LIST_X + 6, LIST_Y + LIST_H - 12, "Tab/Enter/Esc", 8);
 }
 
-static void draw_cursor(void) {
-    static const char art[18][13] = {
-        "X...........", "XX..........", "XWX.........", "XWWX........",
-        "XWWWX.......", "XWWWWX......", "XWWWWWX.....", "XWWWWWWX....",
-        "XWWWWWWWX...", "XWWWWWWWWX..", "XWWWWWWWWWX.", "XWWWWWXXXXXX",
-        "XWWWXWX.....", "XWWX.XWX....", "XWX..XWX....", "XX....XWX...",
-        "X.....XWX...", "......XXX..."
-    };
+static void cursor_capture(void) {
+    for (int r = 0; r < 18; r++) {
+        for (int c = 0; c < 12; c++) {
+            int px = mouse_x + c;
+            int py = mouse_y + r;
+            cursor_bg[r][c] = ((unsigned)px < W && (unsigned)py < H)
+                                  ? fb[py * W + px] : 0;
+        }
+    }
+    cursor_px = mouse_x;
+    cursor_py = mouse_y;
+    cursor_bg_valid = 1;
+}
+
+static void cursor_draw_art(void) {
     for (int r = 0; r < 18; r++) {
         int py = mouse_y + r;
         if ((unsigned)py >= H)
@@ -841,7 +881,7 @@ static void draw_cursor(void) {
             int px = mouse_x + c;
             if ((unsigned)px >= W)
                 continue;
-            char ch = art[r][c];
+            char ch = cursor_art[r][c];
             if (ch == '.')
                 continue;
             fb[py * W + px] = (ch == 'X') ? 0 : 15;
@@ -849,12 +889,51 @@ static void draw_cursor(void) {
     }
 }
 
+static void cursor_restore(void) {
+    if (!cursor_bg_valid)
+        return;
+    for (int r = 0; r < 18; r++) {
+        int py = cursor_py + r;
+        if ((unsigned)py >= H)
+            continue;
+        for (int c = 0; c < 12; c++) {
+            int px = cursor_px + c;
+            if ((unsigned)px >= W)
+                continue;
+            fb[py * W + px] = cursor_bg[r][c];
+        }
+    }
+    blit_rect(cursor_px, cursor_py, 12, 18);
+    cursor_bg_valid = 0;
+}
+
+static void draw_cursor(void) {
+    cursor_capture();
+    cursor_draw_art();
+}
+
+int gui_cursor_only_motion(int x, int y, int buttons) {
+    if ((buttons & 1) || (last_buttons & 1) ||
+        menu_open || list_open || drag_win >= 0)
+        return 0;
+    if (x == mouse_x && y == mouse_y)
+        return 1;
+
+    cursor_restore();
+    mouse_x = x;
+    mouse_y = y;
+    draw_cursor();
+    blit_rect(mouse_x, mouse_y, 12, 18);
+    return 1;
+}
+
 void gui_redraw(void) {
     static u8 redraw_busy;
     if (redraw_busy)
         return;
     redraw_busy = 1;
-    update_clock();
+    gui_dirty = 0;
+    update_clock(0);
     make_uptime();
     draw_desktop();
     draw_taskbar();
@@ -874,6 +953,19 @@ void gui_redraw(void) {
     draw_cursor();
     blit();
     redraw_busy = 0;
+}
+
+int gui_dirty_pending(void) {
+    return gui_dirty;
+}
+
+void gui_mark_dirty(void) {
+    gui_dirty = 1;
+}
+
+void gui_flush(void) {
+    if (gui_dirty)
+        gui_redraw();
 }
 
 /* -----------------------------------------------------------------------------
@@ -1146,14 +1238,14 @@ void gui_sys_write(const char *s, u32 len) {
     struct console *c = active_console();
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    gui_redraw();
+    gui_dirty = 1;
 }
 
 void gui_sys_print(const char *s) {
     struct console *c = active_console();
     while (*s)
         term_putc(c, *s++);
-    gui_redraw();
+    gui_dirty = 1;
 }
 
 void gui_sys_write_console(int console, const char *s, u32 len) {
@@ -1162,7 +1254,7 @@ void gui_sys_write_console(int console, const char *s, u32 len) {
     struct console *c = &consoles[console];
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    gui_redraw();
+    gui_dirty = 1;
 }
 
 void gui_sys_print_console(int console, const char *s) {
@@ -1171,7 +1263,7 @@ void gui_sys_print_console(int console, const char *s) {
     struct console *c = &consoles[console];
     while (*s)
         term_putc(c, *s++);
-    gui_redraw();
+    gui_dirty = 1;
 }
 
 void gui_init(void) {

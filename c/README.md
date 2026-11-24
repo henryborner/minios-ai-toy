@@ -22,6 +22,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   services mouse packets and per-console keyboard queues; windows/taskbar remain
   usable and a non-owning console can run safe shell commands (`ver`, `mem`,
   `help`, `clear`, `sysinfo`, ...). Dangerous commands return `[busy]`.
+- **Stage 0 fast paths**: dirty-batched 50 Hz rendering, RTC cached for 0.5 s,
+  pure cursor motion restores only its 12×18 pixels, and FDC reads an entire
+  18-sector track into the 0x8000 DMA cache.
 - **Console-bound tasks**: each task remembers the console it was launched
   from; its keyboard input and output stay on that console. F1–F6 still switch
   windows while a task runs.
@@ -116,6 +119,9 @@ Screenshots:
 - [`../screenshots/c-runtime-shell.png`](../screenshots/c-runtime-shell.png)
 - [`../screenshots/c-runtime-tasks-mem.png`](../screenshots/c-runtime-tasks-mem.png)
 - [`../screenshots/c-kbdroute-console2.png`](../screenshots/c-kbdroute-console2.png)
+- [`../screenshots/c-stage0-time.png`](../screenshots/c-stage0-time.png)
+- [`../screenshots/c-stage0-cursor-fresh.png`](../screenshots/c-stage0-cursor-fresh.png)
+- [`../screenshots/c-stage0-track-utest.png`](../screenshots/c-stage0-track-utest.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -126,8 +132,8 @@ The image layout is:
 | Offset | Contents |
 |---:|---|
 | `0` | 512-byte boot sector |
-| `512` | kernel, up to 64 sectors (32 KB) |
-| `33280` | MPK1 program pack, 64 sectors (32 KB) |
+| `512` | kernel, up to 128 sectors (64 KB), loaded at `0x10000` |
+| `66048` | MPK1 program pack, 64 sectors (32 KB), LBA 129 |
 | `102400` | read-only MiniFS (LBA 200), directory + data sectors |
 
 Pack format:
@@ -139,7 +145,7 @@ data...
 ```
 
 `c/build_c.py` creates the pack from `task_a.bin`, `task_b.bin`,
-`task_c.bin` and `user.bin`, then writes it at offset 33280. The boot sector
+`task_c.bin` and `user.bin`, then writes it at offset 66048. The boot sector
 loads it to `0x70000`; the kernel parses and copies programs into task pages.
 
 Shell examples:
@@ -302,13 +308,14 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~30.9 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~32.5 KB (64 KB loader limit)
+- Stage 0 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
 - `c/build/modtest.bin` — kernel-module ABI test
 - `c/build/umtest.bin` — large Ring 3 user-module test
-- `MiniOS-C.img` — 1,474,560 bytes (pack at 33280, MiniFS at 102400)
+- `MiniOS-C.img` — 1,474,560 bytes (pack at 66048/LBA 129, MiniFS at 102400)
 
 ## Run
 
