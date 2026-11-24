@@ -182,6 +182,9 @@ static void keyboard_scancode(u8 sc) {
     if (sc == 0x3B) { kbd_push(0xF1); return; }
     if (sc == 0x3C) { kbd_push(0xF2); return; }
     if (sc == 0x3D) { kbd_push(0xF3); return; }
+    if (sc == 0x3E) { kbd_push(0xF4); return; }
+    if (sc == 0x3F) { kbd_push(0xF5); return; }
+    if (sc == 0x40) { kbd_push(0xF6); return; }
 
     char ch = keymap[sc];
     if (!ch)
@@ -724,7 +727,7 @@ static int module_getchar(void) {
         while (kbd_tail != kbd_head) {
             u8 ch = kbd_buf[kbd_tail];
             kbd_tail = (u8)((kbd_tail + 1) & 63);
-            if (ch >= 0xF1 && ch <= 0xF3)
+            if (ch >= 0xF1 && ch <= 0xF6)
                 continue;
             return (int)ch;
         }
@@ -1292,7 +1295,7 @@ void kmain(void) {
         while (kbd_tail != kbd_head) {
             u8 ch = kbd_buf[kbd_tail];
             kbd_tail = (u8)((kbd_tail + 1) & 63);
-            if (ch >= 0xF1 && ch <= 0xF3)
+            if (ch >= 0xF1 && ch <= 0xF6)
                 gui_special(ch - 0xF0);
             else
                 gui_key((char)ch);

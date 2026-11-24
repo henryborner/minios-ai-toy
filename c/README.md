@@ -11,6 +11,12 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - VGA 320×200×256 GUI, custom palette, ROM font
 - IDT/PIC/PIT: IRQ0 timer 100 Hz, IRQ1 keyboard, IRQ12 PS/2 mouse
 - Mouse cursor, Start menu, taskbar, draggable windows, close/OK buttons
+- **Window manager**: focus, Z-order, active/inactive title bars, taskbar state
+- **Three independent consoles** with per-console shell history and input focus
+- **F4 / taskbar Wins window list**: Tab cycles, Enter activates, mouse click,
+  hidden-window markers
+- **Button press feedback**: buttons are drawn sunken while held and activate on
+  release (Start, taskbar, menu items, close, OK)
 - Console shell, System Information window, About dialog
 - 4 KB paging; kernel pages supervisor, user pages U/S
 - GDT with DPL3 user code/data descriptors and a TSS
@@ -59,6 +65,11 @@ Screenshots:
 - [`../screenshots/c-modtest2.png`](../screenshots/c-modtest2.png)
 - [`../screenshots/c-utest2-done.png`](../screenshots/c-utest2-done.png)
 - [`../screenshots/c-user-abi-regression.png`](../screenshots/c-user-abi-regression.png)
+- [`../screenshots/c-wm-con2.png`](../screenshots/c-wm-con2.png)
+- [`../screenshots/c-wm-list-sel.png`](../screenshots/c-wm-list-sel.png)
+- [`../screenshots/c-wm-about.png`](../screenshots/c-wm-about.png)
+- [`../screenshots/c-wm-start-pressed2.png`](../screenshots/c-wm-start-pressed2.png)
+- [`../screenshots/c-wm-close-pressed-zoom.png`](../screenshots/c-wm-close-pressed-zoom.png)
 
 ## Program pack
 
@@ -179,14 +190,31 @@ directory and a saved kernel ESP. It exits back to the GUI shell.
 
 | Input | Action |
 |---|---|
-| Mouse | click, drag window titles, close buttons, Start menu |
-| `F1` / `F2` / `F3` | About / System / Console |
-| `Esc` | close About, System, menu |
-| Keyboard | Console shell input |
+| Mouse | click/focus/raise windows, drag title bars, buttons activate on release |
+| `F1` / `F2` / `F3` | About / System / Console 1 |
+| `F4` | open/close the Windows selection list |
+| `F5` / `F6` | Console 2 / Console 3 |
+| `Tab` (in console) | open the Windows list |
+| `Tab` / `Enter` (list) | cycle selection / activate window |
+| `Esc` | close list, menu, About, System, or reopen Console 1 |
+| Keyboard | focused console shell input |
 
 Shell commands: `help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`,
-`echo`, `sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ls`, `exec NAME`,
-`disktest`, `ring3`, `modtest`, `mod NAME`, `utest`, `reboot`, `halt`.
+`echo`, `console 1|2|3`, `windows`, `sysinfo`, `about`, `progs`, `run NAME`,
+`tasks`, `ls`, `exec NAME`, `disktest`, `ring3`, `modtest`, `mod NAME`, `utest`,
+`reboot`, `halt`.
+
+## Window manager
+
+- 3 console windows, Console 1 visible at boot; `F5`/`F6`, Start menu, taskbar,
+  and the Windows list can show/focus them
+- the clicked/focused window is raised to the top of the Z-order
+- active title bar is blue; inactive title bar is gray
+- `F4` or taskbar `Wins` opens the window list; `*` marks focus, `-` marks hidden
+- taskbar buttons show the active window and have pressed/sunken feedback
+- close/OK/buttons execute on mouse release only if the pointer is still over
+  the same target
+- title bars drag their windows; console text coordinates follow the window
 
 ## Build
 
@@ -204,7 +232,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~18.7 KB
+- `c/build/kernel.bin` — currently ~21.8 KB
 - `c/build/user.bin` — single Ring 3 demo
 - `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
 - `c/build/disk_task.bin` — MiniFS disk task
@@ -241,7 +269,7 @@ qemu-system-i386 `
 | `kernel.c` | IDT/PIC/PIT, keyboard/mouse, GDT/TSS, paging, tasks, pack, MiniFS, module loader, syscalls |
 | `../docs/micropython-feasibility.md` | MicroPython feasibility, gaps and handoff checklist |
 | `../docs/micropython-module-abi.md` | exact module/API ABI |
-| `gui.c` | VGA framebuffer, font, windows, shell, mouse UI |
+| `gui.c` | VGA framebuffer, focus/Z-order window manager, 3 consoles, window list, shell, mouse UI |
 | `gui.h` | GUI API and kernel/GUI globals |
 | `linker.ld` | kernel at `0x10000`, BSS NOLOAD |
 
@@ -255,6 +283,8 @@ qemu-system-i386 `
 - MiniFS is custom, not FAT12; no write support or directory updates.
 - FDC driver reads one 512-byte sector per command (seeks between tracks).
 - `exec` supports flat programs ≤4 KB; no arguments, fork/exec or per-task heap.
+- GUI focus/Z-order is fixed-list (5 windows), not a general compositor.
+- Taskbar shows Console 1/2; Console 3 is via Start menu or the Windows list.
 - Kernel module loader runs in **Ring 0**; big Ring 3 task has real user isolation.
 - Big Ring 3 task: one slot, fixed 256 KB code / 64 KB stack / 1 MB heap.
 - File API is whole-file read only (syscall 7); no open/read/seek/write.
