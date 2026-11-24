@@ -131,9 +131,10 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
   - 实现 `mp_import_stat()`（走 `syscall 21`）与 `mp_lexer_new_from_file()`：导入 `foo` 时自动匹配 `FOO.PY`（大小写不敏感，且 RAMFS 优先于 MiniFS，支持用户动态覆盖内置脚本）。
   - 支持 `py FILE.PY [arg1 arg2 ...]` 直接执行脚本并填充 `sys.argv`。
 - [x] **4.3 终端 96 行回滚缓冲（Scrollback）与真实行内列游标**（`c/gui.c`、`c/kernel.c`）
+  - 已升级为原生可点击/可拖拽滚动条：4px 轨道 + thumb、点击跳转、拖拽、PgUp/PgDn 按页；任务运行时鼠标仍可滚动；用户停在历史位置时新输出不强制跳底。鼠标滚轮尚未接入。
   - 将每个 Console 的缓冲扩展为环形历史缓冲（如 96 行），键盘驱动识别 `PgUp` (`0xE0 0x49`) / `PgDn` (`0xE0 0x51`) 上下翻阅历史输出（新按键/新输出自动回到底部），并在窗口右侧绘制简洁滚动位置指示条。
   - 为 Console 增加当前行独立游标列 `cursor_col`，完整支持 `\r`（回行首）、`\b`（游标左移）、`ESC [ D`（左移）、`ESC [ C`（右移）、`ESC [ H`（行首）、`ESC [ K`（清除游标至行尾），使 REPL 左右方向键在行中间插字/删字完全准确。
-- [x] **Stage 4 验收**：实测 `open('T.TXT','w')` 写读、`with open('OUT.TXT','w')`、`os.listdir/stat`、`py TOOL.PY`、`import TOOL`；96 行 scrollback + PgUp/PgDn + 滚动条、shell/REPL 行中插入、ZeroDivisionError Traceback 回滚均通过。Python REPL 与 Shell 截图见 `screenshots/c-stage4-*.png`。
+- [x] **Stage 4 验收**：实测 `open('T.TXT','w')` 写读、`with open('OUT.TXT','w')`、`os.listdir/stat`、`py TOOL.PY`、`import TOOL`；96 行 scrollback + PgUp/PgDn + 原生点击/拖拽滚动条、shell/REPL 行中插入、ZeroDivisionError Traceback 回滚均通过；`utest` 阻塞时鼠标滚动 Console 正常。截图见 `screenshots/c-stage4-*.png` 与 `c-scrollbar-*.png`。
 
 ---
 

@@ -56,6 +56,7 @@
 #define HIT_LIST_BASE 400
 #define HIT_TITLE_BASE 500
 #define HIT_BODY_BASE 600
+#define HIT_SCROLL_BASE 700
 
 struct console {
     int x, y, w, h;
@@ -90,6 +91,7 @@ static int list_sel;
 static int pressed_hit;
 static int drag_win;
 static int drag_dx, drag_dy;
+static int scroll_drag = -1;
 static int last_buttons;
 
 static char clock_hm[6];
@@ -410,7 +412,7 @@ static void term_clear(struct console *c) {
 }
 
 static void term_newline(struct console *c) {
-    c->scroll = 0;
+    int was_scrolled = c->scroll > 0;
     if (c->n < TERM_ROWS) {
         for (int col = 0; col < TERM_COLS; col++)
             c->term[c->n][col] = 0;
@@ -424,6 +426,12 @@ static void term_newline(struct console *c) {
             c->term[TERM_ROWS - 1][col] = 0;
         c->cur = TERM_ROWS - 1;
     }
+    if (was_scrolled) {
+        c->scroll++;
+        int max = c->n > TERM_VIS ? c->n - TERM_VIS : 0;
+        if (c->scroll > max)
+            c->scroll = max;
+    }
     c->col = 0;
 }
 
@@ -434,6 +442,58 @@ static void term_scroll_by(struct console *c, int delta) {
         c->scroll = 0;
     if (c->scroll > max)
         c->scroll = max;
+}
+
+static void scroll_metrics(struct console *c, int *bx, int *by, int *bh,
+                           int *thumb, int *pos) {
+    int track_h = TERM_VIS * 9 - 2;
+    int t = track_h * TERM_VIS / (c->n > 0 ? c->n : 1);
+    if (t < 8) t = 8;
+    if (t > track_h) t = track_h;
+    int max = c->n > TERM_VIS ? c->n - TERM_VIS : 0;
+    int travel = track_h - t;
+    int p = max > 0 ? travel * (max - c->scroll) / max : 0;
+    *bx = c->x + c->w - 8;
+    *by = c->y + 14;
+    *bh = track_h;
+    *thumb = t;
+    *pos = p;
+}
+
+static int scrollbar_hit(struct console *c, int x, int y) {
+    if (c->n <= TERM_VIS)
+        return 0;
+    int bx, by, bh, thumb, pos;
+    scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
+    (void)thumb;
+    (void)pos;
+    return x >= bx - 1 && x < bx + 5 && y >= by && y < by + bh;
+}
+
+static void scrollbar_set_from_y(struct console *c, int y) {
+    if (c->n <= TERM_VIS)
+        return;
+    int bx, by, bh, thumb, pos;
+    scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
+    (void)bx;
+    (void)pos;
+    int max = c->n - TERM_VIS;
+    int travel = bh - thumb;
+    int rel = y - by - thumb / 2;
+    if (rel < 0) rel = 0;
+    if (rel > travel) rel = travel;
+    c->scroll = max - (travel > 0 ? (rel * max + travel / 2) / travel : 0);
+    if (c->scroll < 0) c->scroll = 0;
+    if (c->scroll > max) c->scroll = max;
+}
+
+static void scrollbar_draw(struct console *c) {
+    if (c->n <= TERM_VIS)
+        return;
+    int bx, by, bh, thumb, pos;
+    scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
+    fill_rect(bx, by, 4, bh, 8);
+    fill_rect(bx, by + pos, 4, thumb, 11);
 }
 
 static int term_ansi_final(struct console *c, char ch) {
@@ -473,7 +533,6 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     }
     if (ch == '\r') {
         c->col = 0;
-        c->scroll = 0;
         return;
     }
     if (ch == '\n') {
@@ -488,7 +547,6 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
             c->term[c->cur][len > 0 ? len - 1 : 0] = 0;
             c->col--;
         }
-        c->scroll = 0;
         return;
     }
     if (ch == '\t') {
@@ -514,7 +572,6 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     c->col++;
     if (c->col >= len)
         c->term[c->cur][c->col] = 0;
-    c->scroll = 0;
 }
 
 static void term_putc(struct console *c, char ch) {
@@ -840,6 +897,7 @@ static void run_command(struct console *c, char *line) {
 
 static void term_key(struct console *c, char ch) {
     u8 key = (u8)ch;
+    c->scroll = 0;
     if (key == '\n') {
         char *line = c->term[c->cur];
         char command[40];
@@ -968,18 +1026,7 @@ static void draw_console(int id) {
         if (idx >= 0 && idx < c->n)
             text(c->x + 4, c->y + 14 + r * 9, c->term[idx], 0);
     }
-    if (c->n > TERM_VIS) {
-        int bx = c->x + c->w - 5;
-        int by = c->y + 14;
-        int bh = TERM_VIS * 9 - 4;
-        fill_rect(bx, by, 2, bh, 8);
-        int max = c->n - TERM_VIS;
-        int thumb = bh * TERM_VIS / c->n;
-        if (thumb < 6) thumb = 6;
-        int travel = bh - thumb;
-        int pos = max > 0 ? travel * (max - c->scroll) / max : 0;
-        fill_rect(bx, by + pos, 2, thumb, 11);
-    }
+    scrollbar_draw(c);
     if (focus_win == id && c->scroll == 0 && ((ticks / 50) & 1)) {
         int row = c->cur - start;
         if (row >= 0 && row < TERM_VIS)
@@ -1143,7 +1190,7 @@ static void draw_cursor(void) {
 
 int gui_cursor_only_motion(int x, int y, int buttons) {
     if ((buttons & 1) || (last_buttons & 1) ||
-        menu_open || list_open || drag_win >= 0)
+        menu_open || list_open || drag_win >= 0 || scroll_drag >= 0)
         return 0;
     if (x == mouse_x && y == mouse_y)
         return 1;
@@ -1242,6 +1289,9 @@ static int hit_test(int x, int y) {
             return HIT_OK;
         if (inside(x, y, w->x + 1, w->y + 1, w->w - 2, 10))
             return HIT_TITLE_BASE + id;
+        if (id >= WIN_C0 && id <= WIN_C2 &&
+            scrollbar_hit(&consoles[id], x, y))
+            return HIT_SCROLL_BASE + id;
         return HIT_BODY_BASE + id;
     }
     return HIT_NONE;
@@ -1365,7 +1415,12 @@ void gui_mouse_event(int x, int y, int buttons) {
 
     if (press) {
         pressed_hit = hit;
-        if (hit >= HIT_TITLE_BASE && hit < HIT_TITLE_BASE + WIN_COUNT) {
+        if (hit >= HIT_SCROLL_BASE && hit < HIT_SCROLL_BASE + WIN_COUNT) {
+            int id = hit - HIT_SCROLL_BASE;
+            focus_window(id);
+            scroll_drag = id;
+            scrollbar_set_from_y(&consoles[id], y);
+        } else if (hit >= HIT_TITLE_BASE && hit < HIT_TITLE_BASE + WIN_COUNT) {
             int id = hit - HIT_TITLE_BASE;
             focus_window(id);
             start_drag(id, x, y);
@@ -1376,14 +1431,18 @@ void gui_mouse_event(int x, int y, int buttons) {
         }
     }
 
-    if ((buttons & 1) && drag_win >= 0)
+    if ((buttons & 1) && scroll_drag >= 0) {
+        scrollbar_set_from_y(&consoles[scroll_drag], y);
+    } else if ((buttons & 1) && drag_win >= 0) {
         drag_move(x, y);
+    }
 
     if (release) {
         if (pressed_hit != HIT_NONE && hit == pressed_hit)
             activate_hit(pressed_hit);
         pressed_hit = HIT_NONE;
         drag_win = -1;
+        scroll_drag = -1;
     }
     last_buttons = buttons;
 }
@@ -1433,11 +1492,11 @@ void gui_key(char ch) {
             return;
         }
         if (key == GUI_KEY_PGUP) {
-            term_scroll_by(&consoles[focus_win], 1);
+            term_scroll_by(&consoles[focus_win], TERM_VIS - 1);
             return;
         }
         if (key == GUI_KEY_PGDN) {
-            term_scroll_by(&consoles[focus_win], -1);
+            term_scroll_by(&consoles[focus_win], -(TERM_VIS - 1));
             return;
         }
         term_key(&consoles[focus_win], ch);

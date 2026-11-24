@@ -51,8 +51,10 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   Shell `= EXPR` evaluates a one-shot expression and `pystat` reports last
   cold/warm ticks.
 - **Stage 4 VFS/terminal**: Python `open()`/`os`/`import`, `py SCRIPT.PY`,
-  96-line per-console scrollback with PgUp/PgDn and scrollbar, and in-line
-  cursor editing (Left/Right/Home/End/Delete + ANSI cursor/clear).
+  96-line per-console scrollback, native clickable/draggable scrollbar,
+  PgUp/PgDn page scrolling, and in-line cursor editing
+  (Left/Right/Home/End/Delete + ANSI cursor/clear). Scroll position is
+  preserved while new output arrives; typing returns to the live bottom.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -148,6 +150,9 @@ Screenshots:
 - [`../screenshots/c-stage4-scroll-up2.png`](../screenshots/c-stage4-scroll-up2.png)
 - [`../screenshots/c-stage4-lineedit2.png`](../screenshots/c-stage4-lineedit2.png)
 - [`../screenshots/c-stage4-pytrace-scroll.png`](../screenshots/c-stage4-pytrace-scroll.png)
+- [`../screenshots/c-scrollbar-click-top.png`](../screenshots/c-scrollbar-click-top.png)
+- [`../screenshots/c-scrollbar-drag-bottom.png`](../screenshots/c-scrollbar-drag-bottom.png)
+- [`../screenshots/c-scrollbar-task.png`](../screenshots/c-scrollbar-task.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -345,7 +350,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~38.0 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~38.4 KB (64 KB loader limit)
 - `c/build/mpy.bin` — **181,696 bytes** (177.4 KB, image+BSS 182,256 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo
