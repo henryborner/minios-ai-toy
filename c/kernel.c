@@ -2978,6 +2978,7 @@ void kmain(void) {
 
     interrupts_on();
     task_system_init();
+    gui_alloc_fb();
     savefs_restore();
     gui_redraw();
 

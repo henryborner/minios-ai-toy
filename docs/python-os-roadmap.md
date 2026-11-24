@@ -195,6 +195,7 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 **目标**：解锁高清大视野多窗口同屏工作流（同时保留 `320×200` 自动回退兼容），并产出完整的性能与体积量化报告。
 
 - [ ] **8.1 Bochs/VESA VBE 2.0 `640×480×8bpp` 线性帧缓冲自适应**（`c/boot.asm`、`c/kernel.c`、`c/gui.c`）
+  - 部分完成：320×200 `fb` 已改为页帧池动态分配（`gui_alloc_fb`），BSS `0x68987 → 0x58f87`，余量约 92KB。VBE 模式设置/BIOS 探测/LFB 页表映射尚未实现。
   - 在 `c/boot.asm` 实模式阶段通过 `int 0x10 (AX=0x4F01/0x4F02)` 探测并启用 **`640×480×8bpp`（LFB 线性帧缓冲模式，带 `0x4000` LFB 标志）**，将 `{ magic, width, height, pitch, bpp, phys_base }` 写入 `0x00000500` 传给 32 位内核；若当前环境不支持 VBE 2.0，则自动无缝回退至 VGA `320×200` mode 13h。
   - 在内核页表初始化与任务页目录模板（`page_directory`、`sched_safe_pd`、`task_pd[]`）中为 VBE LFB 物理地址（如 QEMU 默认 `0xFD000000` 附近的 1 个 4 MB 页目录项）建立 Supervisor 直映。
   - 将后备帧缓冲 `fb`（`640×480` = 300 KB）改为从动态物理页帧池（`5–16 MB`）分配并通过 `direct_ptr` 访问——**不仅支撑高清分辨率，还顺带让低端内核 `.bss` 立即瘦身 64 KB！**

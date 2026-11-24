@@ -83,7 +83,7 @@ struct window {
     const char *title;
 };
 
-static u8 fb[W * H] __attribute__((aligned(4)));
+static u8 *fb;
 static const u8 *const FONT = (const u8 *)0x000FFA6E;
 
 static struct window wins[WIN_COUNT];
@@ -1506,9 +1506,15 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
     return 1;
 }
 
+void gui_alloc_fb(void) {
+    extern void *kernel_alloc_pages_zero(u32 pages);
+    if (!fb)
+        fb = (u8 *)kernel_alloc_pages_zero((W * H + 4095) / 4096);
+}
+
 void gui_redraw(void) {
     static u8 redraw_busy;
-    if (redraw_busy)
+    if (redraw_busy || !fb)
         return;
     redraw_busy = 1;
     gui_dirty = 0;

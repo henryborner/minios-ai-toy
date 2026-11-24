@@ -67,6 +67,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
 - **Dynamic Canvas buffer**: the 21.6 KB pixel buffer is allocated from the
   frame pool through `kernel_alloc_pages_zero(6)`; kernel BSS dropped from
   `0x6dde3` to `0x68987`.
+- **Dynamic desktop framebuffer (Stage 8 foundation)**: the 320×200 `fb`
+  (64 KB) is also allocated from the frame pool; BSS is now `0x58f87`,
+  leaving ~92 KB before `PACK_BASE`. VBE 640×480 LFB setup is still pending.
 - **Stage 7 tools**: `calc`, `top`, `demos`, `xxd`, `edit`, `futil` are
   frozen to `.mpy` bytecode with `mpy-cross 1.24.1`, linked into MPY.BIN,
   and loaded through `.frozen/` on `sys.path`; native Shell shortcuts use
@@ -421,7 +424,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~45.3 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~45.4 KB (64 KB loader limit)
 - `c/build/mpy.bin` — **186,064 bytes** (181.7 KB, image+BSS 186,624 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo

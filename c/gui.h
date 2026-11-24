@@ -6,6 +6,7 @@ typedef unsigned short u16;
 typedef unsigned int   u32;
 
 void gui_init(void);
+void gui_alloc_fb(void);
 void gui_redraw(void);
 void gui_key(char ch);
 void gui_special(int key);
