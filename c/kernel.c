@@ -262,10 +262,6 @@ extern void scheduler_exit_to_kernel(void);
 extern void switch_to(u32 task_esp);
 extern const u8 user_blob_start[];
 extern const u8 user_blob_end[];
-extern const u8 task_a_start[];
-extern const u8 task_a_end[];
-extern const u8 task_b_start[];
-extern const u8 task_b_end[];
 
 static void idt_set_flags(int n, u32 handler, u8 flags) {
     idt[n].base_lo = (u16)(handler & 0xFFFF);
@@ -449,17 +445,110 @@ static void paging_install(void) {
 }
 
 /* -----------------------------------------------------------------------------
- * Cooperative tasks: two user address spaces, round-robin on SYS_YIELD.
+ * Read-only program pack, loaded by the boot sector at 0x70000.
  * ----------------------------------------------------------------------------- */
-#define NTASKS 2
+#define PACK_BASE 0x00070000u
+#define PACK_SIZE 32768u
+#define PACK_MAX_ENTRIES 32
+
+struct pack_header {
+    u8 magic[4];
+    u16 count;
+    u16 reserved;
+} __attribute__((packed));
+
+struct pack_entry {
+    char name[16];
+    u32 offset;
+    u32 size;
+} __attribute__((packed));
+
+static u8 pack_ready;
+static u16 pack_count;
+
+static struct pack_entry *pack_entry_at(int i) {
+    return (struct pack_entry *)(PACK_BASE + sizeof(struct pack_header) +
+                                 (u32)i * sizeof(struct pack_entry));
+}
+
+static u8 upper_char(u8 c) {
+    if (c >= 'a' && c <= 'z')
+        return (u8)(c - 32);
+    return c;
+}
+
+static int pack_init(void) {
+    if (pack_ready)
+        return 1;
+    struct pack_header *h = (struct pack_header *)PACK_BASE;
+    if (h->magic[0] != 'M' || h->magic[1] != 'P' ||
+        h->magic[2] != 'K' || h->magic[3] != '1')
+        return 0;
+    if (h->count == 0 || h->count > PACK_MAX_ENTRIES)
+        return 0;
+    for (int i = 0; i < h->count; i++) {
+        struct pack_entry *e = pack_entry_at(i);
+        if (e->offset > PACK_SIZE || e->size > PACK_SIZE - e->offset)
+            return 0;
+    }
+    pack_count = h->count;
+    pack_ready = 1;
+    return 1;
+}
+
+static int pack_name_eq(const struct pack_entry *e, const char *name) {
+    for (int i = 0; i < 16; i++) {
+        u8 a = (u8)e->name[i];
+        u8 b = (u8)name[i];
+        if (a == 0 && b == 0)
+            return 1;
+        if (a == 0 || b == 0)
+            return 0;
+        if (upper_char(a) != upper_char(b))
+            return 0;
+    }
+    return 1;
+}
+
+static int pack_find(const char *name) {
+    if (!pack_init())
+        return -1;
+    for (int i = 0; i < pack_count; i++) {
+        if (pack_name_eq(pack_entry_at(i), name))
+            return i;
+    }
+    return -1;
+}
+
+void list_programs(void) {
+    if (!pack_init()) {
+        gui_sys_print("[pack] no valid program pack.\n");
+        return;
+    }
+    gui_sys_print("[pack] programs:\n");
+    for (int i = 0; i < pack_count; i++) {
+        struct pack_entry *e = pack_entry_at(i);
+        char name[17];
+        for (int j = 0; j < 16; j++)
+            name[j] = e->name[j];
+        name[16] = 0;
+        gui_sys_print("  ");
+        gui_sys_print(name);
+        gui_sys_print("\n");
+    }
+}
+
+/* -----------------------------------------------------------------------------
+ * Tasks: up to four slots, each with its own page directory.
+ * ----------------------------------------------------------------------------- */
+#define NTASKS 4
+#define TASK_FREE    0
 #define TASK_READY   1
 #define TASK_RUNNING 2
 #define TASK_DONE    3
 
-#define TASK_A_CODE  0x00300000u
-#define TASK_A_STACK 0x00301000u
-#define TASK_B_CODE  0x00302000u
-#define TASK_B_STACK 0x00303000u
+#define TASK_CODE_BASE    0x00300000u
+#define TASK_FRAME_STRIDE 0x00002000u
 #define TIME_SLICE_TICKS 1
 
 struct task {
@@ -467,6 +556,7 @@ struct task {
     u32 cr3;
     u32 kstack_top;
     u8  state;
+    char name[16];
 };
 
 static struct task tasks[NTASKS];
@@ -499,7 +589,7 @@ static void task_copy_page(u32 dst, const u8 *src, const u8 *end) {
         d[i] = src[i];
 }
 
-static void task_setup(void) {
+static void task_system_init(void) {
     if (!sched_safe_ready) {
         for (int i = 0; i < 1024; i++) {
             sched_safe_pt[i] = (u32)(i * 0x1000) | 0x003;
@@ -513,48 +603,83 @@ static void task_setup(void) {
     for (int i = 0; i < 1024; i++)
         task_kernel_pt[i] = (u32)(i * 0x1000) | 0x003;
 
-    for (int t = 0; t < NTASKS; t++) {
-        for (int i = 0; i < 1024; i++) {
-            task_pd[t][i] = 0;
-            task_user_pt[t][i] = 0;
-        }
-        task_pd[t][0] = (u32)task_kernel_pt | 0x003;
-        task_pd[t][1] = (u32)task_user_pt[t] | 0x007;
-        task_user_pt[t][0] = (t == 0 ? TASK_A_CODE : TASK_B_CODE) | 0x007;
-        task_user_pt[t][1] = (t == 0 ? TASK_A_STACK : TASK_B_STACK) | 0x007;
-
-        if (t == 0)
-            task_copy_page(TASK_A_CODE, task_a_start, task_a_end);
-        else
-            task_copy_page(TASK_B_CODE, task_b_start, task_b_end);
-
-        u8 *stack = (u8 *)(t == 0 ? TASK_A_STACK : TASK_B_STACK);
-        for (int i = 0; i < 4096; i++)
-            stack[i] = 0;
-
-        u32 top = (u32)(task_kstack[t] + 4096);
-        u32 *frame = (u32 *)(top - 52);
-        for (int i = 0; i < 13; i++)
-            frame[i] = 0;
-        frame[8] = 0x00400000;      /* EIP */
-        frame[9] = 0x1B;            /* CS, RPL3 */
-        frame[10] = 0x202;          /* EFLAGS, IF=1 */
-        frame[11] = 0x00402000;     /* user ESP */
-        frame[12] = 0x23;           /* SS, RPL3 */
-
-        tasks[t].esp = (u32)frame;
-        tasks[t].kstack_top = top;
-        tasks[t].cr3 = (u32)task_pd[t];
-        tasks[t].state = TASK_READY;
-    }
-
-    set_cr3((u32)task_pd[0]);
     u32 cr0;
     __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
     if (!(cr0 & 0x80000000u)) {
         cr0 |= 0x80000000u;
         __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0));
     }
+}
+
+static void task_clear_all(void) {
+    for (int t = 0; t < NTASKS; t++) {
+        tasks[t].state = TASK_FREE;
+        tasks[t].name[0] = 0;
+    }
+}
+
+static int task_create(const char *name, const u8 *src, const u8 *end) {
+    int slot = -1;
+    for (int t = 0; t < NTASKS; t++) {
+        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
+            slot = t;
+            break;
+        }
+    }
+    if (slot < 0)
+        return -1;
+
+    u32 code = TASK_CODE_BASE + (u32)slot * TASK_FRAME_STRIDE;
+    u32 stack = code + 0x1000;
+
+    for (int i = 0; i < 1024; i++) {
+        task_pd[slot][i] = 0;
+        task_user_pt[slot][i] = 0;
+    }
+    task_pd[slot][0] = (u32)task_kernel_pt | 0x003;
+    task_pd[slot][1] = (u32)task_user_pt[slot] | 0x007;
+    task_user_pt[slot][0] = code | 0x007;
+    task_user_pt[slot][1] = stack | 0x007;
+
+    task_copy_page(code, src, end);
+    u8 *sp = (u8 *)stack;
+    for (int i = 0; i < 4096; i++)
+        sp[i] = 0;
+
+    u32 top = (u32)(task_kstack[slot] + 4096);
+    u32 *frame = (u32 *)(top - 52);
+    for (int i = 0; i < 13; i++)
+        frame[i] = 0;
+    frame[8] = 0x00400000;      /* EIP */
+    frame[9] = 0x1B;            /* CS, RPL3 */
+    frame[10] = 0x202;          /* EFLAGS, IF=1 */
+    frame[11] = 0x00402000;     /* user ESP */
+    frame[12] = 0x23;           /* SS, RPL3 */
+
+    tasks[slot].esp = (u32)frame;
+    tasks[slot].kstack_top = top;
+    tasks[slot].cr3 = (u32)task_pd[slot];
+    tasks[slot].state = TASK_READY;
+
+    int i = 0;
+    while (i < 15 && name[i]) {
+        tasks[slot].name[i] = name[i];
+        i++;
+    }
+    tasks[slot].name[i] = 0;
+    return slot;
+}
+
+static void start_tasks(int first) {
+    current_task = first;
+    tasks[first].state = TASK_RUNNING;
+    scheduler_active = 1;
+    tss.esp0 = tasks[first].kstack_top;
+    set_cr3(tasks[first].cr3);
+    scheduler_start(tasks[first].esp);
+    scheduler_active = 0;
+    tss.esp0 = 0x00080000;
+    __asm__ __volatile__("sti");
 }
 
 static int next_ready(void) {
@@ -624,24 +749,64 @@ static void task_exit(void) {
     switch_task(next);
 }
 
-void run_task_demo(void) {
+int run_pack_program(const char *name) {
+    int idx = pack_find(name);
+    if (idx < 0) {
+        gui_sys_print("[pack] program not found.\n");
+        return 0;
+    }
+    struct pack_entry *e = pack_entry_at(idx);
+    const u8 *src = (const u8 *)(PACK_BASE + e->offset);
+    const u8 *end = src + e->size;
+
     __asm__ __volatile__("cli");
     gdt_install();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
-    task_setup();
+    task_system_init();
+    task_clear_all();
 
-    scheduler_active = 1;
-    current_task = 0;
-    tasks[0].state = TASK_RUNNING;
-    tasks[1].state = TASK_READY;
-    tss.esp0 = tasks[0].kstack_top;
-    set_cr3(tasks[0].cr3);
+    int slot = task_create(name, src, end);
+    if (slot < 0) {
+        gui_sys_print("[task] no free task slot.\n");
+        __asm__ __volatile__("sti");
+        return 0;
+    }
+    start_tasks(slot);
+    return 1;
+}
 
-    scheduler_start(tasks[0].esp);
+void run_task_demo(void) {
+    int ai = pack_find("A.BIN");
+    int bi = pack_find("B.BIN");
+    int ci = pack_find("C.BIN");
+    if (ai < 0 || bi < 0 || ci < 0) {
+        gui_sys_print("[pack] A.BIN/B.BIN/C.BIN missing.\n");
+        return;
+    }
+    struct pack_entry *ae = pack_entry_at(ai);
+    struct pack_entry *be = pack_entry_at(bi);
+    struct pack_entry *ce = pack_entry_at(ci);
+    const u8 *as = (const u8 *)(PACK_BASE + ae->offset);
+    const u8 *bs = (const u8 *)(PACK_BASE + be->offset);
+    const u8 *cs = (const u8 *)(PACK_BASE + ce->offset);
 
-    scheduler_active = 0;
-    tss.esp0 = 0x00080000;
-    __asm__ __volatile__("sti");
+    __asm__ __volatile__("cli");
+    gdt_install();
+    idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
+    task_system_init();
+    task_clear_all();
+
+    int a = task_create("A.BIN", as, as + ae->size);
+    int b = task_create("B.BIN", bs, bs + be->size);
+    int c = task_create("C.BIN", cs, cs + ce->size);
+    if (a < 0 || b < 0 || c < 0) {
+        gui_sys_print("[task] cannot create tasks.\n");
+        task_clear_all();
+        __asm__ __volatile__("sti");
+        return;
+    }
+
+    start_tasks(a);
 }
 
 void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
@@ -740,6 +905,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

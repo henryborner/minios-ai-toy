@@ -8,6 +8,8 @@
 
 KERNEL_SEG      equ 0x1000       ; ES for 0x10000
 KERNEL_SECTORS  equ 64
+PACK_SEG        equ 0x7000       ; ES for 0x70000
+PACK_SECTORS    equ 64
 
 start:
         cli
@@ -29,6 +31,7 @@ start:
         int     0x13
         jc      fail
 
+        ; Kernel: sectors 2-65, loaded to 0x10000.
         mov     ax, KERNEL_SEG
         mov     es, ax
         xor     bx, bx
@@ -36,40 +39,17 @@ start:
         mov     byte [head], 0
         mov     byte [sect], 2
         mov     byte [left], KERNEL_SECTORS
+        call    load_sectors
 
-.load:
-        mov     byte [retry], 3
-.try_read:
-        mov     ch, [cyl]
-        mov     dh, [head]
-        mov     cl, [sect]
-        mov     dl, [boot_drive]
-        mov     ax, 0x0201       ; read one sector
-        int     0x13
-        jnc     .read_ok
-        xor     ah, ah           ; reset controller
-        mov     dl, [boot_drive]
-        int     0x13
-        dec     byte [retry]
-        jnz     .try_read
-        jmp     fail
-.read_ok:
-        add     bx, 512
-        jnc     .no_wrap
-        mov     ax, es
-        add     ax, 0x1000
+        ; Program pack: sectors 66-129, loaded to 0x70000.
+        mov     ax, PACK_SEG
         mov     es, ax
-.no_wrap:
-        inc     byte [sect]
-        cmp     byte [sect], 19
-        jb      .next
-        mov     byte [sect], 1
-        xor     byte [head], 1
-        jnz     .next
-        inc     byte [cyl]
-.next:
-        dec     byte [left]
-        jnz     .load
+        xor     bx, bx
+        mov     byte [cyl], 1
+        mov     byte [head], 1
+        mov     byte [sect], 12
+        mov     byte [left], PACK_SECTORS
+        call    load_sectors
 
         mov     ax, 0x0013       ; VGA 320x200x256 graphics mode
         int     0x10
@@ -86,6 +66,44 @@ start:
         or      eax, 1
         mov     cr0, eax
         jmp     0x08:pm_entry
+
+; -----------------------------------------------------------------------------
+; In: ES:BX = destination, cyl/head/sect = CHS, left = sector count.
+load_sectors:
+.loop:
+        mov     byte [retry], 3
+.try:
+        mov     ch, [cyl]
+        mov     dh, [head]
+        mov     cl, [sect]
+        mov     dl, [boot_drive]
+        mov     ax, 0x0201
+        int     0x13
+        jnc     .ok
+        xor     ah, ah
+        mov     dl, [boot_drive]
+        int     0x13
+        dec     byte [retry]
+        jnz     .try
+        jmp     fail
+.ok:
+        add     bx, 512
+        jnc     .no_wrap
+        mov     ax, es
+        add     ax, 0x1000
+        mov     es, ax
+.no_wrap:
+        inc     byte [sect]
+        cmp     byte [sect], 19
+        jb      .next
+        mov     byte [sect], 1
+        xor     byte [head], 1
+        jnz     .next
+        inc     byte [cyl]
+.next:
+        dec     byte [left]
+        jnz     .loop
+        ret
 
 ; -----------------------------------------------------------------------------
 print:

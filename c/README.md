@@ -1,84 +1,105 @@
-# MiniOS 2.0 — C kernel, GUI, Ring 3 and preemptive tasks
+# MiniOS 2.0 — C kernel, GUI, Ring 3, preemptive tasks and program pack
 
 This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not replace
 `main` (MiniOS 1.0, the real-mode assembly OS) yet.
 
 ## What works
 
-- 16-bit boot sector loads the kernel to `0x10000`, enables A20, flat protected mode
+- 16-bit boot sector loads the kernel to `0x10000`, the program pack to `0x70000`,
+  enables A20, flat protected mode and VGA mode 13h
 - Freestanding C kernel, clang + `ld.lld`
-- VGA mode 13h 320×200×256 GUI, custom palette, ROM font
+- VGA 320×200×256 GUI, custom palette, ROM font
 - IDT/PIC/PIT: IRQ0 timer 100 Hz, IRQ1 keyboard, IRQ12 PS/2 mouse
 - Mouse cursor, Start menu, taskbar, draggable windows, close/OK buttons
 - Console shell, System Information window, About dialog
 - 4 KB paging; kernel pages supervisor, user pages U/S
 - GDT with DPL3 user code/data descriptors and a TSS
-- Ring 3 programs entered via `iret`; `int 0x80` DPL3 syscall gate
-- Kernel verifies the saved CS of the syscall frame and prints `CPL=3`
-- Syscall 2 returns from Ring 3 to the GUI shell (saved kernel ESP)
-- **Two preemptive Ring 3 tasks**
-  - each task has its own page directory and user page tables
-  - virtual `0x400000` maps to a different physical code page per task
-  - each task has its own kernel stack; TSS `esp0` is switched per task
-  - PIT IRQ0 preempts every 10 ms (1 tick); timer saves the user trap frame
-  - syscall 3 (`yield`) is still supported, syscall 2 exits
-- HLT idle loop
+- Ring 3 entry via `iret`; DPL3 `int 0x80` syscall gate; CPL=3 verified
+- **Dynamic task table with 4 slots**, task creation/reuse and per-task
+  page directories/user page tables/kernel stacks
+- **Timer-preemptive round-robin** scheduling: IRQ0 every 10 ms saves the user
+  trap frame, switches CR3/TSS `esp0` and `iretd`s into the next task
+- **Read-only program pack (MPK1)** loaded by the boot sector:
+  `A.BIN`, `B.BIN`, `C.BIN`, `HELLO.BIN`
+- Shell `progs` lists pack programs; `run NAME` creates and runs one task;
+  `tasks` creates and preempts three tasks from the pack
 
 Screenshots:
 
 - [`../screenshots/c-gui-boot.png`](../screenshots/c-gui-boot.png)
-- [`../screenshots/c-gui-startmenu.png`](../screenshots/c-gui-startmenu.png)
-- [`../screenshots/c-gui-system.png`](../screenshots/c-gui-system.png)
-- [`../screenshots/c-gui-about.png`](../screenshots/c-gui-about.png)
+- [`../screenshots/c-preempt-final.png`](../screenshots/c-preempt-final.png)
+- [`../screenshots/c-pack3-progs.png`](../screenshots/c-pack3-progs.png)
+- [`../screenshots/c-pack3-tasks.png`](../screenshots/c-pack3-tasks.png)
+- [`../screenshots/c-pack-run.png`](../screenshots/c-pack-run.png)
 - [`../screenshots/c-ring3-cpl.png`](../screenshots/c-ring3-cpl.png)
 - [`../screenshots/c-ring3-return.png`](../screenshots/c-ring3-return.png)
-- [`../screenshots/c-preempt-final.png`](../screenshots/c-preempt-final.png)
-- [`../screenshots/c-preempt-then-ver.png`](../screenshots/c-preempt-then-ver.png)
+
+## Program pack
+
+The image layout is:
+
+| Offset | Contents |
+|---:|---|
+| `0` | 512-byte boot sector |
+| `512` | kernel, up to 64 sectors (32 KB) |
+| `33280` | MPK1 program pack, 64 sectors (32 KB) |
+
+Pack format:
+
+```text
+magic "MPK1" | u16 count | u16 reserved
+count × { char name[16]; u32 offset; u32 size; }
+data...
+```
+
+`c/build_c.py` creates the pack from `task_a.bin`, `task_b.bin`,
+`task_c.bin` and `user.bin`, then writes it at offset 33280. The boot sector
+loads it to `0x70000`; the kernel parses and copies programs into task pages.
+
+Shell examples:
+
+```text
+progs
+run HELLO.BIN
+tasks
+```
+
+This is a **boot-loaded read-only pack**, not a runtime floppy filesystem yet.
+There is no FDC/FAT12 driver; programs are loaded from the in-memory pack.
+
+## Preemptive task demo
+
+`tasks` creates A, B and C from the pack, each in its own page directory.
+All three run at virtual `0x400000` but map to different physical code pages.
+The timer interrupt switches between them without any `yield`:
+
+```text
+Task C: step 1
+Task A: step 1
+Task B: step 1
+Task C: step 2
+Task B: step 2
+Task C: step 3
+Task A: step 3
+Task C: step 4
+Task A: step 4
+Task B: step 4
+[task] exit; scheduler.
+[task] exit; scheduler.
+[task] exit; scheduler.
+```
+
+When all tasks exit, the scheduler restores the kernel stack and returns to
+the Shell. `tasks` and `run` can be repeated; slots are reused.
 
 ## Ring 3 demo
-
-At the shell prompt type:
 
 ```text
 ring3
 ```
 
-The kernel installs the GDT/TSS, enables paging, installs the DPL3
-`int 0x80` gate, copies the embedded user binary and `iret`s to CPL3.
-The user program prints a message and exits; the saved kernel ESP is restored
-and the GUI shell continues.
-
-## Preemptive task demo
-
-At the shell prompt type:
-
-```text
-tasks
-```
-
-Two user programs run round-robin **without calling yield**. They busy-loop
-between prints; IRQ0 fires every tick and preempts the current user task:
-
-```text
-Task A: step 1
-Task B: step 1
-Task A: step 2
-Task B: step 2
-Task B: step 3
-Task A: step 3
-Task A: step 4
-Task B: step 4
-[task] exit; scheduler.
-[task] exit; scheduler.
-```
-
-Each task has a separate `task_pd[]`/`task_user_pt[]`. Both run at virtual
-`0x400000`, but map to different physical code pages. The timer interrupt
-saves the user trap frame on the task's kernel stack, switches CR3 and TSS
-`esp0`, and `iretd`s into the next task. When both exit, the scheduler restores
-the kernel stack and returns to the shell.
-
-`tasks` can be run repeatedly; `ring3` also works afterwards.
+The single Ring 3 demo still uses an embedded `user.bin`, a separate page
+directory and a saved kernel ESP. It exits back to the GUI shell.
 
 ## Controls
 
@@ -90,7 +111,7 @@ the kernel stack and returns to the shell.
 | Keyboard | Console shell input |
 
 Shell commands: `help`, `ver`, `cpu`, `mem`, `time`, `date`, `uptime`, `clear`,
-`echo`, `sysinfo`, `about`, `ring3`, `tasks`, `reboot`, `halt`.
+`echo`, `sysinfo`, `about`, `progs`, `run NAME`, `tasks`, `ring3`, `reboot`, `halt`.
 
 ## Build
 
@@ -108,10 +129,10 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~12.5 KB
+- `c/build/kernel.bin` — currently ~13.8 KB
 - `c/build/user.bin` — single Ring 3 demo
-- `c/build/task_a.bin`, `c/build/task_b.bin` — cooperative tasks
-- `MiniOS-C.img` — 1,474,560 bytes
+- `c/build/task_a.bin`, `task_b.bin`, `task_c.bin` — pack programs
+- `MiniOS-C.img` — 1,474,560 bytes (pack at offset 33280)
 
 ## Run
 
@@ -125,16 +146,15 @@ qemu-system-i386 `
 
 | File | Role |
 |---|---|
-| `boot.asm` | real-mode loader, A20, flat GDT, protected mode, VGA mode 13h |
+| `boot.asm` | real-mode loader: kernel + pack, A20, flat GDT, protected mode, mode 13h |
 | `entry.asm` | 32-bit entry, stack, BSS zero, `kmain` |
 | `interrupts.asm` | IRQ0/IRQ1/IRQ12 stubs + `int 0x80` syscall stub |
 | `usermode.asm` | Ring 3 entry and exit-to-kernel context restore |
 | `sched.asm` | scheduler start/exit, per-task `switch_to` |
 | `user.asm` | single Ring 3 demo, linked at `0x400000` |
-| `user_blob.asm` | embeds `user.bin` into the kernel image |
-| `task_a.asm`, `task_b.asm` | the two preemptive user programs |
-| `task_blob.asm` | embeds both task binaries |
-| `kernel.c` | IDT/PIC/PIT, keyboard/mouse, GDT/TSS, paging, tasks, syscalls |
+| `user_blob.asm` | embeds `user.bin` for the `ring3` command |
+| `task_a.asm`, `task_b.asm`, `task_c.asm` | pack task programs |
+| `kernel.c` | IDT/PIC/PIT, keyboard/mouse, GDT/TSS, paging, tasks, pack, syscalls |
 | `gui.c` | VGA framebuffer, font, windows, shell, mouse UI |
 | `gui.h` | GUI API and kernel/GUI globals |
 | `linker.ld` | kernel at `0x10000`, BSS NOLOAD |
@@ -142,18 +162,18 @@ qemu-system-i386 `
 ## Status / caveats
 
 - Ring 1/2 unused (normal; only Ring 0/3 matter here).
-- Each task has its own page directory; the kernel 0–4 MB mapping is shared.
-- The scheduler is **timer-preemptive** (IRQ0, 10 ms slice); yield remains available.
-- Two static tasks; no fork/exec, no blocking/sleep, no priority.
-- User programs are embedded in the kernel image; no filesystem yet.
-- Single `ring3` demo uses a different page directory from the task system.
-- Static 64 KB heap; no general allocator.
-- Boot loader loads 64 floppy sectors (32 KB); kernel file is ~12.7 KB.
+- Dynamic table has **4 slots**; `tasks` uses three, `run` uses one.
+- Scheduler is timer-preemptive with a fixed 10 ms slice; no priorities/sleep/wait.
+- Task code/stack physical pages are statically reserved per slot.
+- Program pack is read-only and boot-loaded; no runtime filesystem/FDC driver.
+- No fork/exec, arguments, or per-task heap.
+- Single `ring3` demo still uses a separate page-directory scheme.
+- Boot loader loads 64 kernel sectors + 64 pack sectors; all within 1.44 MB.
 
 ## Next milestones
 
-1. Dynamic task table, priorities and blocking/sleep.
-2. Filesystem + loadable user programs.
-3. Per-task heap and more syscalls (VGA/window drawing, file I/O, keyboard input).
-4. Process exit/wait semantics and task cleanup.
+1. Runtime floppy filesystem (FDC/FAT12 or MiniFS) and dynamic `exec`.
+2. More than four tasks, priorities and blocking.
+3. More syscalls (keyboard input, window/VGA drawing, file I/O).
+4. Per-task heap and cleanup.
 5. On-device interpreter for applications.
