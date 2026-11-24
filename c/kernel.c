@@ -786,9 +786,9 @@ void list_programs(void) {
         for (int j = 0; j < 16; j++)
             name[j] = e->name[j];
         name[16] = 0;
-        gui_sys_print("  ");
+        gui_sys_print("  \x1b[36m");
         gui_sys_print(name);
-        gui_sys_print("\n");
+        gui_sys_print("\x1b[0m\n");
     }
 }
 
@@ -886,15 +886,15 @@ void list_disk_files(void) {
     }
     struct fs_header *h = (struct fs_header *)fs_dir;
     struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
-    gui_sys_print("[disk] MiniFS files:\n");
+    gui_sys_print("\x1b[36m[disk] MiniFS files:\x1b[0m\n");
     for (int i = 0; i < h->count; i++) {
         char name[17];
         for (int j = 0; j < 16; j++)
             name[j] = entries[i].name[j];
         name[16] = 0;
-        gui_sys_print("  ");
+        gui_sys_print("  \x1b[36m");
         gui_sys_print(name);
-        gui_sys_print("\n");
+        gui_sys_print("\x1b[0m\n");
     }
 }
 
@@ -2466,19 +2466,19 @@ void list_ram_files(void) {
         if (!ramfiles[i].used)
             continue;
         if (!any) {
-            gui_sys_print("[ramfs] files:\n");
+            gui_sys_print("\x1b[32m[ramfs] files:\x1b[0m\n");
             any = 1;
         }
         char name[17];
         for (int j = 0; j < 16; j++)
             name[j] = ramfiles[i].name[j];
         name[16] = 0;
-        gui_sys_print("  ");
+        gui_sys_print("  \x1b[36m");
         gui_sys_print(name);
-        gui_sys_print("\n");
+        gui_sys_print("\x1b[0m\n");
     }
     if (!any)
-        gui_sys_print("[ramfs] empty.\n");
+        gui_sys_print("\x1b[90m[ramfs] empty.\x1b[0m\n");
 }
 
 static int fd_open(const char *name) {
@@ -3176,6 +3176,8 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
 
 
 

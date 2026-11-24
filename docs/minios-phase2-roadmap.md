@@ -108,8 +108,8 @@
 ### Stage 11：ANSI 16 色真彩终端与系统级文本剪贴板
 **目标**：让黑白单调的终端支持标准 ANSI 彩色输出，并打通跨窗口/跨 REPL 的复制粘贴。
 
-- [ ] **11.1 每字符属性缓冲与 ANSI SGR 16 色解析**（`c/gui.c`）
-  - 部分完成：每字符 fg/bg 属性表已从页帧池分配，SGR 0/1/22/30-37/39/40-47/49/90-97/100-107 已解析，Python 彩色输出实测通过；light/dark 主题与彩色 ls/错误样式未做。
+- [x] **11.1 每字符属性缓冲与 ANSI SGR 16 色解析**（`c/gui.c`）
+  - 完成：每字符 fg/bg 属性表、SGR 16 色、light/dark 主题、彩色 MiniFS/RAMFS 列表、红色错误提示；Python 彩色输出实测通过。
   - **内存避坑**：用 `kernel_alloc_pages_zero(6)` 分配 `3 × 96 × 80` 字节的前景/背景色属性表 `term_attr`（默认白底黑字 `0xF0` 或可选深色终端配色 `0x0F`！）；
   - 在 `term_putc_mode` 的 CSI 状态机中解析 `\x1b[...m`（支持 `0` 重置、`1` 高亮、`30–37` / `90–97` 前景色、`40–47` 背景色）；
   - 升级内置 `ls`、报错提示与 Shell 提示符（如 `C:\>` 蓝色、RAMFS 文件绿色、MiniFS 只读文件深青色、`[fault]` / 错误信息红色），并支持 `theme light|dark` 切换白底/黑底终端风格！
@@ -224,6 +224,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 
