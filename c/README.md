@@ -55,6 +55,9 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   PgUp/PgDn page scrolling, and in-line cursor editing
   (Left/Right/Home/End/Delete + ANSI cursor/clear). Scroll position is
   preserved while new output arrives; typing returns to the live bottom.
+- **Native desktop controls**: left-click/drag windows, minimize buttons,
+  right-click context menus on the desktop and consoles (scroll/clear/
+  minimize/close, launch consoles/system/about), usable while a task runs.
 - **Dynamic physical frame allocator** for code/stack/heap pages:
   frames are taken from `5–16 MB`, direct-mapped at `16–28 MB`
 - **Process lifecycle**: PIDs, parent/child, `spawn`, `spawn_args`, `wait`,
@@ -153,6 +156,11 @@ Screenshots:
 - [`../screenshots/c-scrollbar-click-top.png`](../screenshots/c-scrollbar-click-top.png)
 - [`../screenshots/c-scrollbar-drag-bottom.png`](../screenshots/c-scrollbar-drag-bottom.png)
 - [`../screenshots/c-scrollbar-task.png`](../screenshots/c-scrollbar-task.png)
+- [`../screenshots/c-gui-context-wide.png`](../screenshots/c-gui-context-wide.png)
+- [`../screenshots/c-gui-context-desktop.png`](../screenshots/c-gui-context-desktop.png)
+- [`../screenshots/c-gui-context-task.png`](../screenshots/c-gui-context-task.png)
+- [`../screenshots/c-gui-minimized.png`](../screenshots/c-gui-minimized.png)
+- [`../screenshots/c-gui-minimized-list.png`](../screenshots/c-gui-minimized-list.png)
 - [`../screenshots/c-serial-upload.png`](../screenshots/c-serial-upload.png)
 - [`../screenshots/c-serial-download.png`](../screenshots/c-serial-download.png)
 
@@ -350,7 +358,7 @@ python c/build_c.py
 Outputs:
 
 - `c/build/boot.bin` — 512 bytes
-- `c/build/kernel.bin` — currently ~38.4 KB (64 KB loader limit)
+- `c/build/kernel.bin` — currently ~40.1 KB (64 KB loader limit)
 - `c/build/mpy.bin` — **181,696 bytes** (177.4 KB, image+BSS 182,256 B)
 - Stage 0–3 roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo

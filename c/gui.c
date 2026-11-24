@@ -57,6 +57,8 @@
 #define HIT_TITLE_BASE 500
 #define HIT_BODY_BASE 600
 #define HIT_SCROLL_BASE 700
+#define HIT_MIN_BASE 800
+#define HIT_CTX_BASE 1000
 
 struct console {
     int x, y, w, h;
@@ -71,6 +73,7 @@ struct console {
 struct window {
     int x, y, w, h;
     u8 visible;
+    u8 minimized;
     const char *title;
 };
 
@@ -87,6 +90,10 @@ static struct console *sys_output;
 static int menu_open;
 static int list_open;
 static int list_sel;
+static int ctx_open;
+static int ctx_x, ctx_y;
+static int ctx_count;
+static int ctx_target;
 
 static int pressed_hit;
 static int drag_win;
@@ -327,6 +334,7 @@ static void focus_window(int id) {
     if (id < 0 || id >= WIN_COUNT)
         return;
     wins[id].visible = 1;
+    wins[id].minimized = 0;
     focus_win = id;
     bring_front(id);
     if (id >= WIN_C0 && id <= WIN_C2) {
@@ -358,6 +366,14 @@ static void focus_fallback(void) {
 
 static void hide_window(int id) {
     wins[id].visible = 0;
+    wins[id].minimized = 0;
+    if (focus_win == id)
+        focus_fallback();
+}
+
+static void minimize_window(int id) {
+    wins[id].visible = 0;
+    wins[id].minimized = 1;
     if (focus_win == id)
         focus_fallback();
 }
@@ -370,6 +386,7 @@ static void init_windows(void) {
         wins[i].w = CON_W;
         wins[i].h = CON_H;
         wins[i].visible = (i == 0);
+        wins[i].minimized = 0;
     }
     wins[WIN_C0].title = "Console 1 - MiniOS";
     wins[WIN_C1].title = "Console 2 - MiniOS";
@@ -378,11 +395,13 @@ static void init_windows(void) {
     wins[WIN_SYS].x = 56; wins[WIN_SYS].y = 42;
     wins[WIN_SYS].w = SYS_W; wins[WIN_SYS].h = SYS_H;
     wins[WIN_SYS].visible = 0;
+    wins[WIN_SYS].minimized = 0;
     wins[WIN_SYS].title = "System Information";
 
     wins[WIN_ABOUT].x = 60; wins[WIN_ABOUT].y = 48;
     wins[WIN_ABOUT].w = ABOUT_W; wins[WIN_ABOUT].h = ABOUT_H;
     wins[WIN_ABOUT].visible = 0;
+    wins[WIN_ABOUT].minimized = 0;
     wins[WIN_ABOUT].title = "About MiniOS";
 
     for (int i = 0; i < WIN_COUNT; i++)
@@ -1008,6 +1027,13 @@ static void window_frame(int id) {
     fill_rect(w->x + 1, w->y + 1, w->w - 2, 10, active ? 1 : 8);
     text(w->x + 4, w->y + 2, w->title, 15);
 
+    int min_hit = HIT_MIN_BASE + id;
+    if (is_pressed(min_hit))
+        sunken_box(w->x + w->w - 28, w->y + 2, 12, 8);
+    else
+        raise_box_col(w->x + w->w - 28, w->y + 2, 12, 8, 7);
+    draw_char(w->x + w->w - 26, w->y + 3, '_', 0, 1);
+
     int close_hit = HIT_CLOSE_BASE + id;
     if (is_pressed(close_hit))
         sunken_box(w->x + w->w - 14, w->y + 2, 12, 8);
@@ -1128,6 +1154,8 @@ static void draw_list(void) {
         }
         if (focus_win == i)
             text(LIST_X + LIST_W - 16, iy + 3, "*", 2);
+        else if (wins[i].minimized)
+            text(LIST_X + LIST_W - 16, iy + 3, "m", 8);
         else if (!wins[i].visible)
             text(LIST_X + LIST_W - 16, iy + 3, "-", 8);
     }
@@ -1183,14 +1211,96 @@ static void cursor_restore(void) {
     cursor_bg_valid = 0;
 }
 
+static const char *ctx_label(int i) {
+    if (ctx_target >= 0) {
+        static const char *items[5] = {
+            "Scroll top", "Scroll bottom", "Clear", "Minimize", "Close"
+        };
+        return (i >= 0 && i < 5) ? items[i] : "";
+    }
+    static const char *items[6] = {
+        "Console 1", "Console 2", "Console 3", "Windows", "System", "About"
+    };
+    return (i >= 0 && i < 6) ? items[i] : "";
+}
+
+static int ctx_height(void) {
+    return ctx_count * 12 + 4;
+}
+
+static void open_context(int x, int y) {
+    ctx_target = -1;
+    for (int i = WIN_COUNT - 1; i >= 0; i--) {
+        int id = zorder[i];
+        if (id <= WIN_C2 && wins[id].visible &&
+            inside(x, y, wins[id].x, wins[id].y, wins[id].w, wins[id].h)) {
+            ctx_target = id;
+            break;
+        }
+    }
+    ctx_count = ctx_target >= 0 ? 5 : 6;
+    ctx_x = x + 2;
+    ctx_y = y + 2;
+    if (ctx_x + 128 > W) ctx_x = W - 128;
+    if (ctx_y + ctx_height() > TASKBAR_Y - 2)
+        ctx_y = TASKBAR_Y - 2 - ctx_height();
+    if (ctx_x < 0) ctx_x = 0;
+    if (ctx_y < 0) ctx_y = 0;
+    ctx_open = 1;
+    menu_open = 0;
+    list_open = 0;
+}
+
+static void activate_context(int idx) {
+    int target = ctx_target;
+    ctx_open = 0;
+    if (target >= 0) {
+        struct console *c = &consoles[target];
+        if (idx == 0) term_scroll_by(c, TERM_ROWS);
+        else if (idx == 1) term_scroll_by(c, -TERM_ROWS);
+        else if (idx == 2) { term_clear(c); term_prompt(c); }
+        else if (idx == 3) minimize_window(target);
+        else if (idx == 4) hide_window(target);
+        return;
+    }
+    if (idx >= 0 && idx <= 2) focus_window(idx);
+    else if (idx == 3) { list_open = 1; list_sel = focus_win >= 0 ? focus_win : 0; }
+    else if (idx == 4) focus_window(WIN_SYS);
+    else if (idx == 5) focus_window(WIN_ABOUT);
+}
+
+static void draw_context(void) {
+    if (!ctx_open)
+        return;
+    int w = 128;
+    int h = ctx_height();
+    fill_rect(ctx_x + 3, ctx_y + 3, w, h, 8);
+    fill_rect(ctx_x, ctx_y, w, h, 0);
+    fill_rect(ctx_x + 1, ctx_y + 1, w - 2, h - 2, 7);
+    for (int i = 0; i < ctx_count; i++) {
+        int iy = ctx_y + 2 + i * 12;
+        int hit = HIT_CTX_BASE + i;
+        if (is_pressed(hit)) {
+            fill_rect(ctx_x + 2, iy, w - 4, 12, 2);
+            text(ctx_x + 8, iy + 2, ctx_label(i), 15);
+        } else if (inside(mouse_x, mouse_y, ctx_x + 2, iy, w - 4, 12)) {
+            fill_rect(ctx_x + 2, iy, w - 4, 12, 1);
+            text(ctx_x + 8, iy + 2, ctx_label(i), 15);
+        } else {
+            text(ctx_x + 8, iy + 2, ctx_label(i), 0);
+        }
+    }
+}
+
 static void draw_cursor(void) {
     cursor_capture();
     cursor_draw_art();
 }
 
 int gui_cursor_only_motion(int x, int y, int buttons) {
-    if ((buttons & 1) || (last_buttons & 1) ||
-        menu_open || list_open || drag_win >= 0 || scroll_drag >= 0)
+    if ((buttons & 7) || (last_buttons & 7) ||
+        menu_open || list_open || ctx_open ||
+        drag_win >= 0 || scroll_drag >= 0)
         return 0;
     if (x == mouse_x && y == mouse_y)
         return 1;
@@ -1226,6 +1336,7 @@ void gui_redraw(void) {
     }
     draw_menu();
     draw_list();
+    draw_context();
     draw_cursor();
     blit();
     redraw_busy = 0;
@@ -1252,6 +1363,14 @@ static int inside(int x, int y, int rx, int ry, int rw, int rh) {
 }
 
 static int hit_test(int x, int y) {
+    if (ctx_open) {
+        for (int i = 0; i < ctx_count; i++) {
+            int iy = ctx_y + 2 + i * 12;
+            if (inside(x, y, ctx_x + 2, iy, 124, 12))
+                return HIT_CTX_BASE + i;
+        }
+        return HIT_NONE;
+    }
     if (list_open) {
         for (int i = 0; i < WIN_COUNT; i++) {
             int iy = LIST_Y + 14 + i * 16;
@@ -1283,6 +1402,8 @@ static int hit_test(int x, int y) {
         struct window *w = &wins[id];
         if (!w->visible || !inside(x, y, w->x, w->y, w->w, w->h))
             continue;
+        if (inside(x, y, w->x + w->w - 32, w->y + 1, 13, 10))
+            return HIT_MIN_BASE + id;
         if (inside(x, y, w->x + w->w - 20, w->y, 20, 12))
             return HIT_CLOSE_BASE + id;
         if (id == WIN_ABOUT && inside(x, y, w->x + 76, w->y + 77, 48, 19))
@@ -1336,6 +1457,10 @@ static void activate_hit(int hit) {
         menu_open = 0;
         return;
     }
+    if (hit >= HIT_MIN_BASE && hit < HIT_MIN_BASE + WIN_COUNT) {
+        minimize_window(hit - HIT_MIN_BASE);
+        return;
+    }
     if (hit >= HIT_CLOSE_BASE && hit < HIT_CLOSE_BASE + WIN_COUNT) {
         hide_window(hit - HIT_CLOSE_BASE);
         return;
@@ -1372,7 +1497,37 @@ static void activate_hit(int hit) {
 void gui_mouse_event(int x, int y, int buttons) {
     int press = (buttons & 1) && !(last_buttons & 1);
     int release = !(buttons & 1) && (last_buttons & 1);
+    int rpress = (buttons & 2) && !(last_buttons & 2);
     int hit = hit_test(x, y);
+
+    if (ctx_open) {
+        if (rpress) {
+            ctx_open = 0;
+            last_buttons = buttons;
+            return;
+        }
+        if (press) {
+            if (hit >= HIT_CTX_BASE && hit < HIT_CTX_BASE + ctx_count)
+                pressed_hit = hit;
+            else
+                ctx_open = 0;
+        }
+        if (release) {
+            if (pressed_hit >= HIT_CTX_BASE &&
+                pressed_hit < HIT_CTX_BASE + ctx_count &&
+                hit == pressed_hit)
+                activate_context(pressed_hit - HIT_CTX_BASE);
+            pressed_hit = HIT_NONE;
+        }
+        last_buttons = buttons;
+        return;
+    }
+
+    if (rpress) {
+        open_context(x, y);
+        last_buttons = buttons;
+        return;
+    }
 
     if (list_open) {
         if (!(buttons & 1) && hit >= HIT_LIST_BASE && hit < HIT_LIST_BASE + WIN_COUNT)
@@ -1452,6 +1607,11 @@ void gui_mouse_event(int x, int y, int buttons) {
  * ----------------------------------------------------------------------------- */
 void gui_key(char ch) {
     u8 key = (u8)ch;
+    if (ctx_open) {
+        if (key == 27)
+            ctx_open = 0;
+        return;
+    }
     if (list_open) {
         if (ch == 27) {
             list_open = 0;
@@ -1583,5 +1743,6 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
