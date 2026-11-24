@@ -89,20 +89,19 @@ MiniOS 2.0 不做臃肿的 POSIX 模仿者，也不做简陋的黑框命令行�
 ### Stage 2：MicroPython i386 Ring 3 核心移植与点亮（`MPY.BIN`）
 **目标**：将 MicroPython 编译为符合 `UMP1` 规范的 Ring 3 二进制，在 MiniOS 桌面终端内点亮完整 Python 3 REPL。
 
-- [ ] **2.1 搭建干净的本地上游源码与移植目录结构**
-  - 拉取官方 MicroPython 稳定版源码至 `tools/micropython/`（受 `.gitignore` 忽略），在 `c/mpy_port/UPSTREAM_VERSION.txt` 记录精确版本号与 commit hash。
-  - 创建受 Git 跟踪的 `c/mpy_port/`（`mpconfigport.h`、`mphalport.c`、`mphalport.h`、`main.c`、`start.asm`、`mpy_linker.ld`、`minilibc.c`）与独立构建脚本 `c/build_mpy.py`（编译产出 `c/build/mpy.bin`；`c/build_c.py` 自动构建或打包该 `mpy.bin` 为 MiniFS 中的 `MPY.BIN`）。
-- [ ] **2.2 配置 `mpconfigport.h` 与软浮点算术支撑**
-  - 启用 `MICROPY_NLR_X86 = 1`（使用 `py/nlrx86.c`），编译选项保持 `-m32 -march=i386 -ffreestanding -fno-pic -fno-pie -fno-stack-protector -mno-sse -mno-mmx -mno-80387 -msoft-float -Os`。
-  - 启用完整日常语法特性：`MICROPY_ENABLE_COMPILER = 1`、`MICROPY_ENABLE_GC = 1`、`MICROPY_HELPER_REPL = 1`、`MICROPY_REPL_AUTO_INDENT = 1`、`MICROPY_LONGINT_IMPL = MICROPY_LONGINT_IMPL_MPZ`、**`MICROPY_FLOAT_IMPL = MICROPY_FLOAT_IMPL_DOUBLE`**（接入编译器 `compiler-rt`/`libgcc` 32 位软浮点与 64 位整除符号 `__divdi3`/`__udivdi3`/`__moddi3`/`__umoddi3`）。
-  - 启用核心内建模块：`sys`、`gc`、`micropython`、`array`、`collections`、`struct`、`math`、`json`、`re`、`binascii`。
-- [ ] **2.3 实现 `UMP1` 入口、动态堆初始化与 `Ctrl-C` 中断**
-  - `start.asm` 置于 `0x00400000` 头部，准确填充 `UMP1` 的 `entry_offset`、`image_size` 与 `bss_size`，并将栈上 `argc/argv` 传给 C 入口。
-  - 启动时调用 `syscall 20` (`brk`) 将用户堆扩至 **1.5 MB**（`0x500000–0x680000`）交给 `gc_init()`。
-  - 对接 HAL：`stdout` → `syscall 4`；`ticks_ms` → `syscall 6`；`delay_ms` → `syscall 10`；输入路径与 VM 轮询钩子检测 `0x03` (`Ctrl-C`) 调用 `mp_sched_keyboard_interrupt()`（**确保 `Ctrl-C` 抛出 `KeyboardInterrupt` 打断死循环而非直接杀死解释器**），空行 `Ctrl-D` 正常退出进程返回 Shell。
-- [ ] **2.4 接入 Shell `py` / `python` 命令并实测**
-  - 在 `c/gui.c` 添加 `py` 与 `python` 命令（支持带参数转发给 `run_user_module_args("MPY.BIN", ...)`）。
-  - **Stage 2 验收**：记录 `MPY.BIN` 精确字节大小；在 Console 1 启动 `py`，实测大整数 `2**128`、浮点运算 `3.1415926 * 2`、`json.dumps`、函数/类定义、上下方向键翻历史、`Ctrl-C` 中断 `while True: pass`、`Ctrl-D` 返回 `C:\>`，并截图留档。
+- [x] **2.1 搭建干净的本地上游源码与移植目录结构**
+  - 拉取官方 MicroPython 稳定版源码（`v1.24.1` / `ecfdd5d6`）至 `tools/micropython/`（受 `.gitignore` 忽略），在 `c/mpy_port/UPSTREAM_VERSION.txt` 记录精确版本号与 commit hash。
+  - 创建受 Git 跟踪的 `c/mpy_port/`（`mpconfigport.h`、`mphalport.c`、`mphalport.h`、`main.c`、`start.asm`、`mpy_linker.ld`、`minilibc.c`、`vfs_minios.c`）与独立并行构建脚本 `c/build_mpy.py`（编译产出 `c/build/mpy.bin`；`c/build_c.py` 自动构建并打包为 MiniFS 中的 `MPY.BIN`）。
+- [x] **2.2 配置 `mpconfigport.h` 与浮点/大整数算术支撑**
+  - 纯汇编实现 x86 NLR（`start.asm` 中无栈帧假设的 `nlr_push`/`nlr_jump_asm`）与寄存器根扫描 GC（`minios_gc_collect_regs`）。
+  - 启用完整日常语法特性：编译器、GC、REPL 自动缩进与历史、`f-string`、`MPZ` 任意精度大整数、**64 位 IEEE-754 双精度浮点 `DOUBLE`（x87 53-bit 模式 + 完整 `libm_dbl` + 64 位整除运行时符号）**。
+  - 启用核心内建模块：`sys`、`gc`、`micropython`、`array`、`collections`、`struct`、`math`、`json`、`re`、`binascii`、`heapq`、`random`、`time`、`errno`、`io`，并一步到位预置了 `open()` 与 `os` 模块（`vfs_minios.c`）。
+- [x] **2.3 实现 `UMP1` 入口、动态堆初始化与 `Ctrl-C` 中断**
+  - `start.asm` 置于 `0x00400000` 头部，准确填充 `UMP1` 头并兼容无参/带参栈布局，启动时调用 `syscall 20` (`brk`) 将用户堆扩至 **1.5 MB**（`0x500000–0x680000`，共 445 页）交给 `gc_init()`。
+  - 新增非阻塞 `syscall 29` (`poll_ctrl_c`) 配合 VM 轮询钩子检测 `Ctrl-C` 触发 `mp_sched_keyboard_interrupt()`（**实测可打断 `while True: pass` 死循环抛出 `KeyboardInterrupt` 回到 `>>> `**），空行 `Ctrl-D` 正常退回 Shell；`main.c` 已同步支持 `-c`、`-e`、`-m` 与脚本参数模式。
+- [x] **2.4 接入 Shell `py` / `python` 命令并实测**
+  - 在 `c/gui.c` 添加带引号参数解析的 `py` 与 `python` 命令。
+  - **Stage 2 验收**：**`MPY.BIN` 精确体积仅 `181,712` 字节（177.5 KB，`.bss` 仅 560 字节）**；实测 Console 1 启动 `py`、`2**128`、`round(3.1415926*2, 5)`、`json.dumps` + `math.sqrt`、函数定义、`Ctrl-C` 打断死循环、Console 2 并发 `ps`/`mem`、`os.listdir()`、`Ctrl-D` 退出与 `py -e "2**64"` 全部通过（截图 `screenshots/c-stage2-mpy-*.png`）。
 
 ---
 

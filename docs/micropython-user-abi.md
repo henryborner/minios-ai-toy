@@ -86,6 +86,7 @@ by replacing the saved EAX, so the user sees it in EAX after `int 0x80`.
 | 20 | brk | EBX = new break (0 = query) | EAX = break or -1 |
 | 21 | stat | EBX = name, ECX = user_stat | EAX = 0 or -1 |
 | 22 | readdir | EBX = index, ECX = user_dirent | EAX = 1 or 0 |
+| 29 | poll_ctrl_c | — | EAX = 1 if Ctrl-C consumed from task console, else 0 |
 
 Notes:
 

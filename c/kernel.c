@@ -2524,6 +2524,21 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         if (out >= 0x400000 && out + sizeof(struct user_dirent) <= 0x800000)
             r = sys_readdir(index, (struct user_dirent *)out);
         ((u32 *)frame)[7] = (u32)r;
+    } else if (number == 29) {
+        int cid = current_console_id();
+        if (cid < 0 || cid >= KBD_CONSOLES)
+            cid = 0;
+        int found = 0;
+        u8 t = kbd_tail[cid];
+        while (t != kbd_head[cid]) {
+            if (kbd_buf[cid][t] == 3) {
+                kbd_tail[cid] = (u8)((t + 1) & 63);
+                found = 1;
+                break;
+            }
+            t = (u8)((t + 1) & 63);
+        }
+        ((u32 *)frame)[7] = (u32)found;
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }

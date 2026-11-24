@@ -1,6 +1,8 @@
 # Build outputs
 /build/
 /c/build/
+/c/mpy_port/build/
+__pycache__/
 /kernel
 *.lst
 *.ppm

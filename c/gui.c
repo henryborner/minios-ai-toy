@@ -507,6 +507,43 @@ static int starts_with(const char *s, const char *p) {
     return 1;
 }
 
+static void launch_python(struct console *c, const char *rest) {
+    extern int run_user_module_args(const char *name, int argc,
+                                    const char *const *argv);
+    char buf[64];
+    const char *argv[8];
+    int argc = 0;
+    argv[argc++] = "py";
+
+    int bi = 0;
+    while (*rest && argc < 8 && bi < 62) {
+        while (*rest == ' ')
+            rest++;
+        if (!*rest)
+            break;
+        char quote = 0;
+        if (*rest == '"' || *rest == '\'') {
+            quote = *rest++;
+        }
+        argv[argc++] = &buf[bi];
+        while (*rest && bi < 62) {
+            if (quote) {
+                if (*rest == quote) {
+                    rest++;
+                    break;
+                }
+            } else if (*rest == ' ') {
+                break;
+            }
+            buf[bi++] = *rest++;
+        }
+        buf[bi++] = 0;
+    }
+
+    if (!run_user_module_args("MPY.BIN", argc, argv))
+        term_puts(c, "Python launch failed.\n");
+}
+
 static void run_command(struct console *c, char *line) {
     while (*line == ' ')
         line++;
@@ -518,10 +555,12 @@ static void run_command(struct console *c, char *line) {
         (streq(line, "ls") || streq(line, "disktest") ||
          streq(line, "ring3") || streq(line, "tasks") ||
          streq(line, "progs") || streq(line, "utest") ||
+         streq(line, "py") || streq(line, "python") ||
          streq(line, "modtest") || streq(line, "uargs") ||
          streq(line, "big512") || streq(line, "serial") ||
          streq(line, "reboot") ||
          streq(line, "halt") ||
+         starts_with(line, "py ") || starts_with(line, "python ") ||
          starts_with(line, "exec ") || starts_with(line, "run ") ||
          starts_with(line, "mod ") || starts_with(line, "upload ") ||
          starts_with(line, "download "))) {
@@ -531,8 +570,8 @@ static void run_command(struct console *c, char *line) {
 
     if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
-        term_puts(c, "help ver cpu mem time date\n");
-        term_puts(c, "uptime clear echo console windows\n");
+        term_puts(c, "help ver cpu mem time date ps kill\n");
+        term_puts(c, "py python clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME\n");
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
@@ -655,6 +694,12 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "Loading kernel module from MiniFS...\n");
         gui_redraw();
         run_module(line + 4);
+    } else if (streq(line, "py") || streq(line, "python")) {
+        launch_python(c, "");
+    } else if (starts_with(line, "py ")) {
+        launch_python(c, line + 3);
+    } else if (starts_with(line, "python ")) {
+        launch_python(c, line + 7);
     } else if (streq(line, "utest")) {
         extern int run_user_module(const char *name);
         term_puts(c, "Loading large Ring3 module from MiniFS...\n");

@@ -209,6 +209,9 @@ def main() -> int:
     if len(kernel_data) > KERNEL_MAX:
         raise SystemExit(f"kernel too large: {len(kernel_data)} > {KERNEL_MAX}")
 
+    from build_mpy import build_mpy
+    mpy_bin = build_mpy(stage_to_c_build=True)
+
     pack = build_pack([
         ("A.BIN", task_a_bin),
         ("B.BIN", task_b_bin),
@@ -224,6 +227,7 @@ def main() -> int:
         ("HELLO.BIN", user_bin),
         ("MODTEST.BIN", modtest_bin),
         ("UMTEST.BIN", umtest_bin),
+        ("MPY.BIN", mpy_bin),
         ("PARENT.BIN", parent_bin),
         ("PARENT2.BIN", parent_block_bin),
         ("FD.BIN", fd_test_bin),
