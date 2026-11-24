@@ -35,7 +35,8 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   toggle with saved geometry; 8-way border/corner resize with dynamic Console
   columns/rows and scrollbar geometry; resize-shape cursors; Canvas preallocated
   at 600×420 and resized in place with a fixed row stride. Snap, negative-
-  coordinate dragging and taskbar behavior remain.
+  coordinate dragging, snap landing and taskbar resource meter remain; taskbar
+  click-to-minimize is implemented.
 - **Stage 9 input polish**: i8042 keyboard/mouse source demultiplexing,
   IntelliMouse 4-byte packets with wheel scrolling, per-console 128-byte
   command buffers with wrapped-line rendering, and 8-entry Up/Down history.
@@ -90,7 +91,7 @@ This branch (`v2-protected-c`) is the protected-mode / C rewrite. It does not re
   - Native adaptive GUI: `72×26` consoles (`80×96` scrollback), `300×200`
     256-color Canvas window, taskbar `Con3`/`Canvas` buttons, dynamic PS/2 mouse
     bounds, and pure LFB blitting (never touching the `0xA0000` alias window in
-    VBE mode). Kernel `.bss` ends at `0x0005EAEF` (~70.9 KB below `0x70000`).
+    VBE mode). Kernel `.bss` ends at `0x0005EAF3` (~70.9 KB below `0x70000`).
 - **Stage 7–8 frozen suite**: `calc`, `top`, `demos` (`plot`), `xxd`, `edit`,
   `futil`, and `bench` are frozen to `.mpy` bytecode with `mpy-cross 1.24.1`,
   linked into `MPY.BIN` (`189,616` bytes), and launched via Shell shortcuts with
@@ -223,7 +224,7 @@ Exact sector/byte accounting for `MiniOS-C.img` (`1,474,560` bytes = `2,880` sec
 | Region | LBA Range | Sectors | Bytes | Notes |
 |---|---|---:|---:|---|
 | Boot sector (`boot.bin`) | `0` | `1` | `512` | Loads kernel, `MPK1` pack, and `stage2` |
-| 32-bit C kernel (`kernel.bin`) | `1–128` | `128` | `51,956` / `65,536` | `13.6 KB` loader headroom; `.bss` ends at `0x5EAEF` |
+| 32-bit C kernel (`kernel.bin`) | `1–128` | `128` | `52,620` / `65,536` | `12.9 KB` loader headroom; `.bss` ends at `0x5EAF3` |
 | Program pack (`MPK1`) | `129–192` | `64` | `32,768` | Boot-loaded at `0x70000` (`A/B/C/HELLO.BIN`) |
 | Stage 2 VBE/PM (`stage2.bin`) | `193` (`194–199` pad) | `1` (+`6`) | `512` (+`3,072`) | Loaded at `0x7E00`; VBE `640×480×8` LFB + `320×200` fallback |
 | Read-only `MiniFS` (`MFS1`) | `200–1203` | `1,004` | `514,048` | `MPY.BIN` (`189,616 B`, 7 frozen tools) + Ring 3/0 test suite |
@@ -476,7 +477,7 @@ Outputs:
 
 - `c/build/boot.bin` — 512 bytes (LBA 0)
 - `c/build/stage2.bin` — 512 bytes (LBA 193, loaded at `0x7E00`)
-- `c/build/kernel.bin` — 51,956 bytes (~50.7 KB, 64 KB loader limit; `.bss` ends at `0x5EAEF`)
+- `c/build/kernel.bin` — 52,620 bytes (~51.4 KB, 64 KB loader limit; `.bss` ends at `0x5EAF3`)
 - `c/build/mpy.bin` — **191,056 bytes** (186.6 KB, image+BSS 191,616 B, 8 frozen tools)
 - Stage 0–8 master roadmap: [`../docs/python-os-roadmap.md`](../docs/python-os-roadmap.md)
 - `c/build/user.bin` — single Ring 3 demo

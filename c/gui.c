@@ -124,6 +124,7 @@ static int resize_win = -1;
 static int resize_dir;
 static int resize_sx, resize_sy, resize_sw, resize_sh;
 static int scroll_drag = -1;
+static int snap_mode;
 static int last_buttons;
 
 static char clock_hm[6];
@@ -698,6 +699,7 @@ static void term_puts(struct console *c, const char *s) {
 
 static int streq(const char *a, const char *b);
 static int hit_test(int x, int y);
+static void draw_snap_preview(void);
 
 static void term_prompt(struct console *c) {
     c->cmd_start = c->cur;
@@ -1840,6 +1842,7 @@ void gui_redraw(void) {
         else if (id == WIN_APP)
             draw_canvas();
     }
+    draw_snap_preview();
     draw_menu();
     draw_list();
     draw_context();
@@ -1983,6 +1986,7 @@ void gui_toggle_maximize(int id) {
 }
 
 static void start_drag(int id, int x, int y) {
+    snap_mode = 0;
     drag_win = id;
     drag_dx = x - wins[id].x;
     drag_dy = y - wins[id].y;
@@ -1998,6 +2002,13 @@ static void drag_move(int x, int y) {
     if (ny < 0) ny = 0;
     if (nx > scr_w - w->w) nx = scr_w - w->w;
     if (ny > TASKBAR_Y - w->h) ny = TASKBAR_Y - w->h;
+    snap_mode = 0;
+    if (ny <= 19)
+        snap_mode = 3;
+    else if (nx <= 2)
+        snap_mode = 1;
+    else if (nx + w->w >= scr_w - 2)
+        snap_mode = 2;
     w->x = nx;
     w->y = ny;
     if (drag_win >= WIN_C0 && drag_win <= WIN_C2) {
@@ -2068,17 +2079,86 @@ static void resize_move(int x, int y) {
     gui_dirty = 1;
 }
 
+static void sync_console_layout(int id) {
+    if (id < WIN_C0 || id > WIN_C2)
+        return;
+    struct window *w = &wins[id];
+    struct console *c = &consoles[id];
+    c->x = w->x;
+    c->y = w->y;
+    c->w = w->w;
+    c->h = w->h;
+    int cols = (w->w - 16) / 8;
+    int rows = (w->h - 18) / 9;
+    if (cols < 24) cols = 24;
+    if (cols > 76) cols = 76;
+    if (rows < 6) rows = 6;
+    if (rows > 46) rows = 46;
+    c->cols = cols;
+    c->rows = rows;
+}
+
+static void snap_window(int id, int mode) {
+    struct window *w = &wins[id];
+    if (!w->maximized) {
+        w->saved_x = w->x;
+        w->saved_y = w->y;
+        w->saved_w = w->w;
+        w->saved_h = w->h;
+    }
+    int top = 18;
+    int bottom = TASKBAR_Y;
+    if (mode == 1) {
+        w->x = 0; w->y = top;
+        w->w = scr_w / 2; w->h = bottom - top;
+        w->maximized = 0;
+    } else if (mode == 2) {
+        w->x = scr_w / 2; w->y = top;
+        w->w = scr_w - scr_w / 2; w->h = bottom - top;
+        w->maximized = 0;
+    } else {
+        gui_toggle_maximize(id);
+        return;
+    }
+    sync_console_layout(id);
+    focus_window(id);
+    gui_dirty = 1;
+}
+
+static void draw_snap_preview(void) {
+    if (!snap_mode)
+        return;
+    int x = 0, y = 18, w = scr_w, h = TASKBAR_Y - 18;
+    if (snap_mode == 1) {
+        w = scr_w / 2;
+    } else if (snap_mode == 2) {
+        x = scr_w / 2;
+        w = scr_w - scr_w / 2;
+    }
+    fill_rect(x, y, w, 2, 11);
+    fill_rect(x, y + h - 2, w, 2, 11);
+    fill_rect(x, y, 2, h, 11);
+    fill_rect(x + w - 2, y, 2, h, 11);
+}
+
+static void taskbar_window(int id) {
+    if (focus_win == id && wins[id].visible)
+        minimize_window(id);
+    else
+        focus_window(id);
+}
+
 static void activate_hit(int hit) {
     if (hit == HIT_START) {
         menu_open = !menu_open;
         list_open = 0;
         return;
     }
-    if (hit == HIT_TB_C1) { focus_window(WIN_C0); return; }
-    if (hit == HIT_TB_C2) { focus_window(WIN_C1); return; }
-    if (hit == HIT_TB_C3) { focus_window(WIN_C2); return; }
-    if (hit == HIT_TB_APP) { focus_window(WIN_APP); return; }
-    if (hit == HIT_TB_SYS) { focus_window(WIN_SYS); return; }
+    if (hit == HIT_TB_C1) { taskbar_window(WIN_C0); return; }
+    if (hit == HIT_TB_C2) { taskbar_window(WIN_C1); return; }
+    if (hit == HIT_TB_C3) { taskbar_window(WIN_C2); return; }
+    if (hit == HIT_TB_APP) { taskbar_window(WIN_APP); return; }
+    if (hit == HIT_TB_SYS) { taskbar_window(WIN_SYS); return; }
     if (hit == HIT_TB_WIN) {
         list_open = !list_open;
         list_sel = focus_win >= 0 ? focus_win : 0;
@@ -2277,6 +2357,9 @@ void gui_mouse_event(int x, int y, int buttons) {
     }
 
     if (release) {
+        if (snap_mode && drag_win >= 0)
+            snap_window(drag_win, snap_mode);
+        snap_mode = 0;
         if (pressed_hit != HIT_NONE && hit == pressed_hit)
             activate_hit(pressed_hit);
         pressed_hit = HIT_NONE;
