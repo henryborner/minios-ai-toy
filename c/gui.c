@@ -65,6 +65,7 @@
 #define HIT_SYS_KILL 1800
 #define HIT_FILES_ROW_BASE 1900
 #define HIT_FILES_BTN_BASE 2000
+#define HIT_ICON_BASE 2100
 #define CANVAS_MAX_W 600
 #define CANVAS_MAX_H 420
 
@@ -137,6 +138,9 @@ static volatile int pending_py_flag;
 static char pending_py_name[17];
 static int files_scroll;
 static int files_sel;
+void gui_desktop_theme(int t);
+static int icon_sel = -1;
+static int desktop_theme;
 static int sys_tab;
 static int sys_task_sel;
 static char clipboard[256];
@@ -1179,6 +1183,19 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "files")) {
         focus_window(WIN_FILES);
         term_puts(c, "Files window opened.\n");
+    } else if (streq(line, "theme classic")) {
+        gui_desktop_theme(0);
+        term_puts(c, "Theme: Classic Teal\n");
+    } else if (streq(line, "theme midnight")) {
+        extern void gui_theme(int dark);
+        gui_theme(1);
+        gui_desktop_theme(1);
+        term_puts(c, "Theme: Midnight Dark\n");
+    } else if (streq(line, "theme amber")) {
+        extern void gui_theme(int dark);
+        gui_theme(0);
+        gui_desktop_theme(2);
+        term_puts(c, "Theme: Warm Amber\n");
     } else if (streq(line, "theme light")) {
         extern void gui_theme(int dark);
         gui_theme(0);
@@ -1515,8 +1532,32 @@ static void taskbar_button(int x, int y, int w, const char *label, int hit, int 
     text(x + 4, y + 1, label, 0);
 }
 
+static const char *icon_names[6] = {
+    "Terminal", "Python", "Files", "Editor", "Paint", "System"
+};
+static const u8 icon_cols[6] = { 1, 2, 3, 5, 12, 6 };
+
+static void draw_icons(void) {
+    for (int i = 0; i < 6; i++) {
+        int x = 8, y = 34 + i * 34;
+        if (i == icon_sel) {
+            fill_rect(x - 2, y - 2, 88, 30, 1);
+            fill_rect(x - 1, y - 1, 86, 28, 11);
+        }
+        fill_rect(x, y, 16, 16, 0);
+        fill_rect(x + 2, y + 2, 12, 12, icon_cols[i]);
+        text(x + 22, y + 2, icon_names[i], i == icon_sel ? 0 : 15);
+    }
+}
+
+void gui_desktop_theme(int t) {
+    desktop_theme = t;
+    gui_dirty = 1;
+}
+
 static void draw_desktop(void) {
-    fill_rect(0, 0, scr_w, TASKBAR_Y, 3);
+    u8 bg = desktop_theme == 1 ? 1 : (desktop_theme == 2 ? 6 : 3);
+    fill_rect(0, 0, scr_w, TASKBAR_Y, bg);
     if (scr_w >= 640) {
         text(8, 5, "MiniOS 2.0 - Live MicroPython Desktop", 15);
         text(scr_w - 232, 5, "640x480 VBE | F4 Windows", 11);
@@ -1537,6 +1578,7 @@ static void draw_desktop(void) {
         fill_rect(bx + 1, 5, used, 5, 2);
     }
     fill_rect(0, 17, scr_w, 1, 2);
+    draw_icons();
 }
 
 static void draw_taskbar(void) {
@@ -2439,6 +2481,8 @@ static int hit_test(int x, int y) {
         struct window *w = &wins[id];
         if (!w->visible || !inside(x, y, w->x, w->y, w->w, w->h))
             continue;
+        int iy = 34;
+        (void)iy;
         if (inside(x, y, w->x + w->w - 46, w->y + 1, 13, 10))
             return HIT_MAX_BASE + id;
         if (inside(x, y, w->x + w->w - 32, w->y + 1, 13, 10))
@@ -2501,6 +2545,9 @@ static int hit_test(int x, int y) {
             return HIT_SCROLL_BASE + id;
         return HIT_BODY_BASE + id;
     }
+    for (int i = 0; i < 6; i++)
+        if (inside(x, y, 6, 32 + i * 34, 92, 30))
+            return HIT_ICON_BASE + i;
     return HIT_NONE;
 }
 
@@ -2832,6 +2879,35 @@ static void activate_hit(int hit) {
         int id = hit - HIT_LIST_BASE;
         list_open = 0;
         focus_window(id);
+        return;
+    }
+    if (hit >= HIT_ICON_BASE && hit < HIT_ICON_BASE + 6) {
+        static u32 last_icon_tick;
+        static int last_icon = -1;
+        int icon = hit - HIT_ICON_BASE;
+        icon_sel = icon;
+        gui_dirty = 1;
+        if (last_icon == icon && (u32)(ticks - last_icon_tick) < 40) {
+            last_icon = -1;
+            if (icon == 0 || icon == 1) {
+                focus_window(WIN_C0);
+                if (icon == 1)
+                    launch_python(&consoles[WIN_C0], "");
+            } else if (icon == 2) {
+                focus_window(WIN_FILES);
+            } else if (icon == 3) {
+                focus_window(WIN_C0);
+                launch_tool(&consoles[WIN_C0], "-m ed", "NOTES.TXT");
+            } else if (icon == 4) {
+                focus_window(WIN_C0);
+                launch_tool(&consoles[WIN_C0], "-m paint", "");
+            } else {
+                focus_window(WIN_SYS);
+            }
+        } else {
+            last_icon = icon;
+            last_icon_tick = ticks;
+        }
         return;
     }
     if (hit >= HIT_MENU_BASE && hit < HIT_MENU_BASE + MENU_ITEMS) {

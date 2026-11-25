@@ -223,13 +223,15 @@
 ### Stage 18：桌面图标、多主题换肤与全系统自动化回归收官
 **目标**：完成桌面视觉交互的最后一块拼图，并建立全自动防退化回归验收套件。
 
-- [ ] **18.1 桌面快捷图标（Desktop Icons）与三套精选配色主题**（`c/gui.c`）
+- [ ] **18.1 桌面快捷图标（Desktop Icons）与三套精选配色主题**
+  - 部分完成：左侧 Terminal/Python/Files/Editor/Paint/System 图标、单击选中/双击打开、classic/midnight/amber Shell 主题代码已接；右键菜单换肤和三主题全家福截图未做。（`c/gui.c`）
   - 在桌面空白区左侧绘制整齐的 `16×16` 像素级快捷方式图标列（`Terminal`、`Python`、`Files`、`Editor`、`Paint`、`System`），支持单击反色选中、双击直接打开对应窗口或应用；
   - 内置 3 套高对比度桌面配色主题（`Classic Teal` 经典青、`Midnight Dark` 暗夜蓝黑、`Warm Amber` 复古琥珀），支持 Shell 命令 `theme <name>` 与右键桌面菜单一键换肤！
 - [ ] **18.2 全自动无人值守冒烟回归套件 `tools/smoke_test.py` 与总文档收官**（`tools/smoke_test.py`、`c/README.md`、`README.md`）
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 

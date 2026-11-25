@@ -293,8 +293,10 @@ static void keyboard_scancode(u8 sc) {
         u8 make = sc & 0x7F;
         if (make == 0x2A || make == 0x36)
             shift_down = 0;
-        else if (make == 0x1D)
+        else if (make == 0x1D) {
             ctrl_down = 0;
+            ctrl_seen = 1;
+        }
         return;
     }
     if (sc == 0x2A || sc == 0x36) {
@@ -303,6 +305,7 @@ static void keyboard_scancode(u8 sc) {
     }
     if (sc == 0x1D) {
         ctrl_down = 1;
+        ctrl_seen = 1;
         return;
     }
     if (sc == 0x3B) { gui_special_pending = 1; return; }
