@@ -32,7 +32,7 @@ u32 heap_used;
 
 static u8 heap[64 * 1024];
 
-#define KBD_CONSOLES 4
+#define KBD_CONSOLES 8
 static volatile u8 kbd_buf[KBD_CONSOLES][64];
 static volatile u8 kbd_head[KBD_CONSOLES], kbd_tail[KBD_CONSOLES];
 static volatile u8 gui_special_pending;
@@ -4186,6 +4186,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 
