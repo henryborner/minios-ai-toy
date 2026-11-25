@@ -2142,7 +2142,7 @@ void gui_canvas_close(void) {
     canvas_open = 0;
     canvas_key_capture = 0;
     canvas_push_event(GUI_EV_CLOSE, 0, 0, 0, 0);
-    canvas_queue[canvas_qhead].closed = 1;
+    canvas_queue[(u8)((canvas_qhead + 31) & 31)].closed = 1;
     hide_window(WIN_APP);
     gui_dirty = 1;
 }
@@ -2482,10 +2482,16 @@ void gui_toggle_maximize(int id) {
         w->maximized = 0;
     }
     if (id >= WIN_C0 && id <= WIN_C2) {
-        consoles[id].x = w->x;
-        consoles[id].y = w->y;
-        consoles[id].w = w->w;
-        consoles[id].h = w->h;
+        sync_console_layout(id);
+    } else if (id == WIN_APP) {
+        canvas_w = w->w - 4;
+        canvas_h = w->h - 14;
+        if (canvas_w < 160) canvas_w = 160;
+        if (canvas_h < 110) canvas_h = 110;
+        if (canvas_w > CANVAS_MAX_W) canvas_w = CANVAS_MAX_W;
+        if (canvas_h > CANVAS_MAX_H) canvas_h = CANVAS_MAX_H;
+        w->w = canvas_w + 4;
+        w->h = canvas_h + 14;
     }
     focus_window(id);
     gui_dirty = 1;
@@ -2689,9 +2695,11 @@ static void activate_hit(int hit) {
         static int last_file_row = -1;
         int row = hit - HIT_FILES_ROW_BASE;
         if (last_file_row == row && (u32)(ticks - last_file_tick) < 20) {
+            extern int kernel_runtime_busy(void);
             last_file_row = -1;
             files_sel = row;
-            files_open_selected();
+            if (!kernel_runtime_busy())
+                files_open_selected();
         } else {
             last_file_row = row;
             last_file_tick = ticks;
@@ -3078,6 +3086,10 @@ void gui_key(char ch) {
         extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
         extern int kernel_unlink_gui(const char *name);
         extern void sync_savefs(void);
+        extern int kernel_runtime_busy(void);
+        if (kernel_runtime_busy() &&
+            (ch == '\n' || ch == 'x' || ch == 'X' || ch == 's' || ch == 'S'))
+            return;
         if (key == GUI_KEY_UP) {
             if (files_sel > 0) files_sel--;
             gui_dirty = 1;

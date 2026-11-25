@@ -1873,6 +1873,8 @@ static int task_spawn_user(const char *name) {
     return (int)tasks[child].pid;
 }
 
+static int user_str_ok(u32 ptr, u32 max);
+
 static int task_spawn_args(const char *name, u32 argv, u32 argc) {
     if (!scheduler_active || current_task < 0 || current_task >= NTASKS)
         return 0;
@@ -1896,7 +1898,7 @@ static int task_spawn_args(const char *name, u32 argv, u32 argc) {
     u32 ptrs[8];
     for (u32 i = 0; i < argc; i++) {
         u32 up = ((u32 *)argv)[i];
-        if (up < 0x400000 || up >= 0x800000) {
+        if (!user_str_ok(up, 64)) {
             tasks[child].state = TASK_FREE;
             task_free_frames(child);
             return 0;
@@ -2994,9 +2996,8 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 dst = ((u32 *)frame)[6];
         u32 max = ((u32 *)frame)[5];
         u32 size = 0;
-        if (name >= 0x400000 && name < 0x800000 &&
-            dst >= 0x400000 && dst < 0x800000 &&
-            max <= BIG_HEAP_SIZE && dst + max <= 0x800000) {
+        if (user_str_ok(name, 256) && max <= BIG_HEAP_SIZE &&
+            user_ptr_ok(dst, max)) {
             __asm__ __volatile__("sti");
             int ok = fs_load_file_to((const char *)name, (u8 *)dst, max, &size);
             __asm__ __volatile__("cli");
@@ -3122,7 +3123,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             gui_canvas_close();
             ((u32 *)frame)[7] = 0;
         } else if (op == 1) {
-            if (title >= 0x400000 && title < 0x800000) {
+            if (user_str_ok(title, 64)) {
                 gui_canvas_open((const char *)title);
                 ((u32 *)frame)[7] = 0;
             } else {
