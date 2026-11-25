@@ -1609,10 +1609,8 @@ static void draw_files(void) {
         u32 v = size;
         do { sz[n++] = (char)('0' + v % 10); v /= 10; } while (v);
         int sx = x + w->w - 8 - n * 8;
-        while (n) {
-            n--;
-            draw_char(sx + n * 8, ry, sz[n], 8, 1);
-        }
+        for (int k = 0; k < n; k++)
+            draw_char(sx + k * 8, ry, sz[n - 1 - k], 8, 1);
     }
 }
 
@@ -1620,10 +1618,8 @@ static void num_text(int x, int y, u32 v, u8 col) {
     char b[12];
     int n = 0;
     do { b[n++] = (char)('0' + v % 10); v /= 10; } while (v);
-    while (n) {
-        n--;
-        draw_char(x + n * 8, y, b[n], col, 1);
-    }
+    for (int k = 0; k < n; k++)
+        draw_char(x + k * 8, y, b[n - 1 - k], col, 1);
 }
 
 static void files_open_selected(void) {
