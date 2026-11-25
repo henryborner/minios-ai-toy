@@ -1308,6 +1308,19 @@ static void run_command(struct console *c, char *line) {
         launch_tool(c, "-m demos", "");
     } else if (starts_with(line, "plot ")) {
         launch_tool(c, "-m demos", line + 5);
+    } else if (starts_with(line, "ls | grep ")) {
+        kernel_pipe_reset(3);
+        kernel_pipe_ls(3);
+        char arg[80];
+        int n = 0;
+        const char *pat = line + 10;
+        const char *pre = "grep ";
+        while (*pre && n < 76)
+            arg[n++] = *pre++;
+        while (*pat && n < 76)
+            arg[n++] = *pat++;
+        arg[n] = 0;
+        launch_tool(c, "-m futil", arg);
     } else if (streq(line, "futil")) {
         launch_tool(c, "-m futil", "");
     } else if (starts_with(line, "futil ")) {

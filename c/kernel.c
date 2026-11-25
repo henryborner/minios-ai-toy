@@ -2661,6 +2661,34 @@ void sync_savefs(void) {
         gui_sys_print("[savefs] snapshot FAILED.\n");
 }
 
+int kernel_pipe_reset(int id) {
+    return pipe_reset(id);
+}
+
+int kernel_pipe_ls(int id) {
+    int any = 0;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used)
+            continue;
+        for (int j = 0; j < 16 && ramfiles[i].name[j]; j++)
+            pipe_write(id, (const u8 *)&ramfiles[i].name[j], 1);
+        pipe_write(id, (const u8 *)"\n", 1);
+        any = 1;
+    }
+    if (fs_load_dir()) {
+        struct fs_header *h = (struct fs_header *)fs_dir;
+        struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+        for (u32 i = 0; i < h->count; i++) {
+            for (int j = 0; j < 16 && entries[i].name[j]; j++)
+                pipe_write(id, (const u8 *)&entries[i].name[j], 1);
+            pipe_write(id, (const u8 *)"\n", 1);
+            any = 1;
+        }
+    }
+    __asm__ __volatile__("sti");
+    return any;
+}
+
 void list_ram_files(void) {
     int any = 0;
     for (int i = 0; i < MAX_RAMFILES; i++) {
@@ -3503,7 +3531,17 @@ void kmain(void) {
 
     interrupts_on();
     savefs_restore();
-    if (ramfile_find("AUTOEXEC.PY") >= 0)
+    u8 safe_mode = 0;
+    for (u32 i = 0; i < 300000u; i++) {
+        if (inb(0x64) & 1) {
+            u8 sc = inb(0x60);
+            if (sc == 0x1D || sc == 0x9D)
+                safe_mode = 1;
+        }
+    }
+    if (safe_mode && ramfile_find("AUTOEXEC.PY") >= 0)
+        gui_sys_print("[boot] AUTOEXEC.PY skipped (Safe Mode)\n");
+    if (!safe_mode && ramfile_find("AUTOEXEC.PY") >= 0)
         gui_request_py("AUTOEXEC.PY");
     gui_redraw();
 

@@ -99,7 +99,22 @@ def cmd_grep(args):
         print("usage: grep PATTERN [FILE]")
         return
     pat = args[0]
-    names = args[1:] if len(args) > 1 else os.listdir()
+    if len(args) == 1:
+        data = b""
+        while True:
+            chunk = minios.pipe_read(3, 512)
+            if not chunk:
+                break
+            data += chunk
+        hit = 0
+        for line in data.decode().splitlines():
+            if pat in line:
+                hi = line.replace(pat, "\x1b[31m" + pat + "\x1b[0m")
+                print(hi)
+                hit += 1
+        print("matches:", hit)
+        return
+    names = args[1:]
     hit = 0
     for name in names:
         try:
