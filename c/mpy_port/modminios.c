@@ -150,15 +150,17 @@ static mp_obj_t minios_event(void) {
     struct minios_canvas_event ev;
     if (!sys_canvas_event(&ev))
         return mp_const_none;
-    mp_obj_t items[6] = {
+    mp_obj_t items[8] = {
+        mp_obj_new_int_from_uint(ev.type),
         mp_obj_new_int(ev.x),
         mp_obj_new_int(ev.y),
         mp_obj_new_int_from_uint(ev.buttons),
+        mp_obj_new_int_from_uint(ev.key),
         mp_obj_new_int_from_uint(ev.closed),
         mp_obj_new_int_from_uint(ev.width),
         mp_obj_new_int_from_uint(ev.height),
     };
-    return mp_obj_new_tuple(6, items);
+    return mp_obj_new_tuple(8, items);
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(minios_event_obj, minios_event);
 

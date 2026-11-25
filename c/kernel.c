@@ -2676,8 +2676,10 @@ struct user_sysinfo {
 };
 
 struct user_canvas_event {
+    u32 type;
     int x, y;
     u32 buttons;
+    u32 key;
     u32 closed;
     u32 width, height;
 };
@@ -3087,9 +3089,11 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             struct gui_canvas_event ev;
             if (gui_canvas_event(&ev)) {
                 struct user_canvas_event *ue = (struct user_canvas_event *)out;
+                ue->type = ev.type;
                 ue->x = ev.x;
                 ue->y = ev.y;
                 ue->buttons = ev.buttons;
+                ue->key = ev.key;
                 ue->closed = ev.closed;
                 ue->width = ev.width;
                 ue->height = ev.height;

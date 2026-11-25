@@ -123,6 +123,10 @@ static int ctx_count;
 static int ctx_target;
 
 static u8 *canvas_buf;
+static u8 *canvas_back;
+static u8 *canvas_target;
+static struct gui_canvas_event canvas_queue[32];
+static u8 canvas_qhead, canvas_qtail;
 static u8 *term_attrs;
 static u8 term_default_attr = 0xF0;
 static int term_dark;
@@ -138,8 +142,7 @@ static int sel_id = -1;
 static int sel_active;
 static int sel_r0, sel_c0, sel_r1, sel_c1;
 static char canvas_title[32] = "Canvas";
-static struct gui_canvas_event canvas_ev;
-static u8 canvas_ev_pending;
+
 
 static int pressed_hit;
 static int drag_win;
@@ -1982,9 +1985,25 @@ static void draw_context(void) {
 }
 
 static void canvas_pixel(int x, int y, u8 color) {
-    if (canvas_buf && (unsigned)x < (unsigned)canvas_w &&
+    if (canvas_target && (unsigned)x < (unsigned)canvas_w &&
         (unsigned)y < (unsigned)canvas_h)
-        canvas_buf[y * CANVAS_MAX_W + x] = color;
+        canvas_target[y * CANVAS_MAX_W + x] = color;
+}
+
+static void canvas_push_event(u32 type, int x, int y, u32 buttons, u32 key) {
+    u8 next = (u8)((canvas_qhead + 1) & 31);
+    if (next == canvas_qtail)
+        canvas_qtail = (u8)((canvas_qtail + 1) & 31);
+    struct gui_canvas_event *e = &canvas_queue[canvas_qhead];
+    e->type = type;
+    e->x = x;
+    e->y = y;
+    e->buttons = buttons;
+    e->key = key;
+    e->closed = 0;
+    e->width = (u32)canvas_w;
+    e->height = (u32)canvas_h;
+    canvas_qhead = next;
 }
 
 int gui_canvas_w(void) {
@@ -2024,6 +2043,9 @@ void gui_canvas_open(const char *title) {
     if (!canvas_buf) {
         u32 pages = ((u32)(CANVAS_MAX_W * CANVAS_MAX_H) + 4095u) / 4096u;
         canvas_buf = (u8 *)kernel_alloc_pages_zero(pages);
+        canvas_back = (u8 *)kernel_alloc_pages_zero(pages);
+        canvas_target = canvas_buf;
+        canvas_qhead = canvas_qtail = 0;
     }
     wins[WIN_APP].w = canvas_w + 4;
     wins[WIN_APP].h = canvas_h + 14;
@@ -2038,27 +2060,33 @@ void gui_canvas_open(const char *title) {
     wins[WIN_APP].title = canvas_title;
     canvas_open = 1;
     canvas_batch = 0;
-    canvas_ev.closed = 0;
-    canvas_ev.width = (u32)canvas_w;
-    canvas_ev.height = (u32)canvas_h;
+    canvas_target = canvas_buf;
+    canvas_qhead = canvas_qtail = 0;
     focus_window(WIN_APP);
     gui_dirty = 1;
 }
 
 void gui_canvas_close(void) {
     canvas_open = 0;
-    canvas_ev.closed = 1;
-    canvas_ev_pending = 1;
+    canvas_push_event(GUI_EV_CLOSE, 0, 0, 0, 0);
+    canvas_queue[canvas_qhead].closed = 1;
     hide_window(WIN_APP);
     gui_dirty = 1;
 }
 
 void gui_canvas_batch(int on) {
     canvas_batch = on;
+    canvas_target = (on && canvas_back) ? canvas_back : canvas_buf;
 }
 
 void gui_canvas_present(void) {
+    if (canvas_buf && canvas_back) {
+        for (int y = 0; y < canvas_h; y++)
+            for (int x = 0; x < canvas_w; x++)
+                canvas_buf[y * CANVAS_MAX_W + x] = canvas_back[y * CANVAS_MAX_W + x];
+    }
     canvas_batch = 0;
+    canvas_target = canvas_buf;
     gui_dirty = 1;
 }
 
@@ -2066,8 +2094,9 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
     if (!cmd || !canvas_buf)
         return -1;
     if (cmd->op == 0) {
-        for (int i = 0; i < canvas_w * canvas_h; i++)
-            canvas_buf[i] = (u8)cmd->color;
+        for (int yy = 0; yy < canvas_h; yy++)
+            for (int xx = 0; xx < canvas_w; xx++)
+                canvas_target[yy * CANVAS_MAX_W + xx] = (u8)cmd->color;
     } else if (cmd->op == 1) {
         canvas_pixel((int)cmd->x, (int)cmd->y, (u8)cmd->color);
     } else if (cmd->op == 2) {
@@ -2124,10 +2153,10 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
 }
 
 int gui_canvas_event(struct gui_canvas_event *out) {
-    if (!canvas_ev_pending || !out)
+    if (!out || canvas_qhead == canvas_qtail)
         return 0;
-    *out = canvas_ev;
-    canvas_ev_pending = 0;
+    *out = canvas_queue[canvas_qtail];
+    canvas_qtail = (u8)((canvas_qtail + 1) & 31);
     return 1;
 }
 
@@ -2467,9 +2496,9 @@ static void resize_move(int x, int y) {
         if (canvas_h > CANVAS_MAX_H) canvas_h = CANVAS_MAX_H;
         w->w = canvas_w + 4;
         w->h = canvas_h + 14;
-        canvas_ev.width = (u32)canvas_w;
-        canvas_ev.height = (u32)canvas_h;
-        canvas_ev_pending = 1;
+        canvas_push_event(GUI_EV_RESIZE, 0, 0, 0, 0);
+        canvas_queue[(u8)((canvas_qhead + 31) & 31)].width = (u32)canvas_w;
+        canvas_queue[(u8)((canvas_qhead + 31) & 31)].height = (u32)canvas_h;
     }
     gui_dirty = 1;
 }
@@ -2643,8 +2672,8 @@ static void activate_hit(int hit) {
         int id = hit - HIT_CLOSE_BASE;
         if (id == WIN_APP) {
             canvas_open = 0;
-            canvas_ev.closed = 1;
-            canvas_ev_pending = 1;
+            canvas_push_event(GUI_EV_CLOSE, 0, 0, 0, 0);
+            canvas_queue[(u8)((canvas_qhead + 31) & 31)].closed = 1;
         }
         hide_window(id);
         return;
@@ -2774,10 +2803,14 @@ void gui_mouse_event(int x, int y, int buttons) {
     if (wins[WIN_APP].visible &&
         inside(x, y, wins[WIN_APP].x + 2, wins[WIN_APP].y + 12,
                canvas_w, canvas_h)) {
-        canvas_ev.x = x - (wins[WIN_APP].x + 2);
-        canvas_ev.y = y - (wins[WIN_APP].y + 12);
-        canvas_ev.buttons = (u32)buttons;
-        canvas_ev_pending = 1;
+        int evx = x - (wins[WIN_APP].x + 2);
+        int evy = y - (wins[WIN_APP].y + 12);
+        if (press)
+            canvas_push_event(GUI_EV_MOUSE_DOWN, evx, evy, (u32)buttons, 0);
+        else if (release)
+            canvas_push_event(GUI_EV_MOUSE_UP, evx, evy, (u32)buttons, 0);
+        else
+            canvas_push_event(GUI_EV_MOUSE_MOVE, evx, evy, (u32)buttons, 0);
     }
 
     if (press) {
@@ -2941,6 +2974,11 @@ void gui_key(char ch) {
             hide_window(WIN_ABOUT);
             focus_window(WIN_C0);
         }
+        return;
+    }
+    if (focus_win == WIN_APP) {
+        canvas_push_event(GUI_EV_KEY, 0, 0, 0, (u32)key);
+        gui_dirty = 1;
         return;
     }
     if (focus_win == WIN_FILES) {

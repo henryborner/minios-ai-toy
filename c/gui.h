@@ -32,9 +32,18 @@ struct gui_canvas_cmd {
     u32 len;
 };
 
+#define GUI_EV_MOUSE_DOWN 1
+#define GUI_EV_MOUSE_UP   2
+#define GUI_EV_MOUSE_MOVE 3
+#define GUI_EV_KEY        4
+#define GUI_EV_CLOSE      5
+#define GUI_EV_RESIZE     6
+
 struct gui_canvas_event {
+    u32 type;
     int x, y;
     u32 buttons;
+    u32 key;
     u32 closed;
     u32 width, height;
 };

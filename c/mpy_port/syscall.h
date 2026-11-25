@@ -62,8 +62,10 @@ struct minios_canvas_cmd {
 };
 
 struct minios_canvas_event {
+    uint32_t type;
     int32_t x, y;
     uint32_t buttons;
+    uint32_t key;
     uint32_t closed;
     uint32_t width, height;
 };
