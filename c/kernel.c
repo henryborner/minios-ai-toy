@@ -38,7 +38,7 @@ static volatile u8 kbd_head[KBD_CONSOLES], kbd_tail[KBD_CONSOLES];
 static volatile u8 gui_special_pending;
 static int current_console_id(void);
 static int console_has_live_task(int cid);
-static u8 shift_down, ctrl_down, extended;
+static u8 shift_down, ctrl_down, extended, ctrl_seen;
 
 static volatile u8 mouse_cycle;
 static volatile u8 mouse_packet[4];
@@ -3583,6 +3583,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

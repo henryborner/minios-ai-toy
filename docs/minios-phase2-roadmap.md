@@ -212,7 +212,7 @@
   - 实现 4 个内核级 4 KB 内存环形管道槽（物理页按需从帧池分配）：提供非阻塞/阻塞读写与关闭引用计数系统调用；
   - 在 Shell 中支持简易单级命令管道 `cmd1 | cmd2`（或先通过缓冲区重定向实现如 `ls | grep BIN`、`xxd TEST.TXT | grep MiniOS`），并在 `minios` 模块暴露进程间消息收发接口，使后台小任务与前台 Python 窗口可实时联动。
 - [ ] **17.2 开机自启钩子 `AUTOEXEC.PY`（含 `Ctrl` 安全模式绕过）**
-  - 部分完成：AUTOEXEC.PY 自动运行实测 AUTO OK；启动 500ms 轮询 ctrl_down/Safe Mode 提示已加，但 QEMU sendkey ctrl 注入未触发，按住 Ctrl 冷启动截图仍待补。
+  - 部分完成：AUTOEXEC.PY 自动运行实测 AUTO OK；启动 500ms 轮询 ctrl_down+ctrl_seen 已加，Safe Mode 提示就绪，但 QEMU sendkey ctrl/ctrl-a 注入未命中启动窗口，冷启动截图仍待补。
   - 系统启动完成 `savefs_restore()` 并首次绘制桌面后，检查 `RAMFS` 是否存在 `AUTOEXEC.PY`：
     - 若存在且启动时未按住 `Ctrl` 键，则在 Console 1 自动执行 `py AUTOEXEC.PY`；
     - **防锁死设计**：若启动时检测到 `ctrl_down`（或用户在执行中按 `Ctrl-C`），立即跳过 `AUTOEXEC.PY` 并提示 `[boot] AUTOEXEC.PY skipped (Safe Mode)`，确保写坏自启脚本也绝不会变砖！
@@ -230,6 +230,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 
