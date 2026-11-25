@@ -1,0 +1,27 @@
+# Third-party notices
+
+MiniOS is an AI-generated hobby project. It is not affiliated with or endorsed
+by the projects below.
+
+## MicroPython
+
+`MPY.BIN` contains a compiled build of **MicroPython v1.24.1** for the MiniOS
+Ring 3 ABI. MicroPython is Copyright (c) 2013-2025 Damien P. George and
+contributors, licensed under the MIT License.
+
+Upstream source: https://github.com/micropython/micropython
+
+The upstream MicroPython source tree is intentionally not committed to this
+repository; the checked-in `c/mpy_port/` contains only the MiniOS portability
+layer, build glue, frozen Python tools, and generated binary image.
+
+## Toolchain
+
+The repository does not distribute LLVM/clang, NASM, QEMU, or the mpy-cross
+binary. Those are build/test dependencies installed separately.
+
+## Safety
+
+This software is provided for entertainment and AI/OS experimentation only.
+It has not been security-audited. Do not use it for real data, production,
+networking, or physical hardware.
