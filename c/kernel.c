@@ -372,6 +372,7 @@ static void mouse_byte(u8 data) {
 void irq1_handler(void) {
     u8 st = inb(0x64);
     u8 sc = inb(0x60);
+    serial_puts(st & 0x20 ? "[A]" : "[K]");
     if (st & 0x20)
         mouse_byte(sc);
     else
@@ -390,6 +391,7 @@ void irq6_handler(void) {
 void irq12_handler(void) {
     u8 st = inb(0x64);
     u8 data = inb(0x60);
+    serial_puts(st & 0x20 ? "[A]" : "[K]");
     if (st & 0x20)
         mouse_byte(data);
     else
@@ -2761,7 +2763,9 @@ int kernel_unlink_gui(const char *name) {
 
 int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind) {
     struct user_dirent d;
-    if (!sys_readdir(index, &d))
+    int ok = sys_readdir(index, &d);
+    __asm__ __volatile__("sti"); /* sys_readdir leaves IF=0 for syscall context */
+    if (!ok)
         return 0;
     for (int j = 0; j < 16; j++)
         name[j] = d.name[j];
@@ -3212,6 +3216,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 
