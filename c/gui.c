@@ -1570,7 +1570,7 @@ static void draw_files(void) {
         int ry = y + 30 + r * 9;
         if (r == files_sel)
             fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
-        int c = (kind == 2) ? 10 : 3;
+        int c = (r == files_sel) ? 0 : ((kind == 2) ? 10 : 3);
         text(x + 6, ry, name, c);
         int n = 0;
         char sz[16];
