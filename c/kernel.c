@@ -1110,7 +1110,7 @@ int run_module(const char *name) {
 /* -----------------------------------------------------------------------------
  * Tasks: up to four slots, each with its own page directory.
  * ----------------------------------------------------------------------------- */
-#define NTASKS 9
+#define TASK_INIT_CAP 16
 #define TASK_FREE    0
 #define TASK_READY   1
 #define TASK_RUNNING 2
@@ -1121,9 +1121,6 @@ int run_module(const char *name) {
 #define TIME_SLICE_TICKS 1
 
 /* One large Ring 3 task for the MicroPython-class layout. */
-#define BIG_FIRST_SLOT  6
-#define BIG_SLOTS       3
-#define BIG_TASK_SLOT    7
 #define BIG_CODE_PHYS    0x00100000u
 #define BIG_CODE_MAX     0x00080000u
 #define BIG_USER_CODE    0x00400000u
@@ -1149,6 +1146,11 @@ struct task {
     u32 kesp;
     u32 *tf;
     u32 cr3;
+    u32 *pd;
+    u32 *upt;
+    u8 *kstack;
+    u16 kstack_pages;
+    struct fd_entry *fds;
     u32 kstack_top;
     u32 code_phys;
     u32 stack_phys;
@@ -1171,13 +1173,15 @@ struct task {
     u8 fpu[108];
 };
 
-static struct task tasks[NTASKS];
+static struct task *tasks;
+static int task_cap;
 static int current_task;
 static u32 quantum_ticks;
+static u8 task0_kstack[8192] __attribute__((aligned(16)));
 static u32 shared_ro_phys, shared_ro_pages, shared_ro_image, shared_ro_refs;
 
 static void wake_kbd_tasks(int c) {
-    for (int t = 1; t < NTASKS; t++) {
+    for (int t = 1; t < task_cap; t++) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].wait_kbd == (u8)(c + 1)) {
             tasks[t].wait_kbd = 0;
             tasks[t].state = TASK_READY;
@@ -1199,19 +1203,19 @@ static void fpu_task_default(u8 *dst) {
 }
 
 u32 kernel_current_pid(void) {
-    if (scheduler_active && current_task >= 0 && current_task < NTASKS)
+    if (scheduler_active && current_task >= 0 && current_task < task_cap)
         return tasks[current_task].pid;
     return 0;
 }
 
 int kernel_task_console(void) {
-    if (scheduler_active && current_task > 0 && current_task < NTASKS)
+    if (scheduler_active && current_task > 0 && current_task < task_cap)
         return tasks[current_task].console_id;
     return -1;
 }
 
 static int current_console_id(void) {
-    if (scheduler_active && current_task >= 0 && current_task < NTASKS)
+    if (scheduler_active && current_task >= 0 && current_task < task_cap)
         return tasks[current_task].console_id;
     return gui_focused_console();
 }
@@ -1231,7 +1235,7 @@ int kernel_console_has_live(int cid) {
 }
 
 static int console_has_live_task(int cid) {
-    for (int t = 1; t < NTASKS; t++) {
+    for (int t = 1; t < task_cap; t++) {
         if (tasks[t].state != TASK_FREE && tasks[t].state != TASK_DONE &&
             tasks[t].console_id == cid)
             return 1;
@@ -1250,7 +1254,7 @@ struct fd_entry {
     u32 offset;
     char name[16];
 };
-static struct fd_entry fd_table[NTASKS][MAX_FDS];
+
 
 #define MAX_RAMFILES 16
 #define NPIPES 4
@@ -1270,10 +1274,6 @@ struct ramfile {
 static struct ramfile ramfiles[MAX_RAMFILES];
 
 static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
-static u32 task_pd[NTASKS][1024] __attribute__((aligned(4096)));
-static u32 task_user_pt[NTASKS][1024] __attribute__((aligned(4096)));
-static u8 task_kstack[NTASKS][4096] __attribute__((aligned(16)));
-static u8 big_kstack[BIG_SLOTS][8192] __attribute__((aligned(16)));
 
 /* Direct-map the 4-16 MB physical window at 16-28 MB (declared above). */
 static u32 frame_bitmap[(FRAME_COUNT + 31) / 32];
@@ -1403,17 +1403,17 @@ static void task_system_init(void) {
 
 static void task_free_heap(int slot) {
     for (int i = 0; i < tasks[slot].heap_pages; i++) {
-        u32 pte = task_user_pt[slot][HEAP_PAGE_INDEX + i];
+        u32 pte = tasks[slot].upt[HEAP_PAGE_INDEX + i];
         if (pte & 1)
             frame_free_pages(pte & 0xFFFFF000u, 1);
-        task_user_pt[slot][HEAP_PAGE_INDEX + i] = 0;
+        tasks[slot].upt[HEAP_PAGE_INDEX + i] = 0;
     }
     tasks[slot].heap_pages = 0;
     tasks[slot].heap_phys = 0;
 }
 
 static void __attribute__((unused)) task_clear_all(void) {
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state != TASK_FREE) {
             if (tasks[t].code_phys)
                 frame_free_pages(tasks[t].code_phys, tasks[t].code_pages);
@@ -1442,21 +1442,58 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].tf = 0;
         tasks[t].shared_ro = 0;
         for (int f = 0; f < MAX_FDS; f++)
-            fd_table[t][f].used = 0;
+            tasks[t].fds[f].used = 0;
     }
 }
 
-static void task_fill_pd(int slot) {
+static void task_tables_grow(void) {
+    int ncap = task_cap ? task_cap * 2 : TASK_INIT_CAP;
+    u32 bytes = (u32)(ncap * sizeof(struct task));
+    u32 pages = (bytes + 4095u) / 4096u;
+    struct task *nt = (struct task *)kernel_alloc_pages_zero(pages);
+    if (!nt)
+        return;
+    for (int i = 0; i < task_cap; i++)
+        nt[i] = tasks[i];
+    if (tasks)
+        kernel_free_pages_ptr(tasks,
+            ((u32)(task_cap * sizeof(struct task)) + 4095u) / 4096u);
+    tasks = nt;
+    task_cap = ncap;
+}
+
+static void task_tables_init(void) {
+    if (task_cap)
+        return;
+    task_tables_grow();
+}
+
+static int task_alloc_slot(void) {
+    task_tables_init();
+    for (int t = 1; t < task_cap; t++)
+        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+            return t;
+    int old = task_cap;
+    task_tables_grow();
+    return task_cap > old ? old : -1;
+}
+
+static int task_fill_pd(int slot) {
+    tasks[slot].pd = (u32 *)kernel_alloc_pages_zero(1);
+    tasks[slot].upt = (u32 *)kernel_alloc_pages_zero(1);
+    if (!tasks[slot].pd || !tasks[slot].upt)
+        return 0;
     for (int i = 0; i < 1024; i++) {
-        task_pd[slot][i] = 0;
-        task_user_pt[slot][i] = 0;
+        tasks[slot].pd[i] = 0;
+        tasks[slot].upt[i] = 0;
     }
-    task_pd[slot][0] = (u32)task_kernel_pt | 0x003;
-    task_pd[slot][1] = (u32)task_user_pt[slot] | 0x007;
+    tasks[slot].pd[0] = (u32)task_kernel_pt | 0x003;
+    tasks[slot].pd[1] = (u32)tasks[slot].upt | 0x007;
     for (int i = 0; i < 3; i++)
-        task_pd[slot][4 + i] = (u32)direct_pt[i] | 0x003;
+        tasks[slot].pd[4 + i] = (u32)direct_pt[i] | 0x003;
     if (vbe_active)
-        task_pd[slot][VBE_PDE_INDEX] = vbe_pde_entry;
+        tasks[slot].pd[VBE_PDE_INDEX] = vbe_pde_entry;
+    return 1;
 }
 
 static void vbe_init(void) {
@@ -1499,6 +1536,8 @@ static void vbe_init(void) {
     mouse_y = scr_h / 2;
 }
 
+static void task_free_frames(int slot);
+
 static void task_init_kernel_context(int slot, u32 *frame) {
     u32 *ks = (u32 *)((u32)frame - 24);
     for (int i = 0; i < 5; i++)
@@ -1519,14 +1558,20 @@ static void task_set_name(int slot, const char *name) {
     tasks[slot].name[i] = 0;
 }
 
+static int task_alloc_runtime(int slot, int kpages) {
+    tasks[slot].kstack = (u8 *)kernel_alloc_pages_zero((u32)kpages);
+    tasks[slot].kstack_pages = (u16)kpages;
+    tasks[slot].fds = (struct fd_entry *)kernel_alloc_pages_zero(1);
+    if (!tasks[slot].kstack || !tasks[slot].fds ||
+        !task_fill_pd(slot))
+        return 0;
+    for (int f = 0; f < MAX_FDS; f++)
+        tasks[slot].fds[f].used = 0;
+    return 1;
+}
+
 static int task_create(const char *name, const u8 *src, const u8 *end) {
-    int slot = -1;
-    for (int t = 1; t < BIG_FIRST_SLOT; t++) {
-        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
-            slot = t;
-            break;
-        }
-    }
+    int slot = task_alloc_slot();
     if (slot < 0)
         return -1;
 
@@ -1535,9 +1580,11 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
         return -1;
     u32 code = frame_alloc_pages(1);
     u32 stack = frame_alloc_pages(1);
-    if (!code || !stack) {
+    if (!code || !stack || !task_alloc_runtime(slot, 1)) {
         if (code) frame_free_pages(code, 1);
         if (stack) frame_free_pages(stack, 1);
+        task_free_frames(slot);
+        tasks[slot].state = TASK_FREE;
         return -1;
     }
 
@@ -1550,11 +1597,10 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     for (u32 i = 0; i < len; i++)
         codev[i] = src[i];
 
-    task_fill_pd(slot);
-    task_user_pt[slot][0] = code | 0x007;
-    task_user_pt[slot][1] = stack | 0x007;
+    tasks[slot].upt[0] = code | 0x007;
+    tasks[slot].upt[1] = stack | 0x007;
 
-    u32 top = (u32)(task_kstack[slot] + 4096);
+    u32 top = (u32)(tasks[slot].kstack + tasks[slot].kstack_pages * 4096);
     u32 *frame = (u32 *)(top - 52);
     for (int i = 0; i < 13; i++)
         frame[i] = 0;
@@ -1566,7 +1612,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
 
     task_init_kernel_context(slot, frame);
     tasks[slot].kstack_top = top;
-    tasks[slot].cr3 = (u32)task_pd[slot];
+    tasks[slot].cr3 = (u32)tasks[slot].pd;
     tasks[slot].code_phys = code;
     tasks[slot].stack_phys = stack;
     tasks[slot].heap_phys = 0;
@@ -1585,19 +1631,12 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].kill_pending = 0;
     tasks[slot].wait_kbd = 0;
     fpu_task_default(tasks[slot].fpu);
-    for (int f = 0; f < MAX_FDS; f++)
-        fd_table[slot][f].used = 0;
     task_set_name(slot, name);
     return slot;
 }
 
 static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
-    int slot = -1;
-    for (int s = BIG_FIRST_SLOT; s < BIG_FIRST_SLOT + BIG_SLOTS; s++)
-        if (tasks[s].state == TASK_FREE || tasks[s].state == TASK_DONE) {
-            slot = s;
-            break;
-        }
+    int slot = task_alloc_slot();
     if (slot < 0)
         return -1;
     if (image > BIG_CODE_MAX || bss > BIG_CODE_MAX - image)
@@ -1630,14 +1669,22 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
             data_pages = code_pages;
         }
     }
+    if (use_shared && !shared_ro_phys && shared_ro_refs) {
+        use_shared = 0;
+        ro_pages = 0;
+        data_pages = code_pages;
+    }
 
     u32 code = data_pages ? frame_alloc_pages(data_pages) : 0;
     u32 stack = frame_alloc_pages(BIG_STACK_PAGES);
     u32 heap = frame_alloc_pages(BIG_HEAP_PAGES);
-    if ((data_pages && !code) || !stack || !heap) {
+    if ((data_pages && !code) || !stack || !heap ||
+        !task_alloc_runtime(slot, 2)) {
         if (code) frame_free_pages(code, data_pages);
         if (stack) frame_free_pages(stack, BIG_STACK_PAGES);
         if (heap) frame_free_pages(heap, BIG_HEAP_PAGES);
+        task_free_frames(slot);
+        tasks[slot].state = TASK_FREE;
         return -1;
     }
 
@@ -1649,6 +1696,8 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
                 if (code) frame_free_pages(code, data_pages);
                 frame_free_pages(stack, BIG_STACK_PAGES);
                 frame_free_pages(heap, BIG_HEAP_PAGES);
+                task_free_frames(slot);
+                tasks[slot].state = TASK_FREE;
                 return -1;
             }
             for (u32 i = 0; i < ro_pages * 0x1000u; i++)
@@ -1671,21 +1720,20 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     frame_zero(stack, BIG_STACK_PAGES);
     frame_zero(heap, BIG_HEAP_PAGES);
 
-    task_fill_pd(slot);
     for (u32 i = 0; i < ro_pages; i++)
-        task_user_pt[slot][i] = (shared_ro_phys + i * 0x1000) | 0x005;
+        tasks[slot].upt[i] = (shared_ro_phys + i * 0x1000) | 0x005;
     for (u32 i = 0; i < data_pages; i++)
-        task_user_pt[slot][ro_pages + i] = (code + i * 0x1000) | 0x007;
+        tasks[slot].upt[ro_pages + i] = (code + i * 0x1000) | 0x007;
 
     u32 stack_page = (BIG_USER_STACK - BIG_USER_CODE) / 0x1000;
     for (u32 i = 0; i < BIG_STACK_PAGES; i++)
-        task_user_pt[slot][stack_page + i] = (stack + i * 0x1000) | 0x007;
+        tasks[slot].upt[stack_page + i] = (stack + i * 0x1000) | 0x007;
 
     u32 heap_page = (BIG_USER_HEAP - BIG_USER_CODE) / 0x1000;
     for (u32 i = 0; i < BIG_HEAP_PAGES; i++)
-        task_user_pt[slot][heap_page + i] = (heap + i * 0x1000) | 0x007;
+        tasks[slot].upt[heap_page + i] = (heap + i * 0x1000) | 0x007;
 
-    u32 top = (u32)(big_kstack[slot - BIG_FIRST_SLOT] + sizeof(big_kstack[0]));
+    u32 top = (u32)(tasks[slot].kstack + tasks[slot].kstack_pages * 4096);
     u32 *frame = (u32 *)(top - 52);
     for (int i = 0; i < 13; i++)
         frame[i] = 0;
@@ -1697,7 +1745,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
 
     task_init_kernel_context(slot, frame);
     tasks[slot].kstack_top = top;
-    tasks[slot].cr3 = (u32)task_pd[slot];
+    tasks[slot].cr3 = (u32)tasks[slot].pd;
     tasks[slot].code_phys = code;
     tasks[slot].stack_phys = stack;
     tasks[slot].heap_phys = heap;
@@ -1719,7 +1767,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].wait_kbd = 0;
     fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
-        fd_table[slot][f].used = 0;
+        tasks[slot].fds[f].used = 0;
     task_set_name(slot, name);
     return slot;
 }
@@ -1730,10 +1778,14 @@ static void start_tasks(int first) {
 }
 
 static void sched_init_task0(void) {
+    task_tables_init();
     tasks[0].state = TASK_RUNNING;
     task_set_name(0, "kernel");
     tasks[0].cr3 = (u32)sched_safe_pd;
-    tasks[0].kstack_top = 0x00090000u;
+    tasks[0].pd = sched_safe_pd;
+    tasks[0].kstack = task0_kstack;
+    tasks[0].kstack_pages = 2;
+    tasks[0].kstack_top = (u32)task0_kstack + sizeof(task0_kstack);
     tasks[0].console_id = 0;
     tasks[0].pid = 0;
     tasks[0].kesp = 0;
@@ -1748,17 +1800,17 @@ static void sched_init_task0(void) {
 static int next_ready(void) {
     static int rr_cursor = 1;
     if (current_task == 0) {
-        for (int k = 0; k < NTASKS - 1; k++) {
-            int t = 1 + (rr_cursor - 1 + k) % (NTASKS - 1);
+        for (int k = 0; k < task_cap - 1; k++) {
+            int t = 1 + (rr_cursor - 1 + k) % (task_cap - 1);
             if (tasks[t].state == TASK_READY) {
-                rr_cursor = (t % (NTASKS - 1)) + 1;
+                rr_cursor = (t % (task_cap - 1)) + 1;
                 return t;
             }
         }
         return -1;
     }
-    for (int k = 1; k < NTASKS; k++) {
-        int t = (current_task + k) % NTASKS;
+    for (int k = 1; k < task_cap; k++) {
+        int t = (current_task + k) % task_cap;
         if (t == 0)
             continue;
         if (tasks[t].state == TASK_READY)
@@ -1771,7 +1823,7 @@ static int next_ready(void) {
 
 static void sched_switch(int next) {
     int prev = current_task;
-    if (prev >= 0 && prev < NTASKS && tasks[prev].state != TASK_DONE)
+    if (prev >= 0 && prev < task_cap && tasks[prev].state != TASK_DONE)
         __asm__ __volatile__("fsave %0" : "=m"(tasks[prev].fpu));
     if (next == 0) {
         tss.esp0 = 0x00080000u;
@@ -1815,7 +1867,7 @@ static void sched_yield(void) {
 }
 
 static void __attribute__((unused)) switch_task(int next) {
-    if (current_task >= 0 && current_task < NTASKS)
+    if (current_task >= 0 && current_task < task_cap)
         __asm__ __volatile__("fsave %0" : "=m"(tasks[current_task].fpu));
     __asm__ __volatile__("frstor %0" : : "m"(tasks[next].fpu));
     current_task = next;
@@ -1828,6 +1880,21 @@ static void __attribute__((unused)) switch_task(int next) {
 }
 
 static void task_free_frames(int slot) {
+    if (slot > 0) {
+        if (tasks[slot].pd)
+            kernel_free_pages_ptr(tasks[slot].pd, 1);
+        if (tasks[slot].upt)
+            kernel_free_pages_ptr(tasks[slot].upt, 1);
+        if (tasks[slot].kstack)
+            kernel_free_pages_ptr(tasks[slot].kstack, tasks[slot].kstack_pages);
+        if (tasks[slot].fds)
+            kernel_free_pages_ptr(tasks[slot].fds, 1);
+        tasks[slot].pd = 0;
+        tasks[slot].upt = 0;
+        tasks[slot].kstack = 0;
+        tasks[slot].fds = 0;
+        tasks[slot].kstack_pages = 0;
+    }
     if (tasks[slot].shared_ro) {
         if (shared_ro_refs)
             shared_ro_refs--;
@@ -1852,7 +1919,7 @@ static void task_free_frames(int slot) {
 }
 
 static int find_pid(u32 pid) {
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state != TASK_FREE && tasks[t].pid == pid)
             return t;
     }
@@ -1882,7 +1949,7 @@ static void sched_timer_tick(u32 *frame) {
     if (!scheduler_active)
         return;
 
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].sleep_until != 0 &&
             (int)(ticks - tasks[t].sleep_until) >= 0) {
             tasks[t].sleep_until = 0;
@@ -1999,7 +2066,7 @@ static char *ps_str(char *p, const char *s) {
 
 void task_ps(void) {
     gui_sys_print("PID CON STATE PAGES NAME\n");
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
             continue;
         char line[80];
@@ -2027,7 +2094,7 @@ void task_ps(void) {
 int kernel_task_snapshot(int index, u32 *pid, int *console, u32 *state,
                          u32 *pages, char *name) {
     int n = 0;
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
             continue;
         if (n++ != index)
@@ -2047,7 +2114,7 @@ int task_kill_pid(u32 pid) {
     int target = -1;
     if (pid == 0)
         return 0;
-    for (int t = 1; t < NTASKS; t++) {
+    for (int t = 1; t < task_cap; t++) {
         if (tasks[t].state != TASK_FREE && tasks[t].state != TASK_DONE &&
             tasks[t].pid == pid) {
             target = t;
@@ -2078,7 +2145,7 @@ int task_kill_pid(u32 pid) {
 }
 
 static int task_spawn_user(const char *name) {
-    if (!scheduler_active || current_task < 0 || current_task >= NTASKS)
+    if (!scheduler_active || current_task < 0 || current_task >= task_cap)
         return 0;
     u32 size = 0;
     __asm__ __volatile__("sti");
@@ -2097,7 +2164,7 @@ static int task_spawn_user(const char *name) {
 static int user_str_ok(u32 ptr, u32 max);
 
 static int task_spawn_args(const char *name, u32 argv, u32 argc) {
-    if (!scheduler_active || current_task < 0 || current_task >= NTASKS)
+    if (!scheduler_active || current_task < 0 || current_task >= task_cap)
         return 0;
     if (argc > 8 || argv < 0x400000 || argv >= 0x800000)
         return 0;
@@ -2159,7 +2226,7 @@ static int task_spawn_args(const char *name, u32 argv, u32 argc) {
 static int task_wait_block(u32 want_pid, u32 frame) {
     u32 my_pid = tasks[current_task].pid;
     int child = -1;
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].parent_pid != my_pid)
             continue;
         if (want_pid != 0 && tasks[t].pid != want_pid)
@@ -2689,11 +2756,11 @@ static void ramfile_delete(int idx) {
         return;
     ramfile_free_from(&ramfiles[idx], 0);
     ramfiles[idx].used = 0;
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 0; t < task_cap; t++) {
         for (int f = 0; f < MAX_FDS; f++) {
-            if (fd_table[t][f].used && fd_table[t][f].kind == 1 &&
-                fd_table[t][f].ram_index == idx)
-                fd_table[t][f].used = 0;
+            if (tasks[t].fds[f].used && tasks[t].fds[f].kind == 1 &&
+                tasks[t].fds[f].ram_index == idx)
+                tasks[t].fds[f].used = 0;
         }
     }
 }
@@ -3201,7 +3268,7 @@ void list_ram_files(void) {
 }
 
 static int fd_open(const char *name) {
-    if (current_task < 0 || current_task >= NTASKS)
+    if (current_task < 0 || current_task >= task_cap)
         return -1;
     __asm__ __volatile__("sti");
     int ok = fs_load_dir();
@@ -3214,17 +3281,17 @@ static int fd_open(const char *name) {
         if (!fs_name_eq(&entries[i], name))
             continue;
         for (int f = 0; f < MAX_FDS; f++) {
-            if (fd_table[current_task][f].used)
+            if (tasks[current_task].fds[f].used)
                 continue;
-            fd_table[current_task][f].used = 1;
-            fd_table[current_task][f].kind = 0;
-            fd_table[current_task][f].writable = 0;
-            fd_table[current_task][f].ram_index = 0;
-            fd_table[current_task][f].start_lba = entries[i].start_lba;
-            fd_table[current_task][f].size = entries[i].size;
-            fd_table[current_task][f].offset = 0;
+            tasks[current_task].fds[f].used = 1;
+            tasks[current_task].fds[f].kind = 0;
+            tasks[current_task].fds[f].writable = 0;
+            tasks[current_task].fds[f].ram_index = 0;
+            tasks[current_task].fds[f].start_lba = entries[i].start_lba;
+            tasks[current_task].fds[f].size = entries[i].size;
+            tasks[current_task].fds[f].offset = 0;
             for (int j = 0; j < 16; j++)
-                fd_table[current_task][f].name[j] = entries[i].name[j];
+                tasks[current_task].fds[f].name[j] = entries[i].name[j];
             return f + 1;
         }
         return -1;
@@ -3233,9 +3300,9 @@ static int fd_open(const char *name) {
 }
 
 static int fd_read(int fd, u8 *buf, u32 len) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= NTASKS)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
         return -1;
-    struct fd_entry *f = &fd_table[current_task][fd - 1];
+    struct fd_entry *f = &tasks[current_task].fds[fd - 1];
     if (!f->used)
         return -1;
     if (f->kind == 1) {
@@ -3284,14 +3351,14 @@ static int fd_read(int fd, u8 *buf, u32 len) {
 
 static int fd_alloc_slot(void) {
     for (int f = 0; f < MAX_FDS; f++) {
-        if (!fd_table[current_task][f].used)
+        if (!tasks[current_task].fds[f].used)
             return f;
     }
     return -1;
 }
 
 static int fd_open_ex(const char *name, u32 flags) {
-    if (current_task < 0 || current_task >= NTASKS)
+    if (current_task < 0 || current_task >= task_cap)
         return -1;
 
     int ri = ramfile_find(name);
@@ -3299,7 +3366,7 @@ static int fd_open_ex(const char *name, u32 flags) {
         int f = fd_alloc_slot();
         if (f < 0)
             return -1;
-        struct fd_entry *e = &fd_table[current_task][f];
+        struct fd_entry *e = &tasks[current_task].fds[f];
         e->used = 1;
         e->kind = 1;
         e->writable = (flags & O_WRITE) ? 1 : 0;
@@ -3326,7 +3393,7 @@ static int fd_open_ex(const char *name, u32 flags) {
             ramfile_delete(ri);
             return -1;
         }
-        struct fd_entry *e = &fd_table[current_task][f];
+        struct fd_entry *e = &tasks[current_task].fds[f];
         e->used = 1;
         e->kind = 1;
         e->writable = 1;
@@ -3345,9 +3412,9 @@ static int fd_open_ex(const char *name, u32 flags) {
 }
 
 static int fd_write(int fd, const u8 *buf, u32 len) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= NTASKS)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
         return -1;
-    struct fd_entry *f = &fd_table[current_task][fd - 1];
+    struct fd_entry *f = &tasks[current_task].fds[fd - 1];
     if (!f->used || f->kind != 1 || !f->writable)
         return -1;
     if (f->ram_index >= MAX_RAMFILES || !ramfiles[f->ram_index].used)
@@ -3502,7 +3569,7 @@ static void pc_beep(u32 freq, u32 ms) {
 }
 
 static u32 task_brk(u32 addr) {
-    if (current_task < 0 || current_task >= NTASKS)
+    if (current_task < 0 || current_task >= task_cap)
         return 0xFFFFFFFFu;
     u16 old_pages = tasks[current_task].heap_pages;
     u32 cur = HEAP_VIRT_BASE + (u32)old_pages * 0x1000u;
@@ -3514,10 +3581,10 @@ static u32 task_brk(u32 addr) {
 
     if (pages < old_pages) {
         for (u32 i = pages; i < old_pages; i++) {
-            u32 pte = task_user_pt[current_task][HEAP_PAGE_INDEX + i];
+            u32 pte = tasks[current_task].upt[HEAP_PAGE_INDEX + i];
             if (pte & 1)
                 frame_free_pages(pte & 0xFFFFF000u, 1);
-            task_user_pt[current_task][HEAP_PAGE_INDEX + i] = 0;
+            tasks[current_task].upt[HEAP_PAGE_INDEX + i] = 0;
         }
         tasks[current_task].heap_pages = (u16)pages;
         tasks[current_task].heap_phys = 0;
@@ -3528,10 +3595,10 @@ static u32 task_brk(u32 addr) {
         u32 phys = frame_alloc_pages(1);
         if (!phys) {
             for (u32 j = old_pages; j < i; j++) {
-                u32 pte = task_user_pt[current_task][HEAP_PAGE_INDEX + j];
+                u32 pte = tasks[current_task].upt[HEAP_PAGE_INDEX + j];
                 if (pte & 1)
                     frame_free_pages(pte & 0xFFFFF000u, 1);
-                task_user_pt[current_task][HEAP_PAGE_INDEX + j] = 0;
+                tasks[current_task].upt[HEAP_PAGE_INDEX + j] = 0;
             }
             tasks[current_task].heap_pages = old_pages;
             return 0xFFFFFFFFu;
@@ -3539,7 +3606,7 @@ static u32 task_brk(u32 addr) {
         frame_zero(phys, 1);
         if (i == old_pages)
             tasks[current_task].heap_phys = phys;
-        task_user_pt[current_task][HEAP_PAGE_INDEX + i] = phys | 0x007;
+        tasks[current_task].upt[HEAP_PAGE_INDEX + i] = phys | 0x007;
     }
     tasks[current_task].heap_pages = (u16)pages;
     return HEAP_VIRT_BASE + pages * 0x1000u;
@@ -3554,9 +3621,9 @@ static int fd_unlink(const char *name) {
 }
 
 static int fd_seek(int fd, int offset, int whence) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= NTASKS)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
         return -1;
-    struct fd_entry *f = &fd_table[current_task][fd - 1];
+    struct fd_entry *f = &tasks[current_task].fds[fd - 1];
     if (!f->used)
         return -1;
     int base = 0;
@@ -3572,9 +3639,9 @@ static int fd_seek(int fd, int offset, int whence) {
 }
 
 static int fd_close(int fd) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= NTASKS)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
         return -1;
-    fd_table[current_task][fd - 1].used = 0;
+    tasks[current_task].fds[fd - 1].used = 0;
     return 0;
 }
 
@@ -3587,9 +3654,9 @@ static int user_page_present(u32 addr) {
     u32 idx = (addr - USER_BASE) >> 12;
     if (!scheduler_active)
         return (page_table1[idx] & 5) == 5;
-    if (current_task < 0 || current_task >= NTASKS)
+    if (current_task < 0 || current_task >= task_cap)
         return 0;
-    return (task_user_pt[current_task][idx] & 5) == 5;
+    return (tasks[current_task].upt[idx] & 5) == 5;
 }
 
 static int user_ptr_ok(u32 ptr, u32 size) {
@@ -3764,7 +3831,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
                 if (!(frame_bitmap[i / 32] & (1u << (i % 32))))
                     free_frames++;
             u32 ntasks = 0;
-            for (int i = 0; i < NTASKS; i++)
+            for (int i = 0; i < task_cap; i++)
                 if (tasks[i].state != TASK_FREE && tasks[i].state != TASK_DONE)
                     ntasks++;
             si->ticks = ticks;
@@ -4076,6 +4143,8 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
 
 
 
