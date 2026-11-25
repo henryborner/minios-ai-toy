@@ -185,29 +185,29 @@ def main() -> int:
     run([nasm, "-f", "bin", "-o", str(div0_test_bin), "div0_test.asm"])
     run([nasm, "-f", "elf32", "-o", str(sched_o), "sched.asm"])
     run([
-        clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
+        clang, "--target=i386-unknown-none-elf", "-m32", "-march=i586",
         "-ffreestanding", "-fno-pic", "-fno-pie", "-fno-stack-protector",
         "-fno-builtin", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
         "-mno-sse", "-mno-mmx", "-mno-80387", "-msoft-float",
-        "-Os", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "kernel.c", "-o", str(kernel_o),
+        "-Oz", "-ffunction-sections", "-fdata-sections", "-fomit-frame-pointer", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "kernel.c", "-o", str(kernel_o),
     ])
     run([
-        clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
+        clang, "--target=i386-unknown-none-elf", "-m32", "-march=i586",
         "-ffreestanding", "-fno-pic", "-fno-pie", "-fno-stack-protector",
         "-fno-builtin", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
         "-mno-sse", "-mno-mmx", "-mno-80387", "-msoft-float",
-        "-Os", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "gui.c", "-o", str(gui_o),
+        "-Oz", "-ffunction-sections", "-fdata-sections", "-fomit-frame-pointer", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "gui.c", "-o", str(gui_o),
     ])
     run([
-        clang, "--target=i386-unknown-none-elf", "-m32", "-march=i386",
+        clang, "--target=i386-unknown-none-elf", "-m32", "-march=i586",
         "-ffreestanding", "-fno-pic", "-fno-pie", "-fno-stack-protector",
         "-fno-builtin", "-fno-asynchronous-unwind-tables", "-fno-unwind-tables",
         "-mno-sse", "-mno-mmx", "-mno-80387", "-msoft-float",
-        "-Os", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "fdc.c", "-o", str(fdc_o),
+        "-Oz", "-ffunction-sections", "-fdata-sections", "-fomit-frame-pointer", "-fno-unroll-loops", "-Wall", "-Wextra", "-c", "fdc.c", "-o", str(fdc_o),
     ])
     run([
         ld, "-m", "elf_i386", "-T", "linker.ld",
-        "-o", str(kernel_elf), str(entry), str(interrupts_o),
+        "--gc-sections", "-Map", str(BUILD / "kernel.map"), "-o", str(kernel_elf), str(entry), str(interrupts_o),
         str(usermode_o), str(sched_o), str(user_blob_o),
         str(kernel_o), str(gui_o), str(fdc_o),
     ])
@@ -291,6 +291,7 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
 
 
 
