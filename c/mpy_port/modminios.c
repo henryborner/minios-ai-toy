@@ -200,6 +200,29 @@ static mp_obj_t minios_sysinfo(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(minios_sysinfo_obj, minios_sysinfo);
 
+static mp_obj_t minios_getchar_nb(void) {
+    return mp_obj_new_int(sys_getchar_nb());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(minios_getchar_nb_obj, minios_getchar_nb);
+
+static mp_obj_t minios_tasks(void) {
+    struct minios_taskinfo ti[16];
+    int n = sys_task_info(ti, 16);
+    mp_obj_t list = mp_obj_new_list(0, NULL);
+    for (int i = 0; i < n; i++) {
+        mp_obj_t row[5] = {
+            mp_obj_new_int_from_uint(ti[i].pid),
+            mp_obj_new_int_from_uint(ti[i].console),
+            mp_obj_new_int_from_uint(ti[i].state),
+            mp_obj_new_int_from_uint(ti[i].pages),
+            mp_obj_new_str(ti[i].name, strnlen(ti[i].name, 16)),
+        };
+        mp_obj_list_append(list, mp_obj_new_tuple(5, row));
+    }
+    return list;
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(minios_tasks_obj, minios_tasks);
+
 static mp_obj_t minios_run_file(mp_obj_t name_in) {
     const char *name = mp_obj_str_get_str(name_in);
     return mp_obj_new_int(sys_run_py(name));
@@ -357,6 +380,8 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
     { MP_ROM_QSTR(MP_QSTR_getchar), MP_ROM_PTR(&minios_getchar_obj) },
     { MP_ROM_QSTR(MP_QSTR_run_file), MP_ROM_PTR(&minios_run_file_obj) },
+    { MP_ROM_QSTR(MP_QSTR_getchar_nb), MP_ROM_PTR(&minios_getchar_nb_obj) },
+    { MP_ROM_QSTR(MP_QSTR_tasks), MP_ROM_PTR(&minios_tasks_obj) },
     { MP_ROM_QSTR(MP_QSTR_mpy_ticks), MP_ROM_PTR(&minios_mpy_ticks_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&minios_beep_obj) },
 };

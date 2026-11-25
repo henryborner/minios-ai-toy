@@ -11,10 +11,15 @@ mode = argv[0] if argv else ""
 def snapshot():
     v = minios.video()
     s = minios.sysinfo()
-    return v, s
+    t = minios.tasks()
+    return v, s, t
 
 
-def line(v, s):
+def state_name(st):
+    return "R" if st == 2 else ("B" if st == 4 else ("S" if st == 1 else "?"))
+
+
+def line(v, s, tasks):
     free = s[2]
     total = s[3]
     used = total - free
@@ -24,21 +29,27 @@ def line(v, s):
     print("ticks=%d  tasks=%d  last_mpy=%dms" % (s[0], s[5], s[6]))
     print("frames: %d/%d used (%d%%)  heap=%d/65536" %
           (used, total, pct, s[4]))
-    bar = int((total - free) * 40 // total) if total else 0
+    bar = int(used * 40 // total) if total else 0
     print("[" + "#" * bar + "." * (40 - bar) + "]")
+    print("PID CON ST PGS NAME")
+    for t in tasks[:6]:
+        print("%3d %3d  %s %4d %s" % (t[0], t[1], state_name(t[2]), t[3], t[4]))
 
 
 if mode == "-w":
     for i in range(8):
         print("\x1b[2J\x1b[H", end="")
-        v, s = snapshot()
-        line(v, s)
+        v, s, tasks = snapshot()
+        line(v, s, tasks)
+        k = minios.getchar_nb()
+        if k >= 0 and (k == 3 or k == ord("q") or k == ord("Q")):
+            break
         time.sleep_ms(500)
 elif mode == "-g":
     c = minios.Canvas("top -g")
     c.batch(True)
     for i in range(8):
-        v, s = snapshot()
+        v, s, tasks = snapshot()
         free, total = s[2], s[3]
         c.clear(0)
         c.text(8, 6, "MiniOS top -g", 15)
@@ -48,9 +59,15 @@ elif mode == "-g":
         c.rect(8, 32, usedw, 8, 2)
         c.text(8, 48, "heap %d/65536" % s[4], 11)
         c.text(8, 62, "tasks %d  ticks %d" % (s[5], s[0]), 14)
-        c.text(8, 84, "uptime %ds" % s[1], 10)
+        y = 76
+        for t in tasks[:5]:
+            c.text(8, y, "%d %s %d %s" % (t[0], state_name(t[2]), t[3], t[4]), 10)
+            y += 10
         c.present()
+        k = minios.getchar_nb()
+        if k >= 0 and (k == 3 or k == ord("q") or k == ord("Q")):
+            break
         time.sleep_ms(300)
 else:
-    v, s = snapshot()
-    line(v, s)
+    v, s, tasks = snapshot()
+    line(v, s, tasks)

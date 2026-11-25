@@ -33,6 +33,16 @@
 #define SYS_HW_IO        28
 #define SYS_POLL_CTRL_C  29
 #define SYS_RUN_PY       30
+#define SYS_GETCHAR_NB   31
+#define SYS_TASK_INFO    32
+
+struct minios_taskinfo {
+    uint32_t pid;
+    uint32_t state;
+    uint32_t pages;
+    uint32_t console;
+    char name[16];
+};
 
 #define MINIOS_O_CREAT   1u
 #define MINIOS_O_TRUNC   2u
@@ -194,6 +204,14 @@ static inline int sys_poll_ctrl_c(void) {
 
 static inline int sys_run_py(const char *name) {
     return (int)(int32_t)minios_syscall1(SYS_RUN_PY, (uint32_t)name);
+}
+
+static inline int sys_getchar_nb(void) {
+    return (int)(int32_t)minios_syscall0(SYS_GETCHAR_NB);
+}
+
+static inline int sys_task_info(struct minios_taskinfo *out, uint32_t max) {
+    return (int)(int32_t)minios_syscall2(SYS_TASK_INFO, (uint32_t)out, max);
 }
 
 #endif

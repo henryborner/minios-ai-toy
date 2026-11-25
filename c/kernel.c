@@ -2742,6 +2742,14 @@ struct user_dirent {
     u32 kind;
 };
 
+struct user_taskinfo {
+    u32 pid;
+    u32 state;
+    u32 pages;
+    u32 console;
+    char name[16];
+};
+
 static int sys_stat(const char *name, struct user_stat *out) {
     int ri = ramfile_find(name);
     if (ri >= 0) {
@@ -3215,6 +3223,44 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             ((u32 *)frame)[7] = 0;
         } else {
             ((u32 *)frame)[7] = 0xFFFFFFFFu;
+        }
+    } else if (number == 31) {
+        int cid = current_console_id();
+        if (cid < 0 || cid >= KBD_CONSOLES)
+            cid = 0;
+        if (kbd_tail[cid] == kbd_head[cid]) {
+            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+        } else {
+            u8 ch = kbd_buf[cid][kbd_tail[cid]];
+            kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
+            ((u32 *)frame)[7] = ch;
+        }
+    } else if (number == 32) {
+        u32 out = ((u32 *)frame)[4];
+        u32 max = ((u32 *)frame)[5];
+        if (max > 16)
+            max = 16;
+        if (user_ptr_ok(out, max * sizeof(struct user_taskinfo))) {
+            int n = 0;
+            for (u32 i = 0; i < max; i++) {
+                u32 pid, state, pages;
+                int con;
+                char name[16];
+                if (!kernel_task_snapshot((int)i, &pid, &con, &state, &pages, name))
+                    break;
+                struct user_taskinfo *ti =
+                    (struct user_taskinfo *)(out + i * sizeof(*ti));
+                ti->pid = pid;
+                ti->state = state;
+                ti->pages = pages;
+                ti->console = (u32)con;
+                for (int j = 0; j < 16; j++)
+                    ti->name[j] = name[j];
+                n++;
+            }
+            ((u32 *)frame)[7] = (u32)n;
+        } else {
+            ((u32 *)frame)[7] = 0;
         }
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
