@@ -200,6 +200,11 @@ static mp_obj_t minios_sysinfo(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(minios_sysinfo_obj, minios_sysinfo);
 
+static mp_obj_t minios_getchar(void) {
+    return mp_obj_new_int(sys_getchar());
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(minios_getchar_obj, minios_getchar);
+
 static mp_obj_t minios_beep(mp_obj_t freq_in, mp_obj_t ms_in) {
     (void)minios_syscall3(SYS_HW_IO, 0,
                           (uint32_t)mp_obj_get_int(freq_in),
@@ -344,6 +349,7 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&minios_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_sysinfo), MP_ROM_PTR(&minios_sysinfo_obj) },
     { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
+    { MP_ROM_QSTR(MP_QSTR_getchar), MP_ROM_PTR(&minios_getchar_obj) },
     { MP_ROM_QSTR(MP_QSTR_mpy_ticks), MP_ROM_PTR(&minios_mpy_ticks_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&minios_beep_obj) },
 };
