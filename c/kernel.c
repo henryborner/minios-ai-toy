@@ -3532,12 +3532,11 @@ void kmain(void) {
     interrupts_on();
     savefs_restore();
     u8 safe_mode = 0;
-    for (u32 i = 0; i < 300000u; i++) {
-        if (inb(0x64) & 1) {
-            u8 sc = inb(0x60);
-            if (sc == 0x1D || sc == 0x9D)
-                safe_mode = 1;
-        }
+    u32 safe_until = ticks + 50;
+    while ((int)(ticks - safe_until) < 0) {
+        if (ctrl_down)
+            safe_mode = 1;
+        __asm__ __volatile__("sti; hlt");
     }
     if (safe_mode && ramfile_find("AUTOEXEC.PY") >= 0)
         gui_sys_print("[boot] AUTOEXEC.PY skipped (Safe Mode)\n");
