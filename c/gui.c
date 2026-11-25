@@ -1341,18 +1341,18 @@ static void py_stats(struct console *c) {
     term_puts(c, "\n");
 }
 
-static void term_attrs_grow(int need) {
+static int term_attrs_grow(int need) {
     extern void *kernel_alloc_pages_zero(u32 pages);
     extern void kernel_free_pages_ptr(void *p, u32 pages);
     if (need <= term_attrs_cap)
-        return;
+        return 1;
     int ncap = term_attrs_cap;
     while (ncap < need)
         ncap *= 2;
     u32 bytes = (u32)ncap * TERM_ROWS * TERM_COLS;
     u8 *na = (u8 *)kernel_alloc_pages_zero((bytes + 4095u) / 4096u);
     if (!na)
-        return;
+        return 0;
     for (u32 i = 0; i < bytes; i++)
         na[i] = term_default_attr;
     if (term_attrs) {
@@ -1365,6 +1365,7 @@ static void term_attrs_grow(int need) {
     term_attrs_cap = ncap;
     for (int i = 0; i < console_count; i++)
         consoles[i].attrs = term_attrs + i * TERM_ROWS * TERM_COLS;
+    return 1;
 }
 
 static void console_tables_grow(void) {
@@ -1410,6 +1411,8 @@ static int gui_new_console(void) {
         console_tables_grow();
     if (console_count >= console_cap)
         return 0;
+    if (!term_attrs_grow(console_count + 1))
+        return 0;
     int id = console_count++;
     extern int kernel_kbd_resize(int n);
     if (!kernel_kbd_resize(id + 1)) {
@@ -1422,7 +1425,6 @@ static int gui_new_console(void) {
         console_count--;
         return 0;
     }
-    term_attrs_grow(id + 1);
     c->x = (scr_w >= 640) ? 36 + id * 5 : 8 + id * 2;
     c->y = (scr_w >= 640) ? 28 + id * 6 : 12 + id * 3;
     c->w = con_w;
@@ -1521,8 +1523,9 @@ static void run_command(struct console *c, char *line) {
         for (int i = 0; i < 16; i++) {
             if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
                 break;
-            if (pid == want && con >= 0 && con < console_count) {
-                focus_window(con);
+            int cid = con - 1;
+            if (pid == want && cid >= 0 && cid < console_count) {
+                focus_window(consoles[cid].win_id);
                 term_puts(c, "fg: focused pid ");
                 term_u32(c, pid);
                 term_puts(c, "\n");
@@ -1572,7 +1575,7 @@ static void run_command(struct console *c, char *line) {
         launch_python(&consoles[nc], line + arg_off);
         c = &consoles[oldc];
         if (oldc >= 0 && oldc < console_count)
-            focus_window(oldc);
+            focus_window(consoles[oldc].win_id);
         term_puts(c, "pybg: started on Console ");
         term_u32(c, (u32)(nc + 1));
         term_puts(c, "\n");
@@ -1920,9 +1923,11 @@ static void term_key(struct console *c, char ch) {
         c->col = (5 + c->cmd_len) % c->cols;
         sys_output = c;
         term_newline(c);
-        run_command(c, command);
-        extern int kernel_console_has_live(int cid);
         int cid = (int)(c - consoles);
+        run_command(c, command);
+        if (cid >= 0 && cid < console_count)
+            c = &consoles[cid];
+        extern int kernel_console_has_live(int cid);
         if (cid >= 0 && cid < console_count && kernel_console_has_live(cid))
             c->pending_prompt = 1;
         else
@@ -3758,9 +3763,12 @@ void gui_mouse_event(int x, int y, int buttons) {
         pressed_hit = hit;
         if (hit >= HIT_SCROLL_BASE && hit < HIT_SCROLL_BASE + win_live) {
             int id = hit - HIT_SCROLL_BASE;
-            focus_window(id);
-            scroll_drag = id;
-            scrollbar_set_from_y(&consoles[id], y);
+            int cidx = console_index_for_window(id);
+            if (cidx >= 0) {
+                focus_window(id);
+                scroll_drag = cidx;
+                scrollbar_set_from_y(&consoles[cidx], y);
+            }
         } else if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + win_live * 9) {
             int off = hit - HIT_RESIZE_BASE;
             int id = off / 9;

@@ -46,29 +46,41 @@ int kernel_kbd_resize(int n) {
     volatile u8 (*nb)[64] = (volatile u8 (*)[64])kernel_alloc_pages_zero(buf_pages);
     volatile u8 *nh = (volatile u8 *)kernel_alloc_pages_zero(vec_pages);
     volatile u8 *nt = (volatile u8 *)kernel_alloc_pages_zero(vec_pages);
-    if (!nb || !nh || !nt)
+    if (!nb || !nh || !nt) {
+        if (nb) kernel_free_pages_ptr((void *)nb, buf_pages);
+        if (nh) kernel_free_pages_ptr((void *)nh, vec_pages);
+        if (nt) kernel_free_pages_ptr((void *)nt, vec_pages);
         return 0;
+    }
+    u32 flags;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags));
+    int old = kbd_console_count;
+    volatile u8 (*ob)[64] = kbd_buf;
+    volatile u8 *oh = kbd_head;
+    volatile u8 *ot = kbd_tail;
     for (int i = 0; i < n; i++) {
         nh[i] = nt[i] = 0;
         for (int j = 0; j < 64; j++)
             nb[i][j] = 0;
     }
-    if (kbd_buf) {
-        int old = kbd_console_count;
+    if (ob) {
         for (int i = 0; i < old; i++) {
-            nh[i] = kbd_head[i];
-            nt[i] = kbd_tail[i];
+            nh[i] = oh[i];
+            nt[i] = ot[i];
             for (int j = 0; j < 64; j++)
-                nb[i][j] = kbd_buf[i][j];
+                nb[i][j] = ob[i][j];
         }
-        kernel_free_pages_ptr((void *)kbd_buf, ((u32)old * 64u + 4095u) / 4096u);
-        kernel_free_pages_ptr((void *)kbd_head, ((u32)old + 4095u) / 4096u);
-        kernel_free_pages_ptr((void *)kbd_tail, ((u32)old + 4095u) / 4096u);
     }
     kbd_buf = nb;
     kbd_head = nh;
     kbd_tail = nt;
     kbd_console_count = n;
+    if (ob) {
+        kernel_free_pages_ptr((void *)ob, ((u32)old * 64u + 4095u) / 4096u);
+        kernel_free_pages_ptr((void *)oh, ((u32)old + 4095u) / 4096u);
+        kernel_free_pages_ptr((void *)ot, ((u32)old + 4095u) / 4096u);
+    }
+    __asm__ __volatile__("push %0; popf" : : "r"(flags));
     return 1;
 }
 static volatile u8 gui_special_pending;
@@ -1207,6 +1219,7 @@ struct task {
     u32 sleep_until;
     u32 exit_code;
     u8 console_id;
+    u8 reap_pending;
     u8 kill_pending;
     u8 wait_kbd;
     u8 fpu[108];
@@ -1461,6 +1474,7 @@ static void __attribute__((unused)) task_clear_all(void) {
             task_free_heap(t);
         }
         tasks[t].state = TASK_FREE;
+        tasks[t].reap_pending = 0;
         tasks[t].code_phys = 0;
         tasks[t].stack_phys = 0;
         tasks[t].heap_phys = 0;
@@ -1480,8 +1494,9 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].kesp = 0;
         tasks[t].tf = 0;
         tasks[t].shared_ro = 0;
-        for (int f = 0; f < MAX_FDS; f++)
-            tasks[t].fds[f].used = 0;
+        if (tasks[t].fds)
+            for (int f = 0; f < MAX_FDS; f++)
+                tasks[t].fds[f].used = 0;
     }
 }
 
@@ -1492,13 +1507,18 @@ static void task_tables_grow(void) {
     struct task *nt = (struct task *)kernel_alloc_pages_zero(pages);
     if (!nt)
         return;
-    for (int i = 0; i < task_cap; i++)
-        nt[i] = tasks[i];
-    if (tasks)
-        kernel_free_pages_ptr(tasks,
-            ((u32)(task_cap * sizeof(struct task)) + 4095u) / 4096u);
+    u32 flags;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags));
+    int old_cap = task_cap;
+    struct task *old = tasks;
+    for (int i = 0; i < old_cap; i++)
+        nt[i] = old[i];
     tasks = nt;
     task_cap = ncap;
+    if (old)
+        kernel_free_pages_ptr(old,
+            ((u32)(old_cap * sizeof(struct task)) + 4095u) / 4096u);
+    __asm__ __volatile__("push %0; popf" : : "r"(flags));
 }
 
 static void task_tables_init(void) {
@@ -1510,7 +1530,8 @@ static void task_tables_init(void) {
 static int task_alloc_slot(void) {
     task_tables_init();
     for (int t = 1; t < task_cap; t++)
-        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+        if (tasks[t].state == TASK_FREE ||
+            (tasks[t].state == TASK_DONE && !tasks[t].reap_pending))
             return t;
     int old = task_cap;
     task_tables_grow();
@@ -1665,6 +1686,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].heap_pages = 0;
     tasks[slot].shared_ro = 0;
     tasks[slot].state = TASK_READY;
+    tasks[slot].reap_pending = 0;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
     tasks[slot].waiting_pid = WAIT_NONE;
@@ -1800,6 +1822,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     if (ro_pages)
         shared_ro_refs++;
     tasks[slot].state = TASK_READY;
+    tasks[slot].reap_pending = 0;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
     tasks[slot].waiting_pid = WAIT_NONE;
@@ -1924,6 +1947,8 @@ static void __attribute__((unused)) switch_task(int next) {
 }
 
 static void task_free_frames(int slot) {
+    if (slot == current_task)
+        return;
     if (tasks[slot].shared_ro) {
         if (shared_ro_refs)
             shared_ro_refs--;
@@ -1962,6 +1987,15 @@ static void task_free_frames(int slot) {
     tasks[slot].heap_phys = 0;
     tasks[slot].code_pages = 0;
     tasks[slot].stack_pages = 0;
+}
+
+static void task_reap_done(void) {
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state == TASK_DONE && tasks[t].reap_pending) {
+            task_free_frames(t);
+            tasks[t].reap_pending = 0;
+        }
+    }
 }
 
 static int find_pid(u32 pid) {
@@ -2031,14 +2065,14 @@ static void task_exit(u32 status) {
     int cid = tasks[me].console_id;
     tasks[me].exit_code = status;
     tasks[me].state = TASK_DONE;
+    tasks[me].reap_pending = 1;
     wake_parent(me);
-    /* Never free the current pages while CR3 still points at them. */
+    /* The current kernel stack must stay mapped until we switch away. */
     set_cr3((u32)sched_safe_pd);
-    task_free_frames(me);
     extern void gui_prompt_console(int cid);
     extern void gui_canvas_release_owner(u32 pid);
     gui_canvas_release_owner(tasks[me].pid);
-    if (cid >= 0 && cid < 3)
+    if (cid >= 0)
         gui_prompt_console(cid);
     if (me != 0)
         sched_switch(0);
@@ -2180,6 +2214,7 @@ int task_kill_pid(u32 pid) {
     int cid = tasks[target].console_id;
     u32 tpid = tasks[target].pid;
     tasks[target].state = TASK_DONE;
+    tasks[target].reap_pending = 0;
     wake_parent(target);
     task_free_frames(target);
     extern void gui_canvas_release_owner(u32 pid);
@@ -2891,6 +2926,8 @@ static void ramfile_delete(int idx) {
     ramfile_free_from(&ramfiles[idx], 0);
     ramfiles[idx].used = 0;
     for (int t = 0; t < task_cap; t++) {
+        if (!tasks[t].fds)
+            continue;
         for (int f = 0; f < MAX_FDS; f++) {
             if (tasks[t].fds[f].used && tasks[t].fds[f].kind == 1 &&
                 tasks[t].fds[f].ram_index == idx)
@@ -3436,7 +3473,7 @@ void list_ram_files(void) {
 }
 
 static int fd_open(const char *name) {
-    if (current_task < 0 || current_task >= task_cap)
+    if (current_task < 0 || current_task >= task_cap || !tasks[current_task].fds)
         return -1;
     __asm__ __volatile__("sti");
     int ok = fs_load_dir();
@@ -3468,7 +3505,8 @@ static int fd_open(const char *name) {
 }
 
 static int fd_read(int fd, u8 *buf, u32 len) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap ||
+        !tasks[current_task].fds)
         return -1;
     struct fd_entry *f = &tasks[current_task].fds[fd - 1];
     if (!f->used)
@@ -3518,6 +3556,8 @@ static int fd_read(int fd, u8 *buf, u32 len) {
 #define O_WRITE 4
 
 static int fd_alloc_slot(void) {
+    if (current_task < 0 || current_task >= task_cap || !tasks[current_task].fds)
+        return -1;
     for (int f = 0; f < MAX_FDS; f++) {
         if (!tasks[current_task].fds[f].used)
             return f;
@@ -3526,7 +3566,7 @@ static int fd_alloc_slot(void) {
 }
 
 static int fd_open_ex(const char *name, u32 flags) {
-    if (current_task < 0 || current_task >= task_cap)
+    if (current_task < 0 || current_task >= task_cap || !tasks[current_task].fds)
         return -1;
 
     int ri = ramfile_find(name);
@@ -3580,7 +3620,8 @@ static int fd_open_ex(const char *name, u32 flags) {
 }
 
 static int fd_write(int fd, const u8 *buf, u32 len) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap ||
+        !tasks[current_task].fds)
         return -1;
     struct fd_entry *f = &tasks[current_task].fds[fd - 1];
     if (!f->used || f->kind != 1 || !f->writable)
@@ -3789,7 +3830,8 @@ static int fd_unlink(const char *name) {
 }
 
 static int fd_seek(int fd, int offset, int whence) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap ||
+        !tasks[current_task].fds)
         return -1;
     struct fd_entry *f = &tasks[current_task].fds[fd - 1];
     if (!f->used)
@@ -3807,7 +3849,8 @@ static int fd_seek(int fd, int offset, int whence) {
 }
 
 static int fd_close(int fd) {
-    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap)
+    if (fd < 1 || fd > MAX_FDS || current_task < 0 || current_task >= task_cap ||
+        !tasks[current_task].fds)
         return -1;
     tasks[current_task].fds[fd - 1].used = 0;
     return 0;
@@ -4266,6 +4309,7 @@ void kmain(void) {
 
     for (;;) {
         int event = 0;
+        task_reap_done();
         if (autoexec_pending && (int)(ticks - autoexec_at) >= 0) {
             autoexec_pending = 0;
             if (ctrl_seen || ctrl_down)
@@ -4312,6 +4356,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 
