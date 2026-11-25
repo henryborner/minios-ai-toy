@@ -1127,12 +1127,25 @@ struct task {
     u32 exit_code;
     u8 console_id;
     u8 kill_pending;
+    u8 fpu[108];
 };
 
 static struct task tasks[NTASKS];
 static int current_task;
 static u32 quantum_ticks;
 static u32 next_pid = 1;
+static u8 fpu_default[108];
+static int fpu_default_ready;
+
+static void fpu_task_default(u8 *dst) {
+    if (!fpu_default_ready) {
+        __asm__ __volatile__("fninit");
+        __asm__ __volatile__("fsave %0" : "=m"(fpu_default));
+        fpu_default_ready = 1;
+    }
+    for (int i = 0; i < 108; i++)
+        dst[i] = fpu_default[i];
+}
 
 static int current_console_id(void) {
     if (scheduler_active && current_task >= 0 && current_task < NTASKS)
@@ -1471,6 +1484,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
+    fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
     task_set_name(slot, name);
@@ -1546,6 +1560,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
+    fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
     task_set_name(slot, name);
@@ -1553,6 +1568,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
 }
 
 static void start_tasks(int first) {
+    __asm__ __volatile__("fninit");
     current_task = first;
     tasks[first].state = TASK_RUNNING;
     scheduler_active = 1;
@@ -1574,6 +1590,9 @@ static int next_ready(void) {
 }
 
 static void switch_task(int next) {
+    if (current_task >= 0 && current_task < NTASKS)
+        __asm__ __volatile__("fsave %0" : "=m"(tasks[current_task].fpu));
+    __asm__ __volatile__("frstor %0" : : "m"(tasks[next].fpu));
     current_task = next;
     tasks[next].state = TASK_RUNNING;
     quantum_ticks = 0;
@@ -1703,11 +1722,33 @@ static void task_exit(u32 status) {
     }
 }
 
+static void fault_hex(const char *label, u32 v) {
+    static const char digits[] = "0123456789ABCDEF";
+    char out[2 + 8 + 2];
+    out[0] = '0';
+    out[1] = 'x';
+    for (int i = 0; i < 8; i++)
+        out[2 + i] = digits[(v >> ((7 - i) * 4)) & 15];
+    out[10] = '\n';
+    out[11] = 0;
+    gui_sys_print(label);
+    gui_sys_print(out);
+}
+
 void exception_handler(u32 *frame) {
     u32 vector = frame[8];
+    u32 err = frame[9];
+    u32 eip = frame[10];
     u32 cs = frame[11];
-    (void)frame[9];
-    (void)frame[10];
+    u32 cr2;
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
+
+    gui_sys_print("[fault] CPU exception\n");
+    fault_hex(" vector=", vector);
+    fault_hex(" err=", err);
+    fault_hex(" cr2=", cr2);
+    fault_hex(" eip=", eip);
+    fault_hex(" cs=", cs);
 
     if (scheduler_active && (cs & 3) == 3) {
         gui_sys_print("[fault] Ring3 task killed; returning to shell.\n");
@@ -2873,6 +2914,22 @@ static int fd_close(int fd) {
     return 0;
 }
 
+#define USER_BASE 0x400000u
+#define USER_END  0x800000u
+
+static int user_ptr_ok(u32 ptr, u32 size) {
+    return ptr >= USER_BASE && ptr < USER_END && size <= USER_END - ptr;
+}
+
+static int user_str_ok(u32 ptr, u32 max) {
+    if (ptr < USER_BASE || ptr >= USER_END)
+        return 0;
+    for (u32 i = 0; i < max && ptr + i < USER_END; i++)
+        if (*(const char *)(ptr + i) == 0)
+            return 1;
+    return 0;
+}
+
 void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     static u8 cpl_reported;
     if (!cpl_reported) {
@@ -2885,7 +2942,8 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
 
     if (number == 1) {
         int cid = current_console_id();
-        gui_sys_print_console(cid, (const char *)arg);
+        if (user_str_ok(arg, 4096))
+            gui_sys_print_console(cid, (const char *)arg);
     } else if (number == 2) {
         if (scheduler_active) {
             gui_sys_print("[task] exit; scheduler.\n");
@@ -2900,8 +2958,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else if (number == 4) {
         u32 ptr = ((u32 *)frame)[4];
         u32 len = ((u32 *)frame)[6];
-        int ok = (ptr >= 0x400000 && ptr < 0x800000 &&
-                  len <= BIG_HEAP_SIZE && ptr + len <= 0x800000);
+        int ok = user_ptr_ok(ptr, len) && len <= BIG_HEAP_SIZE;
         if (ok)
             gui_sys_write_console(current_console_id(), (const char *)ptr, len);
         ((u32 *)frame)[7] = ok ? len : 0xFFFFFFFFu;
@@ -2997,15 +3054,15 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 name = ((u32 *)frame)[4];
         u32 out = ((u32 *)frame)[6];
         int r = -1;
-        if (name >= 0x400000 && name < 0x800000 &&
-            out >= 0x400000 && out + sizeof(struct user_stat) <= 0x800000)
+        if (user_str_ok(name, 256) &&
+            user_ptr_ok(out, sizeof(struct user_stat)))
             r = sys_stat((const char *)name, (struct user_stat *)out);
         ((u32 *)frame)[7] = (u32)r;
     } else if (number == 22) {
         u32 index = ((u32 *)frame)[4];
         u32 out = ((u32 *)frame)[6];
         int r = 0;
-        if (out >= 0x400000 && out + sizeof(struct user_dirent) <= 0x800000)
+        if (user_ptr_ok(out, sizeof(struct user_dirent)))
             r = sys_readdir(index, (struct user_dirent *)out);
         ((u32 *)frame)[7] = (u32)r;
     } else if (number == 23) {
@@ -3015,7 +3072,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         ((u32 *)frame)[7] = r ? 0 : 0xFFFFFFFFu;
     } else if (number == 24) {
         u32 out = ((u32 *)frame)[4];
-        if (out >= 0x400000 && out + sizeof(struct user_sysinfo) <= 0x800000) {
+        if (user_ptr_ok(out, sizeof(struct user_sysinfo))) {
             struct user_sysinfo *si = (struct user_sysinfo *)out;
             u32 free_frames = 0;
             for (u32 i = 0; i < FRAME_COUNT; i++)
@@ -3072,7 +3129,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         }
     } else if (number == 26) {
         u32 ptr = ((u32 *)frame)[4];
-        if (ptr >= 0x400000 && ptr + sizeof(struct gui_canvas_cmd) <= 0x800000) {
+        if (user_ptr_ok(ptr, sizeof(struct gui_canvas_cmd))) {
             struct gui_canvas_cmd cmd;
             u8 *dst = (u8 *)&cmd;
             const u8 *src = (const u8 *)ptr;
@@ -3092,7 +3149,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else if (number == 27) {
         u32 out = ((u32 *)frame)[4];
         int r = 0;
-        if (out >= 0x400000 && out + sizeof(struct gui_canvas_event) <= 0x800000) {
+        if (user_ptr_ok(out, sizeof(struct user_canvas_event))) {
             struct gui_canvas_event ev;
             if (gui_canvas_event(&ev)) {
                 struct user_canvas_event *ue = (struct user_canvas_event *)out;
