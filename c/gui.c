@@ -1429,6 +1429,14 @@ static int gui_new_console(void) {
     c->y = (scr_w >= 640) ? 28 + id * 6 : 12 + id * 3;
     c->w = con_w;
     c->h = con_h;
+    wins[c->win_id].x = c->x;
+    wins[c->win_id].y = c->y;
+    wins[c->win_id].w = c->w;
+    wins[c->win_id].h = c->h;
+    wins[c->win_id].visible = 1;
+    wins[c->win_id].minimized = 0;
+    wins[c->win_id].maximized = 0;
+    sync_console_layout(id);
     c->attrs = term_attrs + id * TERM_ROWS * TERM_COLS;
     term_init(c, id);
     term_prompt(c);
@@ -1446,13 +1454,6 @@ static int gui_new_console(void) {
         while (dn) c->title[n++] = digs[--dn];
         c->title[n] = 0;
     }
-    wins[c->win_id].x = c->x;
-    wins[c->win_id].y = c->y;
-    wins[c->win_id].w = c->w;
-    wins[c->win_id].h = c->h;
-    wins[c->win_id].visible = 1;
-    wins[c->win_id].minimized = 0;
-    wins[c->win_id].maximized = 0;
     wins[c->win_id].title = c->title;
     last_console = id;
     focus_window(c->win_id);
@@ -3448,9 +3449,12 @@ static void resize_move(int x, int y) {
 }
 
 static void sync_console_layout(int id) {
-    if (id < WIN_C0 || id > WIN_C7)
+    if (id < 0 || id >= console_count)
         return;
-    struct window *w = &wins[id];
+    int win_id = consoles[id].win_id;
+    if (win_id < 0 || win_id >= win_live)
+        return;
+    struct window *w = &wins[win_id];
     struct console *c = &consoles[id];
     c->x = w->x;
     c->y = w->y;
