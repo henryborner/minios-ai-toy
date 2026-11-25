@@ -249,7 +249,31 @@ static void set_palette(void) {
         outb(0x3C9, pal[i]);
 }
 
+static int clip_x0, clip_y0, clip_x1, clip_y1;
+
+static void clip_full(void) {
+    clip_x0 = 0;
+    clip_y0 = 0;
+    clip_x1 = scr_w;
+    clip_y1 = scr_h;
+}
+
+static void clip_set(int x, int y, int w, int h) {
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > scr_w) w = scr_w - x;
+    if (y + h > scr_h) h = scr_h - y;
+    if (w < 0) w = 0;
+    if (h < 0) h = 0;
+    clip_x0 = x;
+    clip_y0 = y;
+    clip_x1 = x + w;
+    clip_y1 = y + h;
+}
+
 static void plot(int x, int y, u8 color) {
+    if (x < clip_x0 || y < clip_y0 || x >= clip_x1 || y >= clip_y1)
+        return;
     if ((unsigned)x < (unsigned)scr_w && (unsigned)y < (unsigned)scr_h)
         fb[y * scr_w + x] = color;
 }
@@ -259,8 +283,12 @@ static void fill_rect(int x, int y, int w, int h, u8 color) {
         return;
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
+    if (x < clip_x0) { w -= clip_x0 - x; x = clip_x0; }
+    if (y < clip_y0) { h -= clip_y0 - y; y = clip_y0; }
     if (x + w > scr_w) w = scr_w - x;
     if (y + h > scr_h) h = scr_h - y;
+    if (x + w > clip_x1) w = clip_x1 - x;
+    if (y + h > clip_y1) h = clip_y1 - y;
     if (w <= 0 || h <= 0)
         return;
     for (int yy = 0; yy < h; yy++) {
@@ -1829,6 +1857,7 @@ static void draw_taskbar(void) {
 }
 
 static void window_frame(int id) {
+    clip_full();
     struct window *w = &wins[id];
     int active = (focus_win == id);
     fill_rect(w->x + 3, w->y + 3, w->w, w->h, 8);
@@ -1865,6 +1894,7 @@ static void window_frame(int id) {
 static void draw_console(int id) {
     struct console *c = &consoles[id];
     window_frame(id);
+    clip_set(c->x + 1, c->y + 11, c->w - 2, c->h - 12);
     fill_rect(c->x + 1, c->y + 11, c->w - 2, c->h - 12, term_default_attr >> 4);
     int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
     int slo = sel_r0 < sel_r1 ? sel_r0 : sel_r1;
@@ -1898,6 +1928,7 @@ static void draw_console(int id) {
 static void draw_files(void) {
     struct window *w = &wins[WIN_FILES];
     window_frame(WIN_FILES);
+    clip_set(w->x + 1, w->y + 11, w->w - 2, w->h - 12);
     int x = w->x, y = w->y;
     extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
     const char *btns[4] = { "Open", "Hex", "Del", "Sync" };
@@ -1960,6 +1991,7 @@ static void files_open_selected(void) {
 static void draw_system(void) {
     struct window *w = &wins[WIN_SYS];
     window_frame(WIN_SYS);
+    clip_set(w->x + 1, w->y + 11, w->w - 2, w->h - 12);
     int x = w->x, y = w->y;
     const char *tabs[3] = { "Overview", "Tasks", "Memory" };
     int tw = (w->w >= 300) ? 76 : 72;
@@ -2022,6 +2054,7 @@ static void draw_canvas(int id) {
     canvas_active = &canvases[slot];
     struct window *w = &wins[id];
     window_frame(id);
+    clip_set(w->x + 2, w->y + 12, canvas_w, canvas_h);
     int cx = w->x + 2;
     int cy = w->y + 12;
     if (!canvas_buf) {
@@ -2043,6 +2076,7 @@ static void draw_canvas(int id) {
 static void draw_about(void) {
     struct window *w = &wins[WIN_ABOUT];
     window_frame(WIN_ABOUT);
+    clip_set(w->x + 1, w->y + 11, w->w - 2, w->h - 12);
     int x = w->x, y = w->y;
     text2(x + 56, y + 16, "MiniOS", 1);
     text(x + 12, y + 42, "C + MicroPython in 1.44MB", 0);
@@ -2701,6 +2735,7 @@ void gui_redraw(void) {
     if (redraw_busy || !fb)
         return;
     redraw_busy = 1;
+    clip_full();
     gui_dirty = 0;
     update_clock(0);
     make_uptime();
@@ -2721,6 +2756,7 @@ void gui_redraw(void) {
         else if (id == WIN_FILES)
             draw_files();
     }
+    clip_full();
     draw_snap_preview();
     draw_menu();
     draw_list();

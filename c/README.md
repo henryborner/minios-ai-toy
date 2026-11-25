@@ -39,8 +39,8 @@ The build enforces:
 Current build:
 
 ```text
-kernel:  62,292 B / 131,072 B
-BSS end: 0x348B73
+kernel:  62,816 B / 131,072 B
+BSS end: 0x348B87
 MPY:     208,912 B
 image:   1,474,560 B
 ```
@@ -117,7 +117,7 @@ to its own console even while another console has focus.
 
 ## GUI and shell
 
-- VBE 640×480×8bpp, VGA 320×200 fallback.
+- VBE 640×480×8bpp, VGA 320×200 fallback.\n- Unified content clip rectangle: console/Canvas/Files/System/About contents\n  cannot paint outside their window; menus/cursor reset to full-screen clip.
 - Three consoles, ANSI 16-color cells, scrollback, history, line editing,
   clipboard.
 - Windows: drag, 8-way resize, minimize/maximize, snap, tile/cascade.
@@ -213,6 +213,7 @@ It is a regression test, not a cold-start absolute leak proof.
 - No networking, sound, USB or real-hardware target.
 - SaveFS legacy migration has a one-time window.
 - Not a secure or production OS.
+
 
 
 
