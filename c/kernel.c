@@ -40,7 +40,7 @@ static int current_console_id(void);
 static int console_has_live_task(int cid);
 static void sched_yield(void);
 static void module_wait_key(int cid);
-static u8 shift_down, extended;
+static u8 shift_down, extended, alt_down;
 static volatile u8 ctrl_down, ctrl_seen;
 
 static volatile u8 mouse_cycle;
@@ -299,10 +299,20 @@ static void keyboard_scancode(u8 sc) {
         u8 make = sc & 0x7F;
         if (make == 0x2A || make == 0x36)
             shift_down = 0;
+        else if (make == 0x38)
+            alt_down = 0;
         else if (make == 0x1D) {
             ctrl_down = 0;
             ctrl_seen = 1;
         }
+        return;
+    }
+    if (sc == 0x38) {
+        alt_down = 1;
+        return;
+    }
+    if (sc == 0x0F && alt_down) {
+        gui_special_pending = shift_down ? 8 : 7;
         return;
     }
     if (sc == 0x2A || sc == 0x36) {

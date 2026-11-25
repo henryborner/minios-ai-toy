@@ -3636,8 +3636,32 @@ void gui_key(char ch) {
     }
 }
 
+static void gui_cycle_window(int dir) {
+    int pos = -1;
+    for (int i = 0; i < win_live; i++)
+        if (zorder[i] == focus_win) {
+            pos = i;
+            break;
+        }
+    if (pos < 0)
+        pos = win_live - 1;
+    for (int k = 1; k <= win_live; k++) {
+        int p = (pos + dir * k) % win_live;
+        if (p < 0) p += win_live;
+        int id = zorder[p];
+        if (!wins[id].visible || wins[id].minimized)
+            continue;
+        focus_window(id);
+        menu_open = 0;
+        list_open = 0;
+        return;
+    }
+}
+
 void gui_special(int key) {
-    if (key == 1) {
+    if (key == 7 || key == 8) {
+        gui_cycle_window(key == 7 ? 1 : -1);
+    } else if (key == 1) {
         focus_window(WIN_ABOUT);
         menu_open = 0;
         list_open = 0;
