@@ -1536,6 +1536,10 @@ static void run_command(struct console *c, char *line) {
         const char *p = line + 3;
         while (*p >= '0' && *p <= '9')
             want = want * 10 + (u32)(*p++ - '0');
+        if (want == 0) {
+            term_puts(c, "fg: pid not found\n");
+            return;
+        }
         u32 pid, state, pages;
         int con;
         char name[16];
@@ -1591,6 +1595,7 @@ static void run_command(struct console *c, char *line) {
         if (!prepare_long_script()) {
             term_puts(c, "longjob: script failed\n");
         } else if (!gui_new_console()) {
+            c = &consoles[oldc];
             term_puts(c, "longjob: no free console\n");
         } else {
             int nc = console_count - 1;
@@ -1604,6 +1609,7 @@ static void run_command(struct console *c, char *line) {
     } else if (starts_with(line, "pybg ") || starts_with(line, "spawn ")) {
         int oldc = (int)(c - consoles);
         if (!gui_new_console()) {
+            c = &consoles[oldc];
             term_puts(c, "pybg: no free console\n");
             return;
         }
@@ -1620,8 +1626,10 @@ static void run_command(struct console *c, char *line) {
         int self = (int)(c - consoles);
         if (gui_new_console())
             term_puts(&consoles[self], "new console created.\n");
-        else
+        else {
+            c = &consoles[self];
             term_puts(c, "console limit reached.\n");
+        }
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");

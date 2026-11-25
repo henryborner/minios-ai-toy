@@ -1222,6 +1222,7 @@ struct task {
     u32 exit_code;
     u8 console_id;
     u8 reap_pending;
+    u8 stop_prev_state;
     u8 kill_pending;
     u8 wait_kbd;
     u8 fpu[108];
@@ -1479,6 +1480,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         }
         tasks[t].state = TASK_FREE;
         tasks[t].reap_pending = 0;
+        tasks[t].stop_prev_state = 0;
         tasks[t].code_phys = 0;
         tasks[t].stack_phys = 0;
         tasks[t].heap_phys = 0;
@@ -1691,6 +1693,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].shared_ro = 0;
     tasks[slot].state = TASK_READY;
     tasks[slot].reap_pending = 0;
+    tasks[slot].stop_prev_state = 0;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
     tasks[slot].waiting_pid = WAIT_NONE;
@@ -1827,6 +1830,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
         shared_ro_refs++;
     tasks[slot].state = TASK_READY;
     tasks[slot].reap_pending = 0;
+    tasks[slot].stop_prev_state = 0;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
     tasks[slot].waiting_pid = WAIT_NONE;
@@ -2018,12 +2022,16 @@ static void wake_parent(int child_slot) {
     if (parent < 0)
         return;
     u32 wait_pid = tasks[parent].waiting_pid;
-    if (tasks[parent].state == TASK_BLOCKED &&
+    if ((tasks[parent].state == TASK_BLOCKED ||
+         tasks[parent].state == TASK_STOPPED) &&
         wait_pid != WAIT_NONE &&
         (wait_pid == 0 || wait_pid == tasks[child_slot].pid)) {
         tasks[parent].wait_status = tasks[child_slot].exit_code;
         tasks[parent].waiting_pid = WAIT_NONE;
-        tasks[parent].state = TASK_READY;
+        if (tasks[parent].state == TASK_STOPPED)
+            tasks[parent].stop_prev_state = TASK_READY;
+        else
+            tasks[parent].state = TASK_READY;
     }
 }
 
@@ -2231,24 +2239,74 @@ int task_kill_pid(u32 pid) {
 }
 
 int task_stop_pid(u32 pid) {
+    u32 flags;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags));
     int t = find_pid(pid);
-    if (t <= 0 || pid == 0)
+    if (t <= 0 || pid == 0 || tasks[t].state == TASK_FREE ||
+        tasks[t].state == TASK_DONE) {
+        __asm__ __volatile__("push %0; popf" : : "r"(flags));
         return 0;
-    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
-        return 0;
+    }
+    if (tasks[t].state == TASK_STOPPED) {
+        __asm__ __volatile__("push %0; popf" : : "r"(flags));
+        return 2;
+    }
+    tasks[t].stop_prev_state = tasks[t].state;
     tasks[t].state = TASK_STOPPED;
+    __asm__ __volatile__("push %0; popf" : : "r"(flags));
     return 1;
 }
 
 int task_bg_pid(u32 pid) {
+    u32 flags;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags));
     int t = find_pid(pid);
-    if (t <= 0 || pid == 0)
+    if (t <= 0 || pid == 0 || tasks[t].state == TASK_FREE ||
+        tasks[t].state == TASK_DONE) {
+        __asm__ __volatile__("push %0; popf" : : "r"(flags));
         return 0;
-    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
-        return 0;
-    if (tasks[t].state != TASK_STOPPED)
+    }
+    if (tasks[t].state != TASK_STOPPED) {
+        __asm__ __volatile__("push %0; popf" : : "r"(flags));
         return 2;
-    tasks[t].state = TASK_READY;
+    }
+    u8 prev = tasks[t].stop_prev_state;
+    tasks[t].stop_prev_state = 0;
+    if (prev == TASK_BLOCKED) {
+        if (tasks[t].waiting_pid != WAIT_NONE) {
+            int child = find_pid(tasks[t].waiting_pid);
+            if (child >= 0 && tasks[child].state != TASK_DONE &&
+                tasks[child].state != TASK_FREE) {
+                tasks[t].state = TASK_BLOCKED;
+            } else {
+                if (child >= 0)
+                    tasks[t].wait_status = tasks[child].exit_code;
+                tasks[t].waiting_pid = WAIT_NONE;
+                tasks[t].state = TASK_READY;
+            }
+        } else if (tasks[t].wait_kbd != 0) {
+            int cid = (int)tasks[t].wait_kbd - 1;
+            if (cid >= 0 && cid < kbd_console_count &&
+                kbd_tail[cid] != kbd_head[cid]) {
+                tasks[t].wait_kbd = 0;
+                tasks[t].state = TASK_READY;
+            } else {
+                tasks[t].state = TASK_BLOCKED;
+            }
+        } else if (tasks[t].sleep_until != 0) {
+            if ((int)(ticks - tasks[t].sleep_until) < 0) {
+                tasks[t].state = TASK_BLOCKED;
+            } else {
+                tasks[t].sleep_until = 0;
+                tasks[t].state = TASK_READY;
+            }
+        } else {
+            tasks[t].state = TASK_READY;
+        }
+    } else {
+        tasks[t].state = TASK_READY;
+    }
+    __asm__ __volatile__("push %0; popf" : : "r"(flags));
     return 1;
 }
 
@@ -4416,6 +4474,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 
