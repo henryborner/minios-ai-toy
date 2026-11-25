@@ -1,198 +1,123 @@
-# MiniOS Ring 3 user ABI v1 (MicroPython bring-up)
+# MiniOS Ring 3 user ABI (UMP1)
 
-This is the user-mode ABI for a large Ring 3 module on `v2-protected-c`.
-It is used by `utest` and is the intended target for a MicroPython user-mode
-port.
+Current branch: `v2-protected-c`.
 
-## Virtual address layout (single big task slot)
+This document describes the UMP1 module format and the current Ring 3 task
+layout. It supersedes the older single-slot / 20-byte-header notes.
+
+## Task model
+
+- Task 0 is the persistent GUI/Shell kernel thread. It is not a user task.
+- User slots 1–5 are small Ring 3 tasks.
+- User slots 6–8 are big UMP1/MicroPython tasks (up to three concurrent).
+- Every user task has:
+  - its own page directory and user page table
+  - its own kernel stack and `kesp`
+  - its own user stack and heap
+  - a console id and FPU state
+
+Kernel code/data are supervisor-only. UMP1 read-only pages are mapped user
+read-only (`PTE 0x005`); private data, BSS, stack and heap are user read/write
+(`PTE 0x007`).
+
+## Virtual layout
 
 | Virtual | Size | Use |
 |---:|---:|---|
-| `0x00400000` | 512 KB max | module code/rodata/data + `UMP1` header |
-| `0x00480000` | 64 KB | user stack (`ESP` starts at `0x00490000`) |
-| `0x00500000` | 1 MB | user heap for MicroPython GC |
-| `0x00400000–0x007FFFFF` | 4 MB | user page-table window (U/S=1 for mapped pages) |
+| `0x400000` | up to 512 KB | UMP1 header + text/rodata + private data/BSS |
+| `0x480000` | 64 KB | user stack; initial ESP near `0x490000` |
+| `0x500000–0x700000` | 2 MB | brk heap window; initial big heap 1 MB |
 
-All pages in the window are mapped with U/S=1 only where needed.
+`argv` strings are copied into the task's user stack by
+`build_args_on_stack()` before the task is made READY.
 
-## Physical backing (current implementation)
-
-Code, stack and heap pages are allocated dynamically from a frame allocator:
+## Physical layout
 
 | Physical | Use |
 |---:|---|
-| `0x00500000–0x00FFFFFF` | 11 MB frame pool |
-| `0x01000000–0x01BFFFFF` | kernel direct map of physical 4–16 MB |
+| `0x10000` | boot staging for the kernel image |
+| `0x300000` | linked kernel image |
+| `0x500000` | frame pool start |
+| `0x1000000` | frame pool end |
+| `0x1000000–0x1C00000` | supervisor direct map of frames |
 
-The kernel direct map is supervisor-only. The user page table maps virtual
-`0x400000+` to allocated frames with U/S=1; the kernel copies through the
-direct map.
+`0x00100000` remains the temporary staging area for a UMP1 image. The kernel
+module heap area `0x00200000–0x00300000` is separate from the kernel at
+`0x00300000`.
 
-The old fixed `0x00100000/0x00140000/0x00150000` layout is no longer used for
-task memory. `0x00100000` remains the temporary load address for the kernel
-module / large user image.
+## UMP1 header
 
-Only **one big task slot** exists (slot 7). Small tasks use slots 0–6.
-
-## Module file header
-
-The image linked at `0x400000` starts with the same 20-byte header shape as the
-kernel module, but the magic is `UMP1`:
+The image starts with a 24-byte header:
 
 ```c
-struct user_module_header {
+struct module_header {
     u8  magic[4];       /* "UMP1" */
     u32 entry_offset;   /* from 0x400000 */
-    u32 image_size;     /* includes header */
+    u32 image_size;     /* includes header, ends before BSS */
     u32 bss_size;
-    u32 heap_size;      /* currently informational; heap is 1 MB */
+    u32 heap_size;      /* hint; current user heap is 1 MB */
+    u32 ro_size;        /* bytes of header+text+rodata; 4 KB aligned */
 } __attribute__((packed));
 ```
 
-The loader reads `UMTEST.BIN` from MiniFS through the FDC, copies it to
-`0x100000`, zeroes BSS/stack/heap, builds the page directory and starts the task
-with:
+`.data` is linked at a 4 KB boundary. `ro_size` is the end of the page-aligned
+read-only area:
 
-- EIP = `0x400000 + entry_offset`
-- ESP = `0x490000` (or lower when `argv` is supplied)
-- heap = `0x500000`, 1 MB initially (expandable with `brk`)
+- first task: copies `ro_size` bytes to a shared frame block
+- subsequent tasks: map the same shared pages `0x005`
+- each task: copies only `image_size - ro_size` bytes into private data pages
+  and zeroes BSS
+
+Shared read-only pages are reference-counted and freed with the last user.
+A different UMP1 image while shared users exist is rejected.
 
 ## Syscalls
 
-`int 0x80`; number in EAX, arguments in EBX/ECX/EDX. The kernel returns a value
-by replacing the saved EAX, so the user sees it in EAX after `int 0x80`.
+`int 0x80`: number in EAX, arguments in EBX/ECX/EDX (the kernel uses saved
+frame slots, not the live syscall registers). Return in saved EAX.
 
 | EAX | Call | Arguments | Return |
 |---:|---|---|---|
 | 1 | write C string | EBX = pointer | — |
-| 2 | exit task | — | does not return |
+| 2 | exit | — | does not return |
 | 3 | yield | — | continues later |
-| 4 | write bytes | EBX = buf, ECX = len | EAX = len |
-| 5 | blocking read char | — | EAX = byte |
-| 6 | ticks_ms | — | EAX = PIT ms |
-| 7 | read whole file | EBX = name, ECX = dst, EDX = max | EAX = size or 0 |
-| 8 | spawn | EBX = name | EAX = child PID or 0 |
-| 9 | wait | EBX = PID (0 = any child) | EAX = exit status or -1 |
-| 10 | sleep ms | EBX = ms | EAX = 0 |
+| 4 | write bytes | EBX = buf, ECX = len | len |
+| 5 | blocking getchar | — | byte; blocks on the task's console |
+| 6 | ticks_ms | — | PIT milliseconds |
+| 7 | read whole file | EBX = name, ECX = dst, EDX = max | size or 0 |
+| 8 | spawn | EBX = name | child PID or 0 |
+| 9 | wait | EBX = PID (0 = any child) | exit status or -1 |
+| 10 | sleep ms | EBX = ms | 0; blocks and wakes on IRQ0 |
 | 11 | exit(status) | EBX = status | does not return |
-| 12 | open read-only | EBX = name | EAX = fd (1..8) or -1 |
-| 13 | read | EBX = fd, ECX = buf, EDX = len | EAX = bytes or -1 |
-| 14 | close | EBX = fd | EAX = 0 or -1 |
-| 15 | seek | EBX = fd, ECX = offset, EDX = whence | EAX = new offset or -1 |
-| 16 | open_ex | EBX = name, ECX = flags | EAX = fd or -1 |
-| 17 | write | EBX = fd, ECX = buf, EDX = len | EAX = bytes or -1 |
-| 18 | unlink | EBX = name | EAX = 0 or -1 |
-| 19 | spawn_args | EBX = name, ECX = argv, EDX = argc | EAX = child PID or 0 |
-| 20 | brk | EBX = new break (0 = query) | EAX = break or -1 |
-| 21 | stat | EBX = name, ECX = user_stat | EAX = 0 or -1 |
-| 22 | readdir | EBX = index, ECX = user_dirent | EAX = 1 or 0 |
-| 29 | poll_ctrl_c | — | EAX = 1 if Ctrl-C consumed from task console, else 0 |
+| 12 | open read-only | EBX = name | fd or -1 |
+| 13 | read | EBX = fd, ECX = buf, EDX = len | bytes or -1 |
+| 14 | close | EBX = fd | 0 or -1 |
+| 24 | canvas open | EBX = title | 0 / -1 |
+| 25 | canvas cmd | EBX = command pointer | result |
+| 26 | canvas present | — | 0 |
+| 27 | canvas close | — | 0 |
+| 28 | beep / serial | op + args | result |
+| 30 | deferred run py | EBX = script | 0 / -1 |
+| 31 | non-blocking getchar | — | byte or -1 |
+| 32 | task info | EBX = buffer, ECX = max | count |
+| 33 | pipe op | packed op/id, buf, len | result |
 
-Notes:
+`getchar` blocks with a saved kernel stack (`sched_yield`); the Shell and other
+consoles continue running. `sleep` uses the same mechanism with a timer wake.
+`wait` stores the child exit status in `wait_status`.
 
-- Syscalls 1/4/5/6/7/12/13/14/15/21/22 require pointers in the user window
-  `0x400000–0x7FFFFF`.
-- Syscall 4 accepts up to `BIG_HEAP_SIZE` (1 MB) per call; invalid pointers
-  or lengths return `-1`.
-- `stat` writes `{ u32 size; u32 kind; }`, kind 1 = MiniFS, 2 = RAMFS.
-- `readdir` writes `{ char name[16]; u32 size; u32 kind; }`, returns 0 at end;
-  RAMFS entries come first and shadow MiniFS entries with the same name.
-- Syscall 5 enables interrupts while waiting; keyboard IRQs feed it.
-- Syscall 7 reads a whole MiniFS file into the user buffer.
-- Syscalls 12–15 are the read-only FD API. FDs are per-task (8 per task),
-  backed by MiniFS extents; `read` copies sectors through the FDC.
-- Syscall 16 (`open_ex`) flags: bit0 `O_CREAT`, bit1 `O_TRUNC`, bit2
-  `O_WRITE`. Files created here are in RAMFS, not MiniFS.
-- Syscall 17 writes only RAMFS FDs. RAMFS holds up to 8 files × 16 KB and is
-  non-persistent.
-- `spawn` loads a flat MiniFS program ≤4 KB, assigns a PID and parent PID,
-  and returns immediately. `wait` blocks until a child exits.
-- `spawn_args` copies argv strings onto the child stack; at child entry
-  `[esp]=argc`, then `argv[0..argc-1]`, then NULL.
-- `brk` grows/shrinks the heap at `0x500000–0x700000`, mapping/freeing pages
-  from the frame allocator. The big task starts with a 1 MB heap.
-- `sleep` blocks the task; IRQ0 wakes it. If no other task is ready, the
-  syscall busy-waits with `sti; hlt`.
-- Syscall 2 exits with status 0; syscall 11 exits with EBX.
-- Syscall 5 skips F1–F6 keyboard events. Arrow/Home/End/Delete are translated
-  to ANSI sequences: `ESC [ A/B/C/D/H/F`, `ESC [ 3 ~`.
-- Ctrl combinations arrive as control bytes (`Ctrl-C` = 3, `Ctrl-D` = 4).
-- Terminal output handles `\r`, `\n`, `\b`, `\t` and swallows ANSI CSI sequences.
-- Ring 3 `#DE/#UD/#GP/#PF` kills the current task and returns to the Shell;
-  the task's parent sees exit status `0xDEAD`. Kernel-mode faults halt.
-- COM1 host bridge: shell `upload NAME` / `download NAME`; RAMFS is still
-  session-only.
-- A task is bound to the console it was launched from: syscall 1/4 output goes
-  there, and syscall 5 reads that console's keyboard queue. Other consoles can
-  run safe shell commands while a task is blocked/running.
+## User-visible behavior
 
-## HAL mapping for MicroPython
+- Console output is routed by the task's console id.
+- A task can block indefinitely on input without freezing the desktop.
+- Task exit frees code/data, stack, heap and the shared-RO reference.
+- `selftest` emits `[selftest] PASS` on COM1.
+- The smoke test warms caches before comparing free frames.
 
-- `mp_hal_stdout_tx_strn(s, n)` -> syscall 4
-- `mp_hal_stdin_rx_chr()` -> syscall 5
-- `mp_hal_ticks_ms()` -> syscall 6
-- `gc_init((void *)0x500000, (void *)0x600000)`
-- console output uses syscall 4; no stdio needed
-- script import can use syscall 7 for whole files, or frozen modules
+## Limits
 
-## Build and test
-
-Current repository test module:
-
-```text
-utest
-```
-
-It verifies:
-
-- multi-page code image
-- 1 MB heap write/read
-- syscall 4 (write bytes)
-- syscall 6 (ticks)
-- syscall 7 (`HELLO.BIN` from MiniFS into user heap)
-- syscall 5 (blocking key)
-- syscall 2 (exit back to shell)
-
-Process/FD tests:
-
-```text
-exec PARENT.BIN    # spawn + sleep + wait
-exec PARENT2.BIN   # spawn + blocking wait
-exec STATUS.BIN    # exit(5) -> wait() == 5
-exec FD.BIN        # open/read/close TEST.TXT
-exec RAMFS.BIN     # RAMFS create/write/seek/read
-exec ARGS.BIN      # argv child
-exec HEAP.BIN      # brk grow/write/read/shrink
-exec BIGWRITE.BIN  # 5000-byte syscall 4 write
-exec DIR.BIN       # stat/readdir merge
-uargs              # large UMP1 task argc/argv
-big512             # 300 KB UMP1 payload
-ps                 # active task table
-kill PID           # terminate a task
-```
-
-Expected output includes:
-
-```text
-Ring3 large module loaded: multi-page code + 1MB heap.
-read_file syscall loaded HELLO.BIN into user heap.
-Type one key for blocking getchar: x
-Heap, read_file, getchar and ticks_ms OK.
-[task] exit; scheduler.
-```
-
-## Limitations
-
-- One big task only (slot 7).
-- Physical frames are dynamically allocated, but there is no demand paging
-  or `mmap`; `brk` grows the heap within `0x500000–0x700000`.
-- MiniFS is read-only; only RAMFS (8 × 16 KB, non-persistent) is writable.
-- `spawn`/`spawn_args` support flat programs ≤4 KB; large UMP1 tasks support
-  argv up to 512 KB code, but there is no fork/replace-exec.
-- `ps`/`kill` are shell commands; there is no foreground-control UI.
-- Kernel syscall stack is 8 KB for the big task; deep MicroPython C recursion
-  needs auditing.
-- `0x00100000–0x0017FFFF` is the temporary large-image load window; don't run
-  the kernel module and a large user image at the same instant.
-- Ring 3 isolation is real for the user task; the kernel/user boundary is
-  syscalls 1–22.
+- No demand paging.
+- No copy-on-write.
+- No general fork; spawn creates a fresh task.
+- Shared RO only for the same UMP1 image.
+- One Canvas window currently; multi-Canvas is not implemented.
