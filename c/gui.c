@@ -24,10 +24,10 @@
 #define WIN_C2 2
 #define WIN_SYS 3
 #define WIN_ABOUT 4
+#define NCANVAS 4
 #define WIN_APP 5
-#define WIN_APP2 6
-#define WIN_FILES 7
-#define WIN_COUNT 8
+#define WIN_FILES (WIN_APP + NCANVAS)
+#define WIN_COUNT (WIN_FILES + 1)
 
 #define MENU_X 2
 #define MENU_W 120
@@ -100,7 +100,6 @@ struct window {
     const char *title;
 };
 
-#define NCANVAS 2
 struct canvas_state {
     u8 *buf, *back, *target;
     int w, h;
@@ -470,7 +469,7 @@ int gui_focused_console(void) {
 }
 
 int gui_runtime_keyboard_wanted(void) {
-    if (focus_win == WIN_APP || focus_win == WIN_APP2) {
+    if (focus_win >= WIN_APP && focus_win < WIN_APP + NCANVAS) {
         int ci = canvas_slot_for_window(focus_win);
         if (ci >= 0)
             return canvases[ci].open && canvases[ci].key_capture;
@@ -482,8 +481,8 @@ int gui_runtime_keyboard_wanted(void) {
 extern u32 kernel_current_pid(void);
 
 static int canvas_slot_for_window(int id) {
-    if (id == WIN_APP) return 0;
-    if (id == WIN_APP2) return 1;
+    if (id >= WIN_APP && id < WIN_APP + NCANVAS)
+        return id - WIN_APP;
     return -1;
 }
 
@@ -605,19 +604,17 @@ static void init_windows(void) {
     wins[WIN_ABOUT].minimized = 0;
     wins[WIN_ABOUT].title = "About MiniOS";
 
-    wins[WIN_APP].w = canvases[0].w + 4;
-    wins[WIN_APP].h = canvases[0].h + 14;
-    wins[WIN_APP].visible = 0;
-    wins[WIN_APP].minimized = 0;
-    wins[WIN_APP].title = canvases[0].title;
-
-    wins[WIN_APP2].x = (scr_w >= 640) ? 220 : 84;
-    wins[WIN_APP2].y = (scr_w >= 640) ? 120 : 44;
-    wins[WIN_APP2].w = canvases[1].w + 4;
-    wins[WIN_APP2].h = canvases[1].h + 14;
-    wins[WIN_APP2].visible = 0;
-    wins[WIN_APP2].minimized = 0;
-    wins[WIN_APP2].title = canvases[1].title;
+    for (int ci = 0; ci < NCANVAS; ci++) {
+        int id = WIN_APP + ci;
+        wins[id].x = (scr_w >= 640) ? scr_w - (canvases[ci].w + 4) - 12 - ci * 22
+                                    : 60 + ci * 8;
+        wins[id].y = (scr_w >= 640) ? 26 + ci * 26 : 34 + ci * 8;
+        wins[id].w = canvases[ci].w + 4;
+        wins[id].h = canvases[ci].h + 14;
+        wins[id].visible = 0;
+        wins[id].minimized = 0;
+        wins[id].title = canvases[ci].title;
+    }
 
     wins[WIN_FILES].x = (scr_w >= 640) ? 24 : 20;
     wins[WIN_FILES].y = (scr_w >= 640) ? 286 : 104;
@@ -2637,7 +2634,7 @@ void gui_redraw(void) {
             draw_system();
         else if (id == WIN_ABOUT)
             draw_about();
-        else if (id == WIN_APP || id == WIN_APP2)
+        else if (id >= WIN_APP && id < WIN_APP + NCANVAS)
             draw_canvas(id);
         else if (id == WIN_FILES)
             draw_files();
@@ -2809,7 +2806,7 @@ void gui_toggle_maximize(int id) {
     }
     if (id >= WIN_C0 && id <= WIN_C2) {
         sync_console_layout(id);
-    } else if (id == WIN_APP || id == WIN_APP2) {
+    } else if (id >= WIN_APP && id < WIN_APP + NCANVAS) {
         canvas_active = &canvases[canvas_slot_for_window(id)];
         canvas_w = w->w - 4;
         canvas_h = w->h - 14;
@@ -2880,7 +2877,7 @@ static void resize_move(int x, int y) {
     if (resize_win == WIN_SYS && minw < 232)
         minw = 232;
     int minh = (resize_win <= WIN_C2) ? 96 :
-               ((resize_win == WIN_APP || resize_win == WIN_APP2) ? 110 : 90);
+               ((resize_win >= WIN_APP && resize_win < WIN_APP + NCANVAS) ? 110 : 90);
     if (right - left < minw) {
         if (west) left = right - minw;
         else right = left + minw;
@@ -2911,7 +2908,7 @@ static void resize_move(int x, int y) {
         if (rows > 46) rows = 46;
         c->cols = cols;
         c->rows = rows;
-    } else if (resize_win == WIN_APP || resize_win == WIN_APP2) {
+    } else if (resize_win >= WIN_APP && resize_win < WIN_APP + NCANVAS) {
         canvas_active = &canvases[canvas_slot_for_window(resize_win)];
         canvas_w = w->w - 4;
         canvas_h = w->h - 14;
@@ -3454,7 +3451,7 @@ void gui_key(char ch) {
         }
         return;
     }
-    if (focus_win == WIN_APP || focus_win == WIN_APP2) {
+    if (focus_win >= WIN_APP && focus_win < WIN_APP + NCANVAS) {
         int ci = canvas_slot_for_window(focus_win);
         if (ci >= 0) {
             canvas_active = &canvases[ci];
