@@ -2747,9 +2747,12 @@ int run_n_python(const char *const *names, int n) {
         h->image_size > size || h->bss_size > BIG_CODE_MAX - h->image_size)
         return 0;
     int slots[8];
-    for (int i = 0; i < n; i++)
+    for (int i = 0; i < n; i++) {
         slots[i] = task_create_big("MPY.BIN", h->image_size, h->bss_size,
                                    h->entry_offset);
+        if (slots[i] >= 0)
+            tasks[slots[i]].console_id = (u8)i;
+    }
     for (int i = 0; i < n; i++)
         if (slots[i] < 0) {
             for (int j = 0; j < n; j++)
