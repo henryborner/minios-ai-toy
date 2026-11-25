@@ -1675,12 +1675,6 @@ static void sched_timer_tick(u32 *frame) {
     if (!scheduler_active)
         return;
 
-    if (current_task >= 0 && current_task < NTASKS &&
-        tasks[current_task].kill_pending) {
-        tasks[current_task].kill_pending = 0;
-        task_exit(0xFFFFu);
-    }
-
     for (int t = 0; t < NTASKS; t++) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].sleep_until != 0 &&
             (int)(ticks - tasks[t].sleep_until) >= 0) {
@@ -1690,9 +1684,15 @@ static void sched_timer_tick(u32 *frame) {
         }
     }
 
-    /* Only preempt a real user context, never the kernel itself. */
+    /* Only preempt/exit a real user context, never the kernel itself. */
     if ((frame[9] & 3) != 3)
         return;
+
+    if (current_task >= 0 && current_task < NTASKS &&
+        tasks[current_task].kill_pending) {
+        tasks[current_task].kill_pending = 0;
+        task_exit(0xFFFFu);
+    }
 
     quantum_ticks++;
     if (quantum_ticks < TIME_SLICE_TICKS)
@@ -1727,6 +1727,8 @@ static void task_exit(u32 status) {
     tasks[me].exit_code = status;
     tasks[me].state = TASK_DONE;
     wake_parent(me);
+    /* Never free the current pages while CR3 still points at them. */
+    set_cr3((u32)page_directory);
     task_free_frames(me);
 
     for (;;) {

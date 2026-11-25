@@ -10,11 +10,19 @@
         section .bss
 sched_saved_esp:
         resd    1
+sched_saved_cr3:
+        resd    1
 
         section .text
 scheduler_start:
+        push    ebp
+        push    ebx
+        push    esi
+        push    edi
+        mov     eax, cr3
+        mov     [sched_saved_cr3], eax
         mov     [sched_saved_esp], esp
-        mov     eax, [esp + 4]
+        mov     eax, [esp + 20]     ; first_task_esp after 16 bytes saved regs
         mov     esp, eax
         mov     ax, 0x23
         mov     ds, ax
@@ -25,6 +33,10 @@ scheduler_start:
         iretd
 
 scheduler_resume:
+        pop     edi
+        pop     esi
+        pop     ebx
+        pop     ebp
         sti
         ret
 
@@ -36,6 +48,8 @@ scheduler_exit_to_kernel:
         mov     fs, ax
         mov     gs, ax
         mov     ss, ax
+        mov     eax, [sched_saved_cr3]
+        mov     cr3, eax
         mov     esp, [sched_saved_esp]
         jmp     scheduler_resume
 
