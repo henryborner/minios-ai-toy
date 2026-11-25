@@ -38,6 +38,8 @@ static volatile u8 kbd_head[KBD_CONSOLES], kbd_tail[KBD_CONSOLES];
 static volatile u8 gui_special_pending;
 static int current_console_id(void);
 static int console_has_live_task(int cid);
+static void sched_yield(void);
+static void module_wait_key(int cid);
 static u8 shift_down, extended;
 static volatile u8 ctrl_down, ctrl_seen;
 
@@ -233,6 +235,8 @@ static const char keymap[128] = {
     [0x39] = ' '
 };
 
+static void wake_kbd_tasks(int c);
+
 static void kbd_push(u8 ch) {
     int c = gui_focused_console();
     if (c < 0 || c >= KBD_CONSOLES)
@@ -242,6 +246,7 @@ static void kbd_push(u8 ch) {
         kbd_buf[c][kbd_head[c]] = ch;
         kbd_head[c] = next;
     }
+    wake_kbd_tasks(c);
 }
 
 #define KEY_UP    0xF7
@@ -444,6 +449,8 @@ extern void user_exit_to_kernel(void);
 extern void scheduler_start(u32 first_task_esp);
 extern void scheduler_exit_to_kernel(void);
 extern void switch_to(u32 task_esp);
+extern void swtch(u32 *old_kesp, u32 new_kesp);
+extern void task_first_entry(void);
 extern const u8 user_blob_start[];
 extern const u8 user_blob_end[];
 
@@ -989,12 +996,11 @@ static u32 module_ticks_ms(void) {
 static int module_getchar(void) {
     static u8 seq[4];
     static u8 seq_pos, seq_len;
-    if (seq_pos < seq_len)
-        return (int)seq[seq_pos++];
-
     for (;;) {
+        if (seq_pos < seq_len)
+            return (int)seq[seq_pos++];
         if (gui_canvas_keyboard()) {
-            __asm__ __volatile__("sti; hlt; cli");
+            sched_yield();
             continue;
         }
         int cid = current_console_id();
@@ -1032,8 +1038,7 @@ static int module_getchar(void) {
             seq_pos = 1;
             return (int)seq[0];
         }
-        gui_flush();
-        __asm__ __volatile__("sti; hlt");
+        module_wait_key(cid);
     }
 }
 
@@ -1122,6 +1127,8 @@ int run_module(const char *name) {
 
 struct task {
     u32 esp;
+    u32 kesp;
+    u32 *tf;
     u32 cr3;
     u32 kstack_top;
     u32 code_phys;
@@ -1139,12 +1146,22 @@ struct task {
     u32 exit_code;
     u8 console_id;
     u8 kill_pending;
+    u8 wait_kbd;
     u8 fpu[108];
 };
 
 static struct task tasks[NTASKS];
 static int current_task;
 static u32 quantum_ticks;
+
+static void wake_kbd_tasks(int c) {
+    for (int t = 1; t < NTASKS; t++) {
+        if (tasks[t].state == TASK_BLOCKED && tasks[t].wait_kbd == (u8)(c + 1)) {
+            tasks[t].wait_kbd = 0;
+            tasks[t].state = TASK_READY;
+        }
+    }
+}
 static u32 next_pid = 1;
 static u8 fpu_default[108];
 static int fpu_default_ready;
@@ -1160,7 +1177,7 @@ static void fpu_task_default(u8 *dst) {
 }
 
 int kernel_task_console(void) {
-    if (scheduler_active && current_task >= 0 && current_task < NTASKS)
+    if (scheduler_active && current_task > 0 && current_task < NTASKS)
         return tasks[current_task].console_id;
     return -1;
 }
@@ -1176,11 +1193,11 @@ int scheduler_active_now(void) {
 }
 
 int kernel_runtime_busy(void) {
-    return scheduler_active || runtime_busy;
+    return runtime_busy;
 }
 
 static int console_has_live_task(int cid) {
-    for (int t = 0; t < NTASKS; t++) {
+    for (int t = 1; t < NTASKS; t++) {
         if (tasks[t].state != TASK_FREE && tasks[t].state != TASK_DONE &&
             tasks[t].console_id == cid)
             return 1;
@@ -1355,7 +1372,7 @@ static void task_free_heap(int slot) {
     tasks[slot].heap_phys = 0;
 }
 
-static void task_clear_all(void) {
+static void __attribute__((unused)) task_clear_all(void) {
     for (int t = 0; t < NTASKS; t++) {
         if (tasks[t].state != TASK_FREE) {
             if (tasks[t].code_phys)
@@ -1379,6 +1396,9 @@ static void task_clear_all(void) {
         tasks[t].exit_code = 0;
         tasks[t].console_id = 0;
         tasks[t].kill_pending = 0;
+        tasks[t].wait_kbd = 0;
+        tasks[t].kesp = 0;
+        tasks[t].tf = 0;
         for (int f = 0; f < MAX_FDS; f++)
             fd_table[t][f].used = 0;
     }
@@ -1437,6 +1457,17 @@ static void vbe_init(void) {
     mouse_y = scr_h / 2;
 }
 
+static void task_init_kernel_context(int slot, u32 *frame) {
+    u32 *ks = (u32 *)((u32)frame - 24);
+    for (int i = 0; i < 5; i++)
+        ks[i] = 0;
+    ks[0] = 0x002;
+    ks[5] = (u32)task_first_entry;
+    tasks[slot].kesp = (u32)ks;
+    tasks[slot].tf = frame;
+    tasks[slot].esp = (u32)frame;
+}
+
 static void task_set_name(int slot, const char *name) {
     int i = 0;
     while (i < 15 && name[i]) {
@@ -1448,7 +1479,7 @@ static void task_set_name(int slot, const char *name) {
 
 static int task_create(const char *name, const u8 *src, const u8 *end) {
     int slot = -1;
-    for (int t = 0; t < BIG_FIRST_SLOT; t++) {
+    for (int t = 1; t < BIG_FIRST_SLOT; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
             slot = t;
             break;
@@ -1491,7 +1522,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     frame[11] = 0x00402000;
     frame[12] = 0x23;
 
-    tasks[slot].esp = (u32)frame;
+    task_init_kernel_context(slot, frame);
     tasks[slot].kstack_top = top;
     tasks[slot].cr3 = (u32)task_pd[slot];
     tasks[slot].code_phys = code;
@@ -1508,6 +1539,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
+    tasks[slot].wait_kbd = 0;
     fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
@@ -1572,7 +1604,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     frame[11] = BIG_USER_STACK + BIG_STACK_PAGES * 0x1000;
     frame[12] = 0x23;
 
-    tasks[slot].esp = (u32)frame;
+    task_init_kernel_context(slot, frame);
     tasks[slot].kstack_top = top;
     tasks[slot].cr3 = (u32)task_pd[slot];
     tasks[slot].code_phys = code;
@@ -1589,6 +1621,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
+    tasks[slot].wait_kbd = 0;
     fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
         fd_table[slot][f].used = 0;
@@ -1597,25 +1630,75 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
 }
 
 static void start_tasks(int first) {
-    __asm__ __volatile__("fninit");
-    current_task = first;
-    tasks[first].state = TASK_RUNNING;
-    scheduler_active = 1;
-    tss.esp0 = tasks[first].kstack_top;
-    set_cr3(tasks[first].cr3);
-    scheduler_start(tasks[first].esp);
-    scheduler_active = 0;
-    tss.esp0 = 0x00080000;
+    (void)first;
     __asm__ __volatile__("sti");
+}
+
+static void sched_init_task0(void) {
+    tasks[0].state = TASK_RUNNING;
+    tasks[0].cr3 = (u32)sched_safe_pd;
+    tasks[0].kstack_top = 0x00090000u;
+    tasks[0].console_id = 0;
+    tasks[0].pid = 0;
+    tasks[0].kesp = 0;
+    tasks[0].tf = 0;
+    fpu_task_default(tasks[0].fpu);
+    current_task = 0;
+    scheduler_active = 1;
+    tss.esp0 = 0x00080000u;
+    set_cr3((u32)sched_safe_pd);
 }
 
 static int next_ready(void) {
     for (int k = 1; k < NTASKS; k++) {
         int t = (current_task + k) % NTASKS;
+        if (t == 0)
+            continue;
         if (tasks[t].state == TASK_READY)
             return t;
     }
+    if (current_task != 0 && tasks[0].state == TASK_READY)
+        return 0;
     return -1;
+}
+
+static void sched_switch(int next) {
+    int prev = current_task;
+    if (prev >= 0 && prev < NTASKS && tasks[prev].state != TASK_DONE)
+        __asm__ __volatile__("fsave %0" : "=m"(tasks[prev].fpu));
+    if (next == 0) {
+        tss.esp0 = 0x00080000u;
+        set_cr3((u32)sched_safe_pd);
+    } else {
+        __asm__ __volatile__("frstor %0" : : "m"(tasks[next].fpu));
+        tss.esp0 = tasks[next].kstack_top;
+        set_cr3(tasks[next].cr3);
+    }
+    current_task = next;
+    tasks[next].state = TASK_RUNNING;
+    quantum_ticks = 0;
+    swtch(&tasks[prev].kesp, tasks[next].kesp);
+}
+
+static void module_wait_key(int cid) {
+    tasks[current_task].wait_kbd = (u8)(cid + 1);
+    tasks[current_task].state = TASK_BLOCKED;
+    sched_yield();
+}
+
+static void sched_yield(void) {
+    if (current_task == 0) {
+        tasks[0].state = TASK_READY;
+    } else if (tasks[current_task].state == TASK_RUNNING) {
+        tasks[current_task].state = TASK_READY;
+    }
+    int next = next_ready();
+    if (next < 0) {
+        if (current_task == 0)
+            tasks[0].state = TASK_RUNNING;
+        return;
+    }
+    sched_switch(next);
 }
 
 static void switch_task(int next) {
@@ -1680,16 +1763,13 @@ static void sched_timer_tick(u32 *frame) {
             (int)(ticks - tasks[t].sleep_until) >= 0) {
             tasks[t].sleep_until = 0;
             tasks[t].state = TASK_READY;
-            ((u32 *)tasks[t].esp)[7] = 0;
         }
     }
 
-    /* Only preempt/exit a real user context, never the kernel itself. */
-    if ((frame[9] & 3) != 3)
+    if ((frame[9] & 3) != 3 || current_task == 0)
         return;
 
-    if (current_task >= 0 && current_task < NTASKS &&
-        tasks[current_task].kill_pending) {
+    if (tasks[current_task].kill_pending) {
         tasks[current_task].kill_pending = 0;
         task_exit(0xFFFFu);
     }
@@ -1699,57 +1779,32 @@ static void sched_timer_tick(u32 *frame) {
         return;
     quantum_ticks = 0;
 
-    tasks[current_task].esp = (u32)frame;
     tasks[current_task].state = TASK_READY;
-    int next = next_ready();
-    if (next < 0) {
-        tasks[current_task].state = TASK_RUNNING;
-        return;
-    }
-    switch_task(next);
+    sched_switch(0);
 }
 
 static void task_yield(u32 frame) {
-    tasks[current_task].esp = (u32)frame;
-    tasks[current_task].state = TASK_READY;
-    int next = next_ready();
-    if (next < 0) {
-        tasks[current_task].state = TASK_RUNNING;
-        tss.esp0 = tasks[current_task].kstack_top;
-        switch_to(frame);
-        for (;;) {}
-    }
-    switch_task(next);
+    (void)frame;
+    if (scheduler_active)
+        sched_yield();
 }
 
 static void task_exit(u32 status) {
     int me = current_task;
+    int cid = tasks[me].console_id;
     tasks[me].exit_code = status;
     tasks[me].state = TASK_DONE;
     wake_parent(me);
     /* Never free the current pages while CR3 still points at them. */
-    set_cr3((u32)page_directory);
+    set_cr3((u32)sched_safe_pd);
     task_free_frames(me);
-
+    extern void gui_prompt_console(int cid);
+    if (cid >= 0 && cid < 3)
+        gui_prompt_console(cid);
+    if (me != 0)
+        sched_switch(0);
     for (;;) {
-        int next = next_ready();
-        if (next >= 0)
-            switch_task(next);
-
-        int blocked = 0;
-        for (int t = 0; t < NTASKS; t++) {
-            if (tasks[t].state == TASK_BLOCKED)
-                blocked = 1;
-        }
-        if (!blocked) {
-            scheduler_active = 0;
-            tss.esp0 = 0x00080000;
-            scheduler_exit_to_kernel();
-            for (;;) {}
-        }
-        __asm__ __volatile__("sti");
-        __asm__ __volatile__("hlt");
-        __asm__ __volatile__("cli");
+        __asm__ __volatile__("sti; hlt");
     }
 }
 
@@ -2005,22 +2060,10 @@ static void task_sleep_block(u32 ms, u32 frame) {
         SYS_RET(frame) = 0;
         return;
     }
-    u32 wake = ticks + ms / 10 + 1;
-    int next = next_ready();
-    if (next < 0) {
-        __asm__ __volatile__("sti");
-        while ((int)(ticks - wake) < 0)
-            __asm__ __volatile__("hlt");
-        __asm__ __volatile__("cli");
-        SYS_RET(frame) = 0;
-        return;
-    }
     tasks[current_task].state = TASK_BLOCKED;
-    tasks[current_task].waiting_pid = WAIT_NONE;
-    tasks[current_task].sleep_until = wake;
-    tasks[current_task].esp = frame;
-    switch_task(next);
-    for (;;) {}
+    tasks[current_task].sleep_until = ticks + ms / 10 + 1;
+    SYS_RET(frame) = 0;
+    sched_yield();
 }
 
 int run_pack_program(const char *name) {
@@ -2036,8 +2079,7 @@ int run_pack_program(const char *name) {
     __asm__ __volatile__("cli");
     gdt_install();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
-    task_system_init();
-    task_clear_all();
+    /* Task 0 already owns scheduler state; do not clear peers. */
 
     int slot = task_create(name, src, end);
     if (slot < 0) {
@@ -2067,15 +2109,13 @@ void run_task_demo(void) {
     __asm__ __volatile__("cli");
     gdt_install();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
-    task_system_init();
-    task_clear_all();
+    /* Task 0 already owns scheduler state; do not clear peers. */
 
     int a = task_create("A.BIN", as, as + ae->size);
     int b = task_create("B.BIN", bs, bs + be->size);
     int c = task_create("C.BIN", cs, cs + ce->size);
     if (a < 0 || b < 0 || c < 0) {
         gui_sys_print("[task] cannot create tasks.\n");
-        task_clear_all();
         __asm__ __volatile__("sti");
         return;
     }
@@ -2210,8 +2250,7 @@ static int run_user_module_ex(const char *name, int argc,
     __asm__ __volatile__("cli");
     gdt_install();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
-    task_system_init();
-    task_clear_all();
+    /* Task 0 already owns scheduler state; do not clear peers. */
 
     if (cache >= 0) {
         warm_copy(cache, size);
@@ -2367,8 +2406,7 @@ int exec_disk(const char *name) {
     __asm__ __volatile__("cli");
     gdt_install();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
-    task_system_init();
-    task_clear_all();
+    /* Task 0 already owns scheduler state; do not clear peers. */
 
     int slot = task_create(name, fs_program, fs_program + size);
     if (slot < 0) {
@@ -3852,6 +3890,7 @@ void kmain(void) {
     mouse_init();
 
     interrupts_on();
+    sched_init_task0();
     savefs_restore();
     int autoexec_pending = ramfile_find("AUTOEXEC.PY") >= 0;
     u32 autoexec_at = ticks + 300;
@@ -3880,11 +3919,13 @@ void kmain(void) {
         int cid = gui_focused_console();
         if (cid < 0 || cid >= KBD_CONSOLES)
             cid = 0;
-        while (kbd_tail[cid] != kbd_head[cid]) {
-            u8 ch = kbd_buf[cid][kbd_tail[cid]];
-            kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
-            gui_key((char)ch);
-            event = 1;
+        if (!console_has_live_task(cid)) {
+            while (kbd_tail[cid] != kbd_head[cid]) {
+                u8 ch = kbd_buf[cid][kbd_tail[cid]];
+                kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
+                gui_key((char)ch);
+                event = 1;
+            }
         }
 
         if (mouse_event) {
@@ -3899,10 +3940,13 @@ void kmain(void) {
             gui_redraw();
             last_draw = ticks;
         }
+        if (next_ready() >= 0)
+            sched_yield();
 
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

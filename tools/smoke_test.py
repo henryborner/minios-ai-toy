@@ -145,7 +145,7 @@ def main():
         vga = td / "MiniOS-320.img"
         shutil.copyfile(IMAGE, vga)
         b = bytearray(vga.read_bytes())
-        b[193 * 512 + 0x1FD] = 1
+        b[321 * 512 + 0x1FD] = 1
         vga.write_bytes(b)
         exercise("320", vga, td / "serial320.log")
     print("SMOKE PASS: 640x480 + forced 320x200 boot, command, screenshot and warmed 0-leak checks")
@@ -153,3 +153,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

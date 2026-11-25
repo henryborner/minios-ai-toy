@@ -14,6 +14,39 @@ sched_saved_cr3:
         resd    1
 
         section .text
+        global swtch
+        global task_first_entry
+
+; void swtch(u32 *old_kesp, u32 new_kesp)
+swtch:
+        push    ebp
+        push    ebx
+        push    esi
+        push    edi
+        pushfd
+        cli
+        mov     eax, [esp + 24]
+        mov     edx, [esp + 28]
+        mov     [eax], esp
+        mov     esp, edx
+        popfd
+        pop     edi
+        pop     esi
+        pop     ebx
+        pop     ebp
+        ret
+
+; First entry for a brand-new kernel-stack context.
+task_first_entry:
+        mov     ax, 0x23
+        mov     ds, ax
+        mov     es, ax
+        mov     fs, ax
+        mov     gs, ax
+        popa
+        iretd
+
+        section .text
 scheduler_start:
         push    ebp
         push    ebx

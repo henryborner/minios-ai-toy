@@ -3383,6 +3383,13 @@ void gui_sys_write(const char *s, u32 len) {
     gui_dirty = 1;
 }
 
+void gui_prompt_console(int cid) {
+    if (cid < WIN_C0 || cid > WIN_C2)
+        return;
+    term_prompt(&consoles[cid]);
+    gui_dirty = 1;
+}
+
 void gui_sys_print(const char *s) {
     struct console *c = active_console();
     while (*s)
