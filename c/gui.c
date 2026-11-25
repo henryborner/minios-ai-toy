@@ -576,7 +576,8 @@ static int canvas_current_slot(void) {
 
 int gui_canvas_keyboard(void) {
     int s = canvas_current_slot();
-    return canvases[s].open && canvas_key_capture;
+    return canvases[s].open && canvas_key_capture &&
+           focus_win == canvases[s].win_id;
 }
 
 void gui_canvas_capture(int on) {
