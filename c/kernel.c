@@ -4,6 +4,12 @@
  * ============================================================================= */
 
 #include "gui.h"
+
+/* pusha frame layout: EDI ESI EBP ESP EBX EDX ECX EAX. */
+#define SYS_ARG1(f) (((u32 *)(f))[4]) /* EBX */
+#define SYS_ARG2(f) (((u32 *)(f))[6]) /* ECX */
+#define SYS_ARG3(f) (((u32 *)(f))[5]) /* EDX */
+#define SYS_RET(f)  (((u32 *)(f))[7]) /* EAX */
 #include "fdc.h"
 
 typedef unsigned char  u8;
@@ -1952,7 +1958,7 @@ static int task_wait_block(u32 want_pid, u32 frame) {
     if (tasks[child].state == TASK_DONE) {
         u32 status = tasks[child].exit_code;
         tasks[child].state = TASK_FREE;
-        ((u32 *)frame)[7] = status;
+        SYS_RET(frame) = status;
         return 0;
     }
 
@@ -1971,7 +1977,7 @@ static int task_wait_block(u32 want_pid, u32 frame) {
 
 static void task_sleep_block(u32 ms, u32 frame) {
     if (ms == 0) {
-        ((u32 *)frame)[7] = 0;
+        SYS_RET(frame) = 0;
         return;
     }
     u32 wake = ticks + ms / 10 + 1;
@@ -1981,7 +1987,7 @@ static void task_sleep_block(u32 ms, u32 frame) {
         while ((int)(ticks - wake) < 0)
             __asm__ __volatile__("hlt");
         __asm__ __volatile__("cli");
-        ((u32 *)frame)[7] = 0;
+        SYS_RET(frame) = 0;
         return;
     }
     tasks[current_task].state = TASK_BLOCKED;
@@ -2989,120 +2995,120 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             task_yield(frame);
         gui_sys_print("[ring3] yield ignored.\n");
     } else if (number == 4) {
-        u32 ptr = ((u32 *)frame)[4];
-        u32 len = ((u32 *)frame)[6];
+        u32 ptr = SYS_ARG1(frame);
+        u32 len = SYS_ARG2(frame);
         int ok = user_ptr_ok(ptr, len) && len <= BIG_HEAP_SIZE;
         if (ok)
             gui_sys_write_console(current_console_id(), (const char *)ptr, len);
-        ((u32 *)frame)[7] = ok ? len : 0xFFFFFFFFu;
+        SYS_RET(frame) = ok ? len : 0xFFFFFFFFu;
     } else if (number == 5) {
-        ((u32 *)frame)[7] = (u32)module_getchar();
+        SYS_RET(frame) = (u32)module_getchar();
     } else if (number == 6) {
-        ((u32 *)frame)[7] = ticks * 10;
+        SYS_RET(frame) = ticks * 10;
     } else if (number == 7) {
-        u32 name = ((u32 *)frame)[4];
-        u32 dst = ((u32 *)frame)[6];
-        u32 max = ((u32 *)frame)[5];
+        u32 name = SYS_ARG1(frame);
+        u32 dst = SYS_ARG2(frame);
+        u32 max = SYS_ARG3(frame);
         u32 size = 0;
         if (user_str_ok(name, 256) && max <= BIG_HEAP_SIZE &&
             user_ptr_ok(dst, max)) {
             __asm__ __volatile__("sti");
             int ok = fs_load_file_to((const char *)name, (u8 *)dst, max, &size);
             __asm__ __volatile__("cli");
-            ((u32 *)frame)[7] = ok ? size : 0;
+            SYS_RET(frame) = ok ? size : 0;
         } else {
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         }
     } else if (number == 8) {
-        u32 name = ((u32 *)frame)[4];
+        u32 name = SYS_ARG1(frame);
         int pid = 0;
         if (user_str_ok(name, 256))
             pid = task_spawn_user((const char *)name);
-        ((u32 *)frame)[7] = (u32)pid;
+        SYS_RET(frame) = (u32)pid;
     } else if (number == 9) {
-        int r = task_wait_block(((u32 *)frame)[4], frame);
+        int r = task_wait_block(SYS_ARG1(frame), frame);
         if (r < 0)
-            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+            SYS_RET(frame) = 0xFFFFFFFFu;
     } else if (number == 10) {
-        task_sleep_block(((u32 *)frame)[4], frame);
+        task_sleep_block(SYS_ARG1(frame), frame);
     } else if (number == 11) {
         if (scheduler_active)
-            task_exit(((u32 *)frame)[4]);
+            task_exit(SYS_ARG1(frame));
         user_exit_to_kernel();
     } else if (number == 12) {
-        u32 name = ((u32 *)frame)[4];
+        u32 name = SYS_ARG1(frame);
         int fd = -1;
         if (user_str_ok(name, 256))
             fd = fd_open((const char *)name);
-        ((u32 *)frame)[7] = (u32)fd;
+        SYS_RET(frame) = (u32)fd;
     } else if (number == 13) {
-        u32 fd = ((u32 *)frame)[4];
-        u32 buf = ((u32 *)frame)[6];
-        u32 len = ((u32 *)frame)[5];
+        u32 fd = SYS_ARG1(frame);
+        u32 buf = SYS_ARG2(frame);
+        u32 len = SYS_ARG3(frame);
         int r = -1;
         if (len <= 0x10000 && user_ptr_ok(buf, len))
             r = fd_read((int)fd, (u8 *)buf, len);
-        ((u32 *)frame)[7] = (u32)r;
+        SYS_RET(frame) = (u32)r;
     } else if (number == 14) {
-        ((u32 *)frame)[7] = (u32)fd_close((int)((u32 *)frame)[4]);
+        SYS_RET(frame) = (u32)fd_close((int)SYS_ARG1(frame));
     } else if (number == 15) {
-        ((u32 *)frame)[7] = (u32)fd_seek((int)((u32 *)frame)[4],
-                                        (int)((u32 *)frame)[6],
-                                        (int)((u32 *)frame)[5]);
+        SYS_RET(frame) = (u32)fd_seek((int)SYS_ARG1(frame),
+                                        (int)SYS_ARG2(frame),
+                                        (int)SYS_ARG3(frame));
     } else if (number == 16) {
-        u32 name = ((u32 *)frame)[4];
-        u32 flags = ((u32 *)frame)[6];
+        u32 name = SYS_ARG1(frame);
+        u32 flags = SYS_ARG2(frame);
         int fd = -1;
         if (user_str_ok(name, 256))
             fd = fd_open_ex((const char *)name, flags);
-        ((u32 *)frame)[7] = (u32)fd;
+        SYS_RET(frame) = (u32)fd;
     } else if (number == 17) {
-        u32 fd = ((u32 *)frame)[4];
-        u32 buf = ((u32 *)frame)[6];
-        u32 len = ((u32 *)frame)[5];
+        u32 fd = SYS_ARG1(frame);
+        u32 buf = SYS_ARG2(frame);
+        u32 len = SYS_ARG3(frame);
         int r = -1;
         if (len <= 0x10000 && user_ptr_ok(buf, len))
             r = fd_write((int)fd, (const u8 *)buf, len);
-        ((u32 *)frame)[7] = (u32)r;
+        SYS_RET(frame) = (u32)r;
     } else if (number == 18) {
-        u32 name = ((u32 *)frame)[4];
+        u32 name = SYS_ARG1(frame);
         int r = -1;
         if (user_str_ok(name, 256))
             r = fd_unlink((const char *)name);
-        ((u32 *)frame)[7] = (u32)r;
+        SYS_RET(frame) = (u32)r;
     } else if (number == 19) {
-        u32 name = ((u32 *)frame)[4];
-        u32 argv = ((u32 *)frame)[6];
-        u32 argc = ((u32 *)frame)[5];
+        u32 name = SYS_ARG1(frame);
+        u32 argv = SYS_ARG2(frame);
+        u32 argc = SYS_ARG3(frame);
         int pid = 0;
         if (user_str_ok(name, 256) && argc <= 16 &&
             user_ptr_ok(argv, argc * 4))
             pid = task_spawn_args((const char *)name, argv, argc);
-        ((u32 *)frame)[7] = (u32)pid;
+        SYS_RET(frame) = (u32)pid;
     } else if (number == 20) {
-        ((u32 *)frame)[7] = task_brk(((u32 *)frame)[4]);
+        SYS_RET(frame) = task_brk(SYS_ARG1(frame));
     } else if (number == 21) {
-        u32 name = ((u32 *)frame)[4];
-        u32 out = ((u32 *)frame)[6];
+        u32 name = SYS_ARG1(frame);
+        u32 out = SYS_ARG2(frame);
         int r = -1;
         if (user_str_ok(name, 256) &&
             user_ptr_ok(out, sizeof(struct user_stat)))
             r = sys_stat((const char *)name, (struct user_stat *)out);
-        ((u32 *)frame)[7] = (u32)r;
+        SYS_RET(frame) = (u32)r;
     } else if (number == 22) {
-        u32 index = ((u32 *)frame)[4];
-        u32 out = ((u32 *)frame)[6];
+        u32 index = SYS_ARG1(frame);
+        u32 out = SYS_ARG2(frame);
         int r = 0;
         if (user_ptr_ok(out, sizeof(struct user_dirent)))
             r = sys_readdir(index, (struct user_dirent *)out);
-        ((u32 *)frame)[7] = (u32)r;
+        SYS_RET(frame) = (u32)r;
     } else if (number == 23) {
         __asm__ __volatile__("sti");
         int r = savefs_sync();
         __asm__ __volatile__("cli");
-        ((u32 *)frame)[7] = r ? 0 : 0xFFFFFFFFu;
+        SYS_RET(frame) = r ? 0 : 0xFFFFFFFFu;
     } else if (number == 24) {
-        u32 out = ((u32 *)frame)[4];
+        u32 out = SYS_ARG1(frame);
         if (user_ptr_ok(out, sizeof(struct user_sysinfo))) {
             struct user_sysinfo *si = (struct user_sysinfo *)out;
             u32 free_frames = 0;
@@ -3120,46 +3126,46 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             si->heap_used = heap_used;
             si->tasks = ntasks;
             si->last_module_ticks = user_module_last_ticks;
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         } else {
-            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+            SYS_RET(frame) = 0xFFFFFFFFu;
         }
     } else if (number == 25) {
-        u32 op = ((u32 *)frame)[4];
-        u32 title = ((u32 *)frame)[6];
+        u32 op = SYS_ARG1(frame);
+        u32 title = SYS_ARG2(frame);
         if (op == 0) {
             gui_canvas_close();
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         } else if (op == 1) {
             if (user_str_ok(title, 64)) {
                 gui_canvas_open((const char *)title);
-                ((u32 *)frame)[7] = 0;
+                SYS_RET(frame) = 0;
             } else {
-                ((u32 *)frame)[7] = 0xFFFFFFFFu;
+                SYS_RET(frame) = 0xFFFFFFFFu;
             }
         } else if (op == 2) {
-            ((u32 *)frame)[7] = ((u32)gui_canvas_w() << 16) | (u32)gui_canvas_h();
+            SYS_RET(frame) = ((u32)gui_canvas_w() << 16) | (u32)gui_canvas_h();
         } else if (op == 3) {
-            ((u32 *)frame)[7] = ((u32)scr_w << 16) | (u32)scr_h;
+            SYS_RET(frame) = ((u32)scr_w << 16) | (u32)scr_h;
         } else if (op == 4) {
-            ((u32 *)frame)[7] = vbe_phys_base;
+            SYS_RET(frame) = vbe_phys_base;
         } else if (op == 5) {
-            ((u32 *)frame)[7] = (user_module_cold_ticks << 16) |
+            SYS_RET(frame) = (user_module_cold_ticks << 16) |
                                 (user_module_warm_ticks & 0xFFFFu);
         } else if (op == 6) {
             gui_canvas_batch((int)title);
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         } else if (op == 7) {
             gui_canvas_present();
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         } else if (op == 8) {
             gui_canvas_capture((int)title);
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         } else {
-            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+            SYS_RET(frame) = 0xFFFFFFFFu;
         }
     } else if (number == 26) {
-        u32 ptr = ((u32 *)frame)[4];
+        u32 ptr = SYS_ARG1(frame);
         if (user_ptr_ok(ptr, sizeof(struct gui_canvas_cmd))) {
             struct gui_canvas_cmd cmd;
             u8 *dst = (u8 *)&cmd;
@@ -3171,12 +3177,12 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
                 r = gui_canvas_cmd(&cmd);
             else if (!cmd.text && cmd.op != 4)
                 r = gui_canvas_cmd(&cmd);
-            ((u32 *)frame)[7] = (u32)r;
+            SYS_RET(frame) = (u32)r;
         } else {
-            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+            SYS_RET(frame) = 0xFFFFFFFFu;
         }
     } else if (number == 27) {
-        u32 out = ((u32 *)frame)[4];
+        u32 out = SYS_ARG1(frame);
         int r = 0;
         if (user_ptr_ok(out, sizeof(struct user_canvas_event))) {
             struct gui_canvas_event ev;
@@ -3193,14 +3199,14 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
                 r = 1;
             }
         }
-        ((u32 *)frame)[7] = (u32)r;
+        SYS_RET(frame) = (u32)r;
     } else if (number == 28) {
-        u32 op = ((u32 *)frame)[4];
-        u32 a = ((u32 *)frame)[6];
-        u32 b = ((u32 *)frame)[5];
+        u32 op = SYS_ARG1(frame);
+        u32 a = SYS_ARG2(frame);
+        u32 b = SYS_ARG3(frame);
         if (op == 0)
             pc_beep(a, b);
-        ((u32 *)frame)[7] = 0;
+        SYS_RET(frame) = 0;
     } else if (number == 29) {
         int cid = current_console_id();
         if (cid < 0 || cid >= KBD_CONSOLES)
@@ -3215,29 +3221,29 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             }
             t = (u8)((t + 1) & 63);
         }
-        ((u32 *)frame)[7] = (u32)found;
+        SYS_RET(frame) = (u32)found;
     } else if (number == 30) {
-        u32 name = ((u32 *)frame)[4];
+        u32 name = SYS_ARG1(frame);
         if (user_str_ok(name, 64)) {
             gui_request_py((const char *)name);
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         } else {
-            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+            SYS_RET(frame) = 0xFFFFFFFFu;
         }
     } else if (number == 31) {
         int cid = current_console_id();
         if (cid < 0 || cid >= KBD_CONSOLES)
             cid = 0;
         if (kbd_tail[cid] == kbd_head[cid]) {
-            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+            SYS_RET(frame) = 0xFFFFFFFFu;
         } else {
             u8 ch = kbd_buf[cid][kbd_tail[cid]];
             kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
-            ((u32 *)frame)[7] = ch;
+            SYS_RET(frame) = ch;
         }
     } else if (number == 32) {
-        u32 out = ((u32 *)frame)[4];
-        u32 max = ((u32 *)frame)[6];
+        u32 out = SYS_ARG1(frame);
+        u32 max = SYS_ARG2(frame);
         if (max > 16)
             max = 16;
         if (user_ptr_ok(out, max * sizeof(struct user_taskinfo))) {
@@ -3258,9 +3264,9 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
                     ti->name[j] = name[j];
                 n++;
             }
-            ((u32 *)frame)[7] = (u32)n;
+            SYS_RET(frame) = (u32)n;
         } else {
-            ((u32 *)frame)[7] = 0;
+            SYS_RET(frame) = 0;
         }
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
@@ -3366,6 +3372,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 
