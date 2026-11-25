@@ -3503,6 +3503,8 @@ void kmain(void) {
 
     interrupts_on();
     savefs_restore();
+    if (ramfile_find("AUTOEXEC.PY") >= 0)
+        gui_request_py("AUTOEXEC.PY");
     gui_redraw();
 
     u32 last_draw = ticks;
