@@ -1674,6 +1674,11 @@ static void run_command(struct console *c, char *line) {
         run_python_expr(c, line + 1);
     } else if (streq(line, "pystat")) {
         py_stats(c);
+    } else if (streq(line, "py4test")) {
+        extern int run_four_demo(void);
+        term_puts(c, "Launching py4 self-test...\n");
+        if (!run_four_demo())
+            term_puts(c, "py4 self-test failed.\n");
     } else if (starts_with(line, "py4 ")) {
         extern int run_four_python(const char *, const char *, const char *, const char *);
         char names[4][32];

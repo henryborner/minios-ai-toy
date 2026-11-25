@@ -2808,6 +2808,40 @@ static void ramfile_delete(int idx) {
     }
 }
 
+static int make_demo_script(const char *name, char letter) {
+    int old = ramfile_find(name);
+    if (old >= 0)
+        ramfile_delete(old);
+    int idx = ramfile_create(name);
+    if (idx < 0)
+        return 0;
+    char body[128];
+    int n = 0;
+    const char *p = "import time\nfor i in range(8):\n    print('";
+    while (*p) body[n++] = *p++;
+    body[n++] = letter;
+    body[n++] = '\''; body[n++] = ','; body[n++] = ' '; body[n++] = 'i';
+    body[n++] = ')'; body[n++] = '\n';
+    p = "    time.sleep_ms(150)\n";
+    while (*p) body[n++] = *p++;
+    struct ramfile *r = &ramfiles[idx];
+    if (ramfile_rw(r, 0, (u8 *)body, (u32)n, 1) != n) {
+        ramfile_delete(idx);
+        return 0;
+    }
+    r->size = (u32)n;
+    return 1;
+}
+
+int run_four_demo(void) {
+    if (!make_demo_script("PYA.PY", 'A') ||
+        !make_demo_script("PYB.PY", 'B') ||
+        !make_demo_script("PYC.PY", 'C') ||
+        !make_demo_script("PYD.PY", 'D'))
+        return 0;
+    return run_four_python("PYA.PY", "PYB.PY", "PYC.PY", "PYD.PY");
+}
+
 int serial_upload_file(const char *name) {
     int idx = ramfile_find(name);
     if (idx < 0)
