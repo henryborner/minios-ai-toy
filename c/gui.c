@@ -1976,11 +1976,12 @@ static const char *ctx_label(int i) {
         };
         return (i >= 0 && i < 7) ? items[i] : "";
     }
-    static const char *items[8] = {
+    static const char *items[11] = {
         "Console 1", "Console 2", "Console 3", "Windows", "System", "About",
-        "Tile Windows", "Cascade"
+        "Tile Windows", "Cascade", "Theme Classic", "Theme Midnight",
+        "Theme Amber"
     };
-    return (i >= 0 && i < 8) ? items[i] : "";
+    return (i >= 0 && i < 11) ? items[i] : "";
 }
 
 static int ctx_height(void) {
@@ -1997,7 +1998,7 @@ static void open_context(int x, int y) {
             break;
         }
     }
-    ctx_count = ctx_target >= 0 ? 7 : 8;
+    ctx_count = ctx_target >= 0 ? 7 : 11;
     ctx_x = x + 2;
     ctx_y = y + 2;
     if (ctx_x + 128 > scr_w) ctx_x = scr_w - 128;
@@ -2076,6 +2077,14 @@ static void activate_context(int idx) {
             ox += 20;
             oy += 18;
         }
+    } else if (idx == 8) {
+        gui_desktop_theme(0);
+    } else if (idx == 9) {
+        gui_theme(1);
+        gui_desktop_theme(1);
+    } else if (idx == 10) {
+        gui_theme(0);
+        gui_desktop_theme(2);
     }
     gui_dirty = 1;
 }
