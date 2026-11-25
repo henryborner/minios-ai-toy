@@ -1264,6 +1264,8 @@ static void run_command(struct console *c, char *line) {
         launch_tool(c, "-m calc", line + 5);
     } else if (streq(line, "top")) {
         launch_tool(c, "-m top", "");
+    } else if (starts_with(line, "top -")) {
+        launch_tool(c, "-m top", line + 4);
     } else if (streq(line, "bench")) {
         launch_tool(c, "-m bench", "");
     } else if (streq(line, "demos") || streq(line, "plot")) {
