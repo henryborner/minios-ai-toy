@@ -1388,7 +1388,61 @@ static void run_command(struct console *c, char *line) {
         return;
     }
 
-    if (streq(line, "newcon")) {
+    if (streq(line, "jobs")) {
+        extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
+        u32 pid, state, pages;
+        int con;
+        char name[16];
+        term_puts(c, "PID CON STATE PAGES NAME\n");
+        for (int i = 0; i < 16; i++) {
+            if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
+                break;
+            term_u32(c, pid);
+            term_puts(c, "   ");
+            term_u32(c, (u32)con);
+            term_puts(c, "   ");
+            term_puts(c, state == 2 ? "R" : (state == 4 ? "B" : "S"));
+            term_puts(c, "     ");
+            term_u32(c, pages);
+            term_puts(c, "  ");
+            term_puts(c, name);
+            term_puts(c, "\n");
+        }
+    } else if (starts_with(line, "fg ")) {
+        extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
+        u32 want = 0;
+        const char *p = line + 3;
+        while (*p >= '0' && *p <= '9')
+            want = want * 10 + (u32)(*p++ - '0');
+        u32 pid, state, pages;
+        int con;
+        char name[16];
+        for (int i = 0; i < 16; i++) {
+            if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
+                break;
+            if (pid == want && con >= 0 && con < console_count) {
+                focus_window(con);
+                term_puts(c, "fg: focused pid ");
+                term_u32(c, pid);
+                term_puts(c, "\n");
+                return;
+            }
+        }
+        term_puts(c, "fg: pid not found\n");
+    } else if (starts_with(line, "pybg ")) {
+        int oldc = (int)(c - consoles);
+        if (!gui_new_console()) {
+            term_puts(c, "pybg: no free console\n");
+            return;
+        }
+        int nc = console_count - 1;
+        launch_python(&consoles[nc], line + 5);
+        if (oldc >= 0 && oldc < console_count)
+            focus_window(oldc);
+        term_puts(c, "pybg: started on Console ");
+        term_u32(c, (u32)(nc + 1));
+        term_puts(c, "\n");
+    } else if (streq(line, "newcon")) {
         if (gui_new_console())
             term_puts(c, "new console created.\n");
         else
@@ -1396,7 +1450,7 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python clear echo console windows\n");
+        term_puts(c, "py python pybg jobs fg newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
@@ -3877,6 +3931,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
