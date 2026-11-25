@@ -2243,6 +2243,8 @@ int task_bg_pid(u32 pid) {
     int t = find_pid(pid);
     if (t <= 0 || pid == 0)
         return 0;
+    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+        return 0;
     if (tasks[t].state != TASK_STOPPED)
         return 2;
     tasks[t].state = TASK_READY;
@@ -2975,6 +2977,28 @@ static int make_demo_script(const char *name, char letter) {
     body[n++] = '\''; body[n++] = ','; body[n++] = ' '; body[n++] = 'i';
     body[n++] = ')'; body[n++] = '\n';
     p = "    time.sleep_ms(150)\n";
+    while (*p) body[n++] = *p++;
+    struct ramfile *r = &ramfiles[idx];
+    if (ramfile_rw(r, 0, (u8 *)body, (u32)n, 1) != n) {
+        ramfile_delete(idx);
+        return 0;
+    }
+    r->size = (u32)n;
+    return 1;
+}
+
+int prepare_long_script(void) {
+    int old = ramfile_find("LONG.PY");
+    if (old >= 0)
+        ramfile_delete(old);
+    int idx = ramfile_create("LONG.PY");
+    if (idx < 0)
+        return 0;
+    char body[128];
+    int n = 0;
+    const char *p = "import time\nfor i in range(1000):\n    print('L', i)\n";
+    while (*p) body[n++] = *p++;
+    p = "    time.sleep_ms(100)\n";
     while (*p) body[n++] = *p++;
     struct ramfile *r = &ramfiles[idx];
     if (ramfile_rw(r, 0, (u8 *)body, (u32)n, 1) != n) {
@@ -4380,6 +4404,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

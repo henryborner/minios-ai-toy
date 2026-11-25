@@ -1584,6 +1584,22 @@ static void run_command(struct console *c, char *line) {
                     term_puts(c, "pyn failed\n");
             }
         }
+    } else if (streq(line, "longjob")) {
+        extern int prepare_long_script(void);
+        int oldc = (int)(c - consoles);
+        if (!prepare_long_script()) {
+            term_puts(c, "longjob: script failed\n");
+        } else if (!gui_new_console()) {
+            term_puts(c, "longjob: no free console\n");
+        } else {
+            int nc = console_count - 1;
+            launch_python(&consoles[nc], "LONG.PY");
+            c = &consoles[oldc];
+            focus_window(consoles[oldc].win_id);
+            term_puts(c, "longjob: started on Console ");
+            term_u32(c, (u32)(nc + 1));
+            term_puts(c, "\n");
+        }
     } else if (starts_with(line, "pybg ") || starts_with(line, "spawn ")) {
         int oldc = (int)(c - consoles);
         if (!gui_new_console()) {
@@ -1608,7 +1624,7 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python pyn py4 py4test pybg spawn jobs fg bg stop newcon clear echo console windows\n");
+        term_puts(c, "py python pyn py4 py4test pybg spawn longjob jobs fg bg stop newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
