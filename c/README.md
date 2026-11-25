@@ -39,8 +39,8 @@ The build enforces:
 Current build:
 
 ```text
-kernel:  60,240 B / 131,072 B
-BSS end: 0x34809F
+kernel:  61,084 B / 131,072 B
+BSS end: 0x348543
 MPY:     208,912 B
 image:   1,474,560 B
 ```
@@ -208,8 +208,9 @@ It is a regression test, not a cold-start absolute leak proof.
 
 - Task 0 is kernel C, not a Ring 3 Shell.
 - `py2`/`py3` are batch-created prototypes; no general background `&` API.
-- Only one Canvas window (`WIN_APP`); multi-Canvas window pool is not done.
+- Two Canvas slots exist; a general N-slot dynamic window pool is not done.
 - No ATA/FAT data disk.
 - No networking, sound, USB or real-hardware target.
 - SaveFS legacy migration has a one-time window.
 - Not a secure or production OS.
+

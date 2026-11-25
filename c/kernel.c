@@ -1180,6 +1180,12 @@ static void fpu_task_default(u8 *dst) {
         dst[i] = fpu_default[i];
 }
 
+u32 kernel_current_pid(void) {
+    if (scheduler_active && current_task >= 0 && current_task < NTASKS)
+        return tasks[current_task].pid;
+    return 0;
+}
+
 int kernel_task_console(void) {
     if (scheduler_active && current_task > 0 && current_task < NTASKS)
         return tasks[current_task].console_id;
@@ -1342,6 +1348,12 @@ void *kernel_alloc_pages_zero(u32 pages) {
         return 0;
     frame_zero(phys, pages);
     return direct_ptr(phys);
+}
+
+void kernel_free_pages_ptr(void *p, u32 pages) {
+    if (!p || (u32)p < DIRECT_BASE)
+        return;
+    frame_free_pages(DIRECT_PHYS_START + ((u32)p - DIRECT_BASE), pages);
 }
 
 static void task_system_init(void) {
@@ -1883,6 +1895,8 @@ static void task_exit(u32 status) {
     set_cr3((u32)sched_safe_pd);
     task_free_frames(me);
     extern void gui_prompt_console(int cid);
+    extern void gui_canvas_release_owner(u32 pid);
+    gui_canvas_release_owner(tasks[me].pid);
     if (cid >= 0 && cid < 3)
         gui_prompt_console(cid);
     if (me != 0)
