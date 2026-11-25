@@ -1189,8 +1189,8 @@ struct fd_entry {
 };
 static struct fd_entry fd_table[NTASKS][MAX_FDS];
 
-#define MAX_RAMFILES 8
-#define RAMFILE_PAGES 4
+#define MAX_RAMFILES 16
+#define RAMFILE_PAGES 16
 struct ramfile {
     u8 used;
     char name[16];
@@ -2401,7 +2401,7 @@ struct savefs_header {
     u32 generation;
     u32 count;
     u32 header_crc;
-    struct savefs_entry entries[8];
+    struct savefs_entry entries[16];
 } __attribute__((packed));
 
 static u32 savefs_generation;
@@ -2424,7 +2424,7 @@ static int savefs_sync(void) {
     u8 *hp = (u8 *)&h;
     for (u32 i = 0; i < sizeof(h); i++)
         hp[i] = 0;
-    h.magic[0] = 'M'; h.magic[1] = 'S'; h.magic[2] = 'V'; h.magic[3] = '1';
+    h.magic[0] = 'M'; h.magic[1] = 'S'; h.magic[2] = 'V'; h.magic[3] = '2';
     h.generation = ++savefs_generation;
 
     u32 lba = SAVE_DATA_LBA;
@@ -2432,7 +2432,7 @@ static int savefs_sync(void) {
     for (int i = 0; i < MAX_RAMFILES; i++) {
         if (!ramfiles[i].used)
             continue;
-        if (count >= 8 || ramfiles[i].size > RAMFILE_PAGES * 0x1000u)
+        if (count >= 16 || ramfiles[i].size > RAMFILE_PAGES * 0x1000u)
             return 0;
         u32 sectors = (ramfiles[i].size + 511u) / 512u;
         if (lba + sectors > SAVE_DATA_LBA + SAVE_DATA_SECTORS)
@@ -2475,13 +2475,16 @@ static int savefs_restore(void) {
     for (u32 i = 0; i < sizeof(h); i++)
         hp[i] = fs_sector[i];
     if (h.magic[0] != 'M' || h.magic[1] != 'S' ||
-        h.magic[2] != 'V' || h.magic[3] != '1')
+        h.magic[2] != 'V' || (h.magic[3] != '1' && h.magic[3] != '2'))
         return 0;
     u32 stored = h.header_crc;
     h.header_crc = 0;
-    if (crc32_finish(crc32_bytes(0xFFFFFFFFu, hp, sizeof(h))) != stored)
+    u32 hdr_len = (h.magic[3] == '1')
+        ? (u32)(16 + 8 * sizeof(struct savefs_entry))
+        : (u32)sizeof(h);
+    if (crc32_finish(crc32_bytes(0xFFFFFFFFu, hp, hdr_len)) != stored)
         return 0;
-    if (h.count > 8)
+    if (h.count > 16)
         return 0;
 
     for (u32 i = 0; i < h.count; i++) {
@@ -2493,7 +2496,7 @@ static int savefs_restore(void) {
             return 0;
     }
 
-    int made[8];
+    int made[16];
     int made_count = 0;
     for (u32 i = 0; i < h.count; i++) {
         int idx = ramfile_create(h.entries[i].name);
@@ -3393,6 +3396,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 
