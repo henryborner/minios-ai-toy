@@ -3109,7 +3109,8 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
         else if (d == 5 || d == 6) shape = 3;
         else if (d == 7 || d == 8) shape = 4;
     }
-    if (x == mouse_x && y == mouse_y && shape == cursor_shape)
+    if (cursor_bg_valid && x == cursor_px && y == cursor_py &&
+        shape == cursor_shape)
         return 1;
 
     cursor_restore();
