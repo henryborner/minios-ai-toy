@@ -2138,15 +2138,23 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
     } else if (cmd->op == 6) {
         int r = (int)cmd->w;
         int cx = (int)cmd->x, cy = (int)cmd->y;
-        for (int dy = -r; dy <= r; dy++)
-            for (int dx = -r; dx <= r; dx++) {
-                int d2 = dx * dx + dy * dy;
-                if (d2 > r * r)
-                    continue;
-                if (cmd->h == 0 && d2 < (r - 1) * (r - 1))
-                    continue;
-                canvas_pixel(cx + dx, cy + dy, (u8)cmd->color);
+        int x = r;
+        for (int yy = 0; yy <= r; yy++) {
+            while (x > 0 && x * x + yy * yy > r * r)
+                x--;
+            if (cmd->h) {
+                for (int xx = -x; xx <= x; xx++) {
+                    canvas_pixel(cx + xx, cy + yy, (u8)cmd->color);
+                    if (yy)
+                        canvas_pixel(cx + xx, cy - yy, (u8)cmd->color);
+                }
+            } else {
+                canvas_pixel(cx - x, cy + yy, (u8)cmd->color);
+                canvas_pixel(cx + x, cy + yy, (u8)cmd->color);
+                canvas_pixel(cx - x, cy - yy, (u8)cmd->color);
+                canvas_pixel(cx + x, cy - yy, (u8)cmd->color);
             }
+        }
     } else if (cmd->op == 7) {
         if (!cmd->text || cmd->len < cmd->w * cmd->h)
             return -1;
