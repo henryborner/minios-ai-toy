@@ -1379,6 +1379,22 @@ static void run_command(struct console *c, char *line) {
         run_python_expr(c, line + 1);
     } else if (streq(line, "pystat")) {
         py_stats(c);
+    } else if (starts_with(line, "py3 ")) {
+        extern int run_three_python(const char *a, const char *b, const char *c);
+        char names[3][32];
+        const char *p = line + 4;
+        for (int i = 0; i < 3; i++) {
+            int n = 0;
+            while (*p == ' ') p++;
+            while (*p && *p != ' ' && n < 31) names[i][n++] = *p++;
+            names[i][n] = 0;
+        }
+        if (names[0][0] && names[1][0] && names[2][0]) {
+            term_puts(c, "Launching three Python consoles...\n");
+            run_three_python(names[0], names[1], names[2]);
+        } else {
+            term_puts(c, "usage: py3 A.PY B.PY C.PY\n");
+        }
     } else if (starts_with(line, "py2 ")) {
         extern int run_two_python(const char *a, const char *b);
         char a[32], b[32];

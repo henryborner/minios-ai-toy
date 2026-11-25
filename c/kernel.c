@@ -1086,7 +1086,7 @@ int run_module(const char *name) {
 /* -----------------------------------------------------------------------------
  * Tasks: up to four slots, each with its own page directory.
  * ----------------------------------------------------------------------------- */
-#define NTASKS 8
+#define NTASKS 9
 #define TASK_FREE    0
 #define TASK_READY   1
 #define TASK_RUNNING 2
@@ -1098,7 +1098,7 @@ int run_module(const char *name) {
 
 /* One large Ring 3 task for the MicroPython-class layout. */
 #define BIG_FIRST_SLOT  6
-#define BIG_SLOTS       2
+#define BIG_SLOTS       3
 #define BIG_TASK_SLOT    7
 #define BIG_CODE_PHYS    0x00100000u
 #define BIG_CODE_MAX     0x00080000u
@@ -2298,6 +2298,51 @@ int run_two_python(const char *a, const char *b) {
     tasks[s1].console_id = 1;
     __asm__ __volatile__("cli");
     start_tasks(s0);
+    __asm__ __volatile__("sti");
+    return 1;
+}
+
+int run_three_python(const char *a, const char *b, const char *c) {
+    u32 size = 0;
+    if (!fs_load_file_to("MPY.BIN", (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size)) {
+        gui_sys_print("[py3] MPY.BIN load failed.\n");
+        return 0;
+    }
+    struct module_header *h = (struct module_header *)BIG_CODE_PHYS;
+    if (h->magic[0] != 'U' || h->magic[1] != 'M' ||
+        h->magic[2] != 'P' || h->magic[3] != '1' ||
+        h->image_size > size || h->bss_size > BIG_CODE_MAX - h->image_size) {
+        gui_sys_print("[py3] bad MPY.BIN header.\n");
+        return 0;
+    }
+    int slots[3];
+    for (int i = 0; i < 3; i++)
+        slots[i] = task_create_big("MPY.BIN", h->image_size, h->bss_size, h->entry_offset);
+    for (int i = 0; i < 3; i++)
+        if (slots[i] < 0) {
+            for (int j = 0; j < 3; j++)
+                if (slots[j] >= 0) {
+                    tasks[slots[j]].state = TASK_FREE;
+                    task_free_frames(slots[j]);
+                }
+            gui_sys_print("[py3] no three big slots.\n");
+            return 0;
+        }
+    const char *av[3][2] = { { "py", a }, { "py", b }, { "py", c } };
+    for (int i = 0; i < 3; i++) {
+        if (!build_args_on_stack(slots[i], 2, av[i], BIG_USER_STACK,
+                                 BIG_USER_STACK + BIG_STACK_SIZE)) {
+            for (int j = 0; j < 3; j++) {
+                tasks[slots[j]].state = TASK_FREE;
+                task_free_frames(slots[j]);
+            }
+            gui_sys_print("[py3] args failed.\n");
+            return 0;
+        }
+        tasks[slots[i]].console_id = (u8)i;
+    }
+    __asm__ __volatile__("cli");
+    start_tasks(slots[0]);
     __asm__ __volatile__("sti");
     return 1;
 }
@@ -3856,6 +3901,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

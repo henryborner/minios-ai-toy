@@ -119,3 +119,10 @@ ways. Expect rough edges; do not deploy it anywhere real.
 - Per-task console output routing; shell recovers after both tasks exit
 - Single-MPY path and smoke test remain green
 
+
+## Phase 3C prototype
+
+- Three concurrent MicroPython consoles (py3 A.PY B.PY C.PY) with separate code/stack/heap/page directories and per-console output routing
+- Console1/2/3 show A/B/C streams simultaneously; shells recover after all three exit
+- 	ools/smoke_test.py remains green
+
