@@ -38,7 +38,8 @@ static volatile u8 kbd_head[KBD_CONSOLES], kbd_tail[KBD_CONSOLES];
 static volatile u8 gui_special_pending;
 static int current_console_id(void);
 static int console_has_live_task(int cid);
-static u8 shift_down, ctrl_down, extended, ctrl_seen;
+static u8 shift_down, extended;
+static volatile u8 ctrl_down, ctrl_seen;
 
 static volatile u8 mouse_cycle;
 static volatile u8 mouse_packet[4];
@@ -3554,23 +3555,21 @@ void kmain(void) {
 
     interrupts_on();
     savefs_restore();
-    u8 safe_mode = 0;
-    u32 safe_until = ticks + 50;
-    while ((int)(ticks - safe_until) < 0) {
-        if (ctrl_down)
-            safe_mode = 1;
-        __asm__ __volatile__("sti; hlt");
-    }
-    if (safe_mode && ramfile_find("AUTOEXEC.PY") >= 0)
-        gui_sys_print("[boot] AUTOEXEC.PY skipped (Safe Mode)\n");
-    if (!safe_mode && ramfile_find("AUTOEXEC.PY") >= 0)
-        gui_request_py("AUTOEXEC.PY");
+    int autoexec_pending = ramfile_find("AUTOEXEC.PY") >= 0;
+    u32 autoexec_at = ticks + 300;
     gui_redraw();
 
     u32 last_draw = ticks;
 
     for (;;) {
         int event = 0;
+        if (autoexec_pending && (int)(ticks - autoexec_at) >= 0) {
+            autoexec_pending = 0;
+            if (ctrl_seen || ctrl_down)
+                gui_sys_print("[boot] AUTOEXEC.PY skipped (Safe Mode)\n");
+            else
+                gui_request_py("AUTOEXEC.PY");
+        }
         gui_run_pending_py();
 
         if (gui_special_pending) {
@@ -3606,6 +3605,8 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
 
 
 
