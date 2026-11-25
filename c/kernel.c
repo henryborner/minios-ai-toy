@@ -484,7 +484,7 @@ static void gui_poll_runtime(void) {
     if (cid < 0 || cid >= KBD_CONSOLES)
         cid = 0;
     int ring0_runtime = runtime_busy && !scheduler_active;
-    if (!ring0_runtime &&
+    if (!scheduler_active && !ring0_runtime &&
         (gui_runtime_keyboard_wanted() || !console_has_live_task(cid))) {
         while (kbd_tail[cid] != kbd_head[cid]) {
             u8 ch = kbd_buf[cid][kbd_tail[cid]];
