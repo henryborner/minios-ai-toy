@@ -9,10 +9,12 @@ __pycache__/
 
 # Local toolchain (NASM) and dev helpers
 /tools/*
-!/tools/push.py
+!/tools/push.py`r`n!/tools/smoke_test.py
 
 # Scratch files
 /screenshots/*.bin
 *.log
+
+
 
 
