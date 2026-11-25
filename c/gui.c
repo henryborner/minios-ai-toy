@@ -1162,6 +1162,10 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
         term_puts(c, "modtest mod NAME utest reboot halt\n");
+    } else if (streq(line, "metrics")) {
+        extern void serial_metrics(void);
+        serial_metrics();
+        term_puts(c, "metrics written to COM1.\n");
     } else if (streq(line, "ver")) {
         term_puts(c, "MiniOS 2.0 C GUI (32-bit)\n");
     } else if (streq(line, "cpu")) {

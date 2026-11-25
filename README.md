@@ -96,3 +96,12 @@ third-party attribution, especially MicroPython (MIT).
 
 Hobby project, constantly moving. AI-generated code can be wrong in creative
 ways. Expect rough edges; do not deploy it anywhere real.
+
+## Phase 2 complete (Stage 9-18)
+
+- Dynamic RAMFS pages + SaveFS v2/MSV1 compatibility
+- Serial upload (	ools/push.py) and 4-slot kernel pipes
+- AUTOEXEC.PY boot hook
+- Desktop icons and Classic Teal / Midnight Dark / Warm Amber themes
+- python tools/smoke_test.py covers 640x480 and forced 320x200 boot/command/screenshot plus warmed frame-leak checks.
+

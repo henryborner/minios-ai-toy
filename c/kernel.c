@@ -2498,6 +2498,26 @@ void serial_info(void) {
     serial_puts("MiniOS COM1 115200 8N1 ready\r\n");
 }
 
+static void serial_u32(u32 v) {
+    char b[12];
+    int n = 0;
+    do { b[n++] = (char)('0' + v % 10); v /= 10; } while (v);
+    while (n)
+        serial_putc(b[--n]);
+}
+
+void serial_metrics(void) {
+    extern u32 kernel_free_frames(void);
+    extern u32 kernel_total_frames(void);
+    serial_puts("[metrics] free=");
+    serial_u32(kernel_free_frames());
+    serial_puts(" total=");
+    serial_u32(kernel_total_frames());
+    serial_puts(" heap=");
+    serial_u32(heap_used);
+    serial_puts("\r\n");
+}
+
 /* -----------------------------------------------------------------------------
  * SaveFS: snapshot RAMFS into the tail of the floppy.
  * ----------------------------------------------------------------------------- */

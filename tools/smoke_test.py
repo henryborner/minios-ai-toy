@@ -4,6 +4,7 @@
 The long-term 0-frame-leak assertion needs a guest metrics channel; this
 version verifies boot, command injection, and non-blank screenshots.
 """
+import re
 import shutil
 import socket
 import subprocess
@@ -67,6 +68,14 @@ def image_nonblank(path):
     return len(set(pix[: w * h * 3])) > 2
 
 
+def parse_metrics(log):
+    try:
+        vals = re.findall(rb"\[metrics\] free=(\d+) total=(\d+)", log.read_bytes())
+        return vals[-1] if vals else None
+    except Exception:
+        return None
+
+
 def boot(img, serial_log, display_name):
     mon = f"tcp:127.0.0.1:{MON},server,nowait"
     p = subprocess.Popen([
@@ -90,7 +99,19 @@ def exercise(prefix, img, serial):
         if not image_nonblank(shot1):
             raise AssertionError("blank boot screen: " + prefix)
         h.type("calc 2**10\n")
+        time.sleep(1.2)
+        h.type("metrics\n")
+        time.sleep(0.5)
+        before = parse_metrics(Path(serial))
+        h.type("calc 2**10\n")
         time.sleep(1.0)
+        h.type("metrics\n")
+        time.sleep(0.5)
+        after = parse_metrics(Path(serial))
+        if before is None or after is None:
+            raise AssertionError("missing metrics: " + prefix)
+        if before != after:
+            raise AssertionError("frame leak %s -> %s (%s)" % (before, after, prefix))
         h.cmd(f"screendump {shot2.as_posix()}")
         time.sleep(0.3)
         if not image_nonblank(shot2):
@@ -121,8 +142,7 @@ def main():
         b[193 * 512 + 0x1FD] = 1
         vga.write_bytes(b)
         exercise("320", vga, td / "serial320.log")
-    print("SMOKE PASS: 640x480 + forced 320x200 boot/command screenshots")
-    print("note: 0-page-leak assertion still needs a guest metrics channel")
+    print("SMOKE PASS: 640x480 + forced 320x200 boot, command, screenshot and warmed 0-leak checks")
 
 
 if __name__ == "__main__":
