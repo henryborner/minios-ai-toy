@@ -87,6 +87,7 @@ struct console {
     int cmd_len, cmd_pos;
     int cmd_start, cmd_rows;
     int hist_n, hist_next, hist_pos;
+    u8 pending_prompt;
 };
 
 struct window {
@@ -1470,7 +1471,12 @@ static void term_key(struct console *c, char ch) {
         sys_output = c;
         term_newline(c);
         run_command(c, command);
-        term_prompt(c);
+        extern int kernel_console_has_live(int cid);
+        int cid = (int)(c - consoles);
+        if (cid >= 0 && cid < NCONS && kernel_console_has_live(cid))
+            c->pending_prompt = 1;
+        else
+            term_prompt(c);
         return;
     }
     if (key == 0x15) { /* Ctrl-U */
@@ -3386,6 +3392,7 @@ void gui_sys_write(const char *s, u32 len) {
 void gui_prompt_console(int cid) {
     if (cid < WIN_C0 || cid > WIN_C2)
         return;
+    consoles[cid].pending_prompt = 0;
     term_prompt(&consoles[cid]);
     gui_dirty = 1;
 }

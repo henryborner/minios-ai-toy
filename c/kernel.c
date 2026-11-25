@@ -512,7 +512,7 @@ static void gui_poll_runtime(void) {
 void irq0_handler(u32 *frame) {
     ticks++;
     outb(0x20, 0x20);
-    if (scheduler_active || runtime_busy)
+    if (runtime_busy)
         gui_poll_runtime();
     sched_timer_tick(frame);
 }
@@ -1142,6 +1142,7 @@ struct task {
     u32 pid;
     u32 parent_pid;
     u32 waiting_pid;
+    u32 wait_status;
     u32 sleep_until;
     u32 exit_code;
     u8 console_id;
@@ -1194,6 +1195,12 @@ int scheduler_active_now(void) {
 
 int kernel_runtime_busy(void) {
     return runtime_busy;
+}
+
+static int console_has_live_task(int cid);
+
+int kernel_console_has_live(int cid) {
+    return console_has_live_task(cid);
 }
 
 static int console_has_live_task(int cid) {
@@ -1392,6 +1399,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].pid = 0;
         tasks[t].parent_pid = 0;
         tasks[t].waiting_pid = WAIT_NONE;
+        tasks[t].wait_status = 0;
         tasks[t].sleep_until = 0;
         tasks[t].exit_code = 0;
         tasks[t].console_id = 0;
@@ -1535,6 +1543,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
     tasks[slot].waiting_pid = WAIT_NONE;
+    tasks[slot].wait_status = 0;
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
@@ -1617,6 +1626,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
     tasks[slot].waiting_pid = WAIT_NONE;
+    tasks[slot].wait_status = 0;
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
@@ -1636,6 +1646,7 @@ static void start_tasks(int first) {
 
 static void sched_init_task0(void) {
     tasks[0].state = TASK_RUNNING;
+    task_set_name(0, "kernel");
     tasks[0].cr3 = (u32)sched_safe_pd;
     tasks[0].kstack_top = 0x00090000u;
     tasks[0].console_id = 0;
@@ -1650,6 +1661,17 @@ static void sched_init_task0(void) {
 }
 
 static int next_ready(void) {
+    static int rr_cursor = 1;
+    if (current_task == 0) {
+        for (int k = 0; k < NTASKS - 1; k++) {
+            int t = 1 + (rr_cursor - 1 + k) % (NTASKS - 1);
+            if (tasks[t].state == TASK_READY) {
+                rr_cursor = (t % (NTASKS - 1)) + 1;
+                return t;
+            }
+        }
+        return -1;
+    }
     for (int k = 1; k < NTASKS; k++) {
         int t = (current_task + k) % NTASKS;
         if (t == 0)
@@ -1657,7 +1679,7 @@ static int next_ready(void) {
         if (tasks[t].state == TASK_READY)
             return t;
     }
-    if (current_task != 0 && tasks[0].state == TASK_READY)
+    if (tasks[0].state == TASK_READY)
         return 0;
     return -1;
 }
@@ -1681,9 +1703,15 @@ static void sched_switch(int next) {
 }
 
 static void module_wait_key(int cid) {
+    __asm__ __volatile__("cli");
+    if (kbd_tail[cid] != kbd_head[cid]) {
+        __asm__ __volatile__("sti");
+        return;
+    }
     tasks[current_task].wait_kbd = (u8)(cid + 1);
     tasks[current_task].state = TASK_BLOCKED;
     sched_yield();
+    __asm__ __volatile__("sti");
 }
 
 static void sched_yield(void) {
@@ -1701,7 +1729,7 @@ static void sched_yield(void) {
     sched_switch(next);
 }
 
-static void switch_task(int next) {
+static void __attribute__((unused)) switch_task(int next) {
     if (current_task >= 0 && current_task < NTASKS)
         __asm__ __volatile__("fsave %0" : "=m"(tasks[current_task].fpu));
     __asm__ __volatile__("frstor %0" : : "m"(tasks[next].fpu));
@@ -1746,7 +1774,7 @@ static void wake_parent(int child_slot) {
     if (tasks[parent].state == TASK_BLOCKED &&
         wait_pid != WAIT_NONE &&
         (wait_pid == 0 || wait_pid == tasks[child_slot].pid)) {
-        ((u32 *)tasks[parent].esp)[7] = tasks[child_slot].exit_code;
+        tasks[parent].wait_status = tasks[child_slot].exit_code;
         tasks[parent].waiting_pid = WAIT_NONE;
         tasks[parent].state = TASK_READY;
     }
@@ -1919,7 +1947,9 @@ int kernel_task_snapshot(int index, u32 *pid, int *console, u32 *state,
 
 int task_kill_pid(u32 pid) {
     int target = -1;
-    for (int t = 0; t < NTASKS; t++) {
+    if (pid == 0)
+        return 0;
+    for (int t = 1; t < NTASKS; t++) {
         if (tasks[t].state != TASK_FREE && tasks[t].state != TASK_DONE &&
             tasks[t].pid == pid) {
             target = t;
@@ -2042,17 +2072,12 @@ static int task_wait_block(u32 want_pid, u32 frame) {
         return 0;
     }
 
-    tasks[current_task].state = TASK_BLOCKED;
     tasks[current_task].waiting_pid = want_pid;
-    tasks[current_task].esp = frame;
-    int next = next_ready();
-    if (next < 0) {
-        tasks[current_task].state = TASK_RUNNING;
-        tasks[current_task].waiting_pid = WAIT_NONE;
-        return -1;
-    }
-    switch_task(next);
-    for (;;) {}
+    tasks[current_task].state = TASK_BLOCKED;
+    sched_yield();
+    SYS_RET(frame) = tasks[current_task].wait_status;
+    tasks[current_task].wait_status = 0;
+    return 0;
 }
 
 static void task_sleep_block(u32 ms, u32 frame) {
