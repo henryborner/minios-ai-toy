@@ -31,7 +31,7 @@
 #define MENU_X 2
 #define MENU_W 120
 #define MENU_ITEM_H 12
-#define MENU_ITEMS 7
+#define MENU_ITEMS 10
 #define MENU_H (MENU_ITEMS * MENU_ITEM_H + 4)
 #define MENU_Y (TASKBAR_Y - MENU_H - 4)
 
@@ -1292,6 +1292,12 @@ static void run_command(struct console *c, char *line) {
         launch_tool(c, "-m top", "");
     } else if (starts_with(line, "top -")) {
         launch_tool(c, "-m top", line + 4);
+    } else if (streq(line, "snake")) {
+        launch_tool(c, "-m games", "snake");
+    } else if (streq(line, "life")) {
+        launch_tool(c, "-m games", "life");
+    } else if (streq(line, "games")) {
+        launch_tool(c, "-m games", "snake");
     } else if (streq(line, "paint")) {
         launch_tool(c, "-m paint", "");
     } else if (starts_with(line, "paint ")) {
@@ -1775,7 +1781,7 @@ static void draw_menu(void) {
 
     const char *items[MENU_ITEMS] = {
         "Console 1", "Console 2", "Console 3", "System info",
-        "Windows", "About", "Reboot"
+        "Windows", "About", "Reboot", "Paint", "Plot", "Snake"
     };
     for (int i = 0; i < MENU_ITEMS; i++) {
         int iy = MENU_Y + 2 + i * MENU_ITEM_H;
@@ -2827,8 +2833,18 @@ static void activate_hit(int hit) {
             list_sel = focus_win >= 0 ? focus_win : 0;
         } else if (idx == 5) {
             focus_window(WIN_ABOUT);
-        } else {
+        } else if (idx == 6) {
+            extern void machine_reboot(void);
             machine_reboot();
+        } else if (idx == 7) {
+            focus_window(WIN_C0);
+            launch_tool(&consoles[WIN_C0], "-m paint", "");
+        } else if (idx == 8) {
+            focus_window(WIN_C0);
+            launch_tool(&consoles[WIN_C0], "-m demos", "");
+        } else {
+            focus_window(WIN_C0);
+            launch_tool(&consoles[WIN_C0], "-m games", "snake");
         }
     }
 }
