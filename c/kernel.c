@@ -3052,6 +3052,12 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         } else if (op == 5) {
             ((u32 *)frame)[7] = (user_module_cold_ticks << 16) |
                                 (user_module_warm_ticks & 0xFFFFu);
+        } else if (op == 6) {
+            gui_canvas_batch((int)title);
+            ((u32 *)frame)[7] = 0;
+        } else if (op == 7) {
+            gui_canvas_present();
+            ((u32 *)frame)[7] = 0;
         } else {
             ((u32 *)frame)[7] = 0xFFFFFFFFu;
         }

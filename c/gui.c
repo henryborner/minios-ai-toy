@@ -127,6 +127,7 @@ static u8 *term_attrs;
 static u8 term_default_attr = 0xF0;
 static int term_dark;
 static int canvas_open;
+static int canvas_batch;
 static int files_scroll;
 static int files_sel;
 static int sys_tab;
@@ -2036,6 +2037,7 @@ void gui_canvas_open(const char *title) {
     canvas_title[i] = 0;
     wins[WIN_APP].title = canvas_title;
     canvas_open = 1;
+    canvas_batch = 0;
     canvas_ev.closed = 0;
     canvas_ev.width = (u32)canvas_w;
     canvas_ev.height = (u32)canvas_h;
@@ -2048,6 +2050,15 @@ void gui_canvas_close(void) {
     canvas_ev.closed = 1;
     canvas_ev_pending = 1;
     hide_window(WIN_APP);
+    gui_dirty = 1;
+}
+
+void gui_canvas_batch(int on) {
+    canvas_batch = on;
+}
+
+void gui_canvas_present(void) {
+    canvas_batch = 0;
     gui_dirty = 1;
 }
 
@@ -2078,10 +2089,37 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
                         canvas_pixel(px + c, py + r, (u8)cmd->color);
             px += 8;
         }
+    } else if (cmd->op == 5) {
+        canvas_rect((int)cmd->x, (int)cmd->y, (int)cmd->w, 1, (u8)cmd->color);
+        canvas_rect((int)cmd->x, (int)cmd->y + (int)cmd->h - 1, (int)cmd->w, 1, (u8)cmd->color);
+        canvas_rect((int)cmd->x, (int)cmd->y, 1, (int)cmd->h, (u8)cmd->color);
+        canvas_rect((int)cmd->x + (int)cmd->w - 1, (int)cmd->y, 1, (int)cmd->h, (u8)cmd->color);
+    } else if (cmd->op == 6) {
+        int r = (int)cmd->w;
+        int cx = (int)cmd->x, cy = (int)cmd->y;
+        for (int dy = -r; dy <= r; dy++)
+            for (int dx = -r; dx <= r; dx++) {
+                int d2 = dx * dx + dy * dy;
+                if (d2 > r * r)
+                    continue;
+                if (cmd->h == 0 && d2 < (r - 1) * (r - 1))
+                    continue;
+                canvas_pixel(cx + dx, cy + dy, (u8)cmd->color);
+            }
+    } else if (cmd->op == 7) {
+        if (!cmd->text || cmd->len < cmd->w * cmd->h)
+            return -1;
+        for (u32 yy = 0; yy < cmd->h; yy++)
+            for (u32 xx = 0; xx < cmd->w; xx++) {
+                u8 c = (u8)cmd->text[yy * cmd->w + xx];
+                if (c)
+                    canvas_pixel((int)cmd->x + (int)xx, (int)cmd->y + (int)yy, c);
+            }
     } else {
         return -1;
     }
-    gui_dirty = 1;
+    if (!canvas_batch)
+        gui_dirty = 1;
     return 0;
 }
 

@@ -41,6 +41,8 @@ struct gui_canvas_event {
 
 void gui_canvas_open(const char *title);
 void gui_canvas_close(void);
+void gui_canvas_batch(int on);
+void gui_canvas_present(void);
 int gui_canvas_w(void);
 int gui_canvas_h(void);
 int gui_canvas_cmd(const struct gui_canvas_cmd *cmd);

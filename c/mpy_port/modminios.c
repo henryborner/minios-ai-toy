@@ -73,6 +73,62 @@ static mp_obj_t minios_line(size_t n_args, const mp_obj_t *args) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(minios_line_obj, 5, 5, minios_line);
 
+static mp_obj_t canvas_m_box(size_t n_args, const mp_obj_t *args) {
+    (void)n_args;
+    struct minios_canvas_cmd cmd = {0};
+    cmd.op = 5;
+    cmd.x = mp_obj_get_int(args[1]);
+    cmd.y = mp_obj_get_int(args[2]);
+    cmd.w = mp_obj_get_int(args[3]);
+    cmd.h = mp_obj_get_int(args[4]);
+    cmd.color = mp_obj_get_int(args[5]);
+    canvas_cmd(&cmd);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(canvas_m_box_obj, 6, 6, canvas_m_box);
+
+static mp_obj_t canvas_m_circle(size_t n_args, const mp_obj_t *args) {
+    struct minios_canvas_cmd cmd = {0};
+    cmd.op = 6;
+    cmd.x = mp_obj_get_int(args[1]);
+    cmd.y = mp_obj_get_int(args[2]);
+    cmd.w = mp_obj_get_int(args[3]);
+    cmd.h = n_args > 4 ? mp_obj_get_int(args[4]) : 0;
+    cmd.color = n_args > 5 ? mp_obj_get_int(args[5]) : 0;
+    canvas_cmd(&cmd);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(canvas_m_circle_obj, 5, 6, canvas_m_circle);
+
+static mp_obj_t canvas_m_blit(size_t n_args, const mp_obj_t *args) {
+    (void)n_args;
+    struct minios_canvas_cmd cmd = {0};
+    size_t len = 0;
+    const byte *buf = (const byte *)mp_obj_str_get_data(args[5], &len);
+    cmd.op = 7;
+    cmd.x = mp_obj_get_int(args[1]);
+    cmd.y = mp_obj_get_int(args[2]);
+    cmd.w = mp_obj_get_int(args[3]);
+    cmd.h = mp_obj_get_int(args[4]);
+    cmd.text = (const char *)buf;
+    cmd.len = (uint32_t)len;
+    canvas_cmd(&cmd);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_VAR_BETWEEN(canvas_m_blit_obj, 6, 6, canvas_m_blit);
+
+static mp_obj_t canvas_m_batch(mp_obj_t self, mp_obj_t on) {
+    (void)self;
+    return mp_obj_new_int(sys_canvas_ctl(6, (const char *)(uintptr_t)mp_obj_get_int(on)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(canvas_m_batch_obj, canvas_m_batch);
+
+static mp_obj_t canvas_m_present(mp_obj_t self) {
+    (void)self;
+    return mp_obj_new_int(sys_canvas_ctl(7, NULL));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(canvas_m_present_obj, canvas_m_present);
+
 static mp_obj_t minios_text(size_t n_args, const mp_obj_t *args) {
     (void)n_args;
     mp_obj_t x_in = args[0], y_in = args[1];
@@ -223,6 +279,11 @@ static const mp_rom_map_elem_t canvas_locals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_rect), MP_ROM_PTR(&canvas_m_rect_obj) },
     { MP_ROM_QSTR(MP_QSTR_line), MP_ROM_PTR(&canvas_m_line_obj) },
     { MP_ROM_QSTR(MP_QSTR_text), MP_ROM_PTR(&canvas_m_text_obj) },
+    { MP_ROM_QSTR(MP_QSTR_box), MP_ROM_PTR(&canvas_m_box_obj) },
+    { MP_ROM_QSTR(MP_QSTR_circle), MP_ROM_PTR(&canvas_m_circle_obj) },
+    { MP_ROM_QSTR(MP_QSTR_blit), MP_ROM_PTR(&canvas_m_blit_obj) },
+    { MP_ROM_QSTR(MP_QSTR_batch), MP_ROM_PTR(&canvas_m_batch_obj) },
+    { MP_ROM_QSTR(MP_QSTR_present), MP_ROM_PTR(&canvas_m_present_obj) },
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&canvas_m_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&canvas_m_close_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&canvas_m_beep_obj) },
@@ -271,6 +332,7 @@ const mp_obj_module_t mp_module_minios = {
 };
 
 MP_REGISTER_MODULE(MP_QSTR_minios, mp_module_minios);
+
 
 
 
