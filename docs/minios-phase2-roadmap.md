@@ -186,7 +186,7 @@
 - [x] **15.3 经典图形街机小游戏 `c/pylib/games.py`（Shell 命令 `games` / `snake` / `life`）**
   - 内置两款轻量耐玩的 `Canvas 2.0` 图形应用：① **彩色贪吃蛇 `snake`**（方向键操控、吃果子 `minios.beep` 音效、最高分自动写入 `RAMFS`）；② **康威生命游戏 `life`**（鼠标点击绘制/擦除细胞、空格键暂停/演化、`r` 随机种子、`c` 清空）。
   - 扩展 Start 开始菜单子项或快捷入口，鼠标点两下即可打开 `Files`、`Paint`、`Plot`、`Snake`！
-- [ ] **Stage 15 验收**：鼠标打开 `Paint` 画一幅彩色图案保存并重新加载；打开 `Snake` 试玩计分；截图展示丰富的图形桌面生态。
+- [x] **Stage 15 验收**：Paint 保存/重载 ART.PIC 通过；Snake 计分/最高分/beep、Life 鼠标编辑、Plot 交互、Start 菜单入口均已验收并截图。
 
 ---
 
@@ -227,6 +227,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 

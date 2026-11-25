@@ -108,6 +108,34 @@ def draw():
     c.present()
 
 
+def load():
+    try:
+        f = open(name, "r")
+        text = f.read()
+        f.close()
+        parts = text.split()
+        if len(parts) < 2:
+            return False
+        w = int(parts[0])
+        h = int(parts[1])
+        if w != W or h != H:
+            return False
+        pos = 0
+        for tok in parts[2:]:
+            a = tok.split(":")
+            if len(a) != 2:
+                continue
+            n = int(a[0])
+            c = int(a[1])
+            for _ in range(n):
+                if pos < W * H:
+                    pix[pos] = c
+                    pos += 1
+        return pos == W * H
+    except Exception:
+        return False
+
+
 def save():
     parts = ["%d %d\n" % (W, H)]
     last = pix[0]
@@ -125,6 +153,7 @@ def save():
     f.close()
 
 
+loaded = load()
 c = minios.Canvas("Paint")
 c.capture(True)
 draw()
