@@ -129,6 +129,12 @@ static mp_obj_t canvas_m_present(mp_obj_t self) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(canvas_m_present_obj, canvas_m_present);
 
+static mp_obj_t canvas_m_capture(mp_obj_t self, mp_obj_t on) {
+    (void)self;
+    return mp_obj_new_int(sys_canvas_ctl(8, (const char *)(uintptr_t)mp_obj_get_int(on)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(canvas_m_capture_obj, canvas_m_capture);
+
 static mp_obj_t minios_text(size_t n_args, const mp_obj_t *args) {
     (void)n_args;
     mp_obj_t x_in = args[0], y_in = args[1];
@@ -286,6 +292,7 @@ static const mp_rom_map_elem_t canvas_locals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_blit), MP_ROM_PTR(&canvas_m_blit_obj) },
     { MP_ROM_QSTR(MP_QSTR_batch), MP_ROM_PTR(&canvas_m_batch_obj) },
     { MP_ROM_QSTR(MP_QSTR_present), MP_ROM_PTR(&canvas_m_present_obj) },
+    { MP_ROM_QSTR(MP_QSTR_capture), MP_ROM_PTR(&canvas_m_capture_obj) },
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&canvas_m_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&canvas_m_close_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&canvas_m_beep_obj) },

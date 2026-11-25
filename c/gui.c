@@ -132,6 +132,7 @@ static u8 term_default_attr = 0xF0;
 static int term_dark;
 static int canvas_open;
 static int canvas_batch;
+static int canvas_key_capture;
 static int files_scroll;
 static int files_sel;
 static int sys_tab;
@@ -438,7 +439,16 @@ int gui_focused_console(void) {
 
 int gui_runtime_keyboard_wanted(void) {
     return menu_open || list_open || focus_win == WIN_ABOUT ||
-           focus_win == WIN_SYS || focus_win == WIN_FILES;
+           focus_win == WIN_SYS || focus_win == WIN_FILES ||
+           (focus_win == WIN_APP && canvas_key_capture);
+}
+
+int gui_canvas_keyboard(void) {
+    return focus_win == WIN_APP && canvas_key_capture;
+}
+
+void gui_canvas_capture(int on) {
+    canvas_key_capture = on;
 }
 
 static void focus_fallback(void) {
@@ -2060,6 +2070,7 @@ void gui_canvas_open(const char *title) {
     wins[WIN_APP].title = canvas_title;
     canvas_open = 1;
     canvas_batch = 0;
+    canvas_key_capture = 0;
     canvas_target = canvas_buf;
     canvas_qhead = canvas_qtail = 0;
     focus_window(WIN_APP);
@@ -2068,6 +2079,7 @@ void gui_canvas_open(const char *title) {
 
 void gui_canvas_close(void) {
     canvas_open = 0;
+    canvas_key_capture = 0;
     canvas_push_event(GUI_EV_CLOSE, 0, 0, 0, 0);
     canvas_queue[canvas_qhead].closed = 1;
     hide_window(WIN_APP);

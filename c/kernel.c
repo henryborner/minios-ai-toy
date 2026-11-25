@@ -983,6 +983,10 @@ static int module_getchar(void) {
         return (int)seq[seq_pos++];
 
     for (;;) {
+        if (gui_canvas_keyboard()) {
+            __asm__ __volatile__("sti; hlt; cli");
+            continue;
+        }
         int cid = current_console_id();
         if (cid < 0 || cid >= KBD_CONSOLES)
             cid = 0;
@@ -3059,6 +3063,9 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             ((u32 *)frame)[7] = 0;
         } else if (op == 7) {
             gui_canvas_present();
+            ((u32 *)frame)[7] = 0;
+        } else if (op == 8) {
+            gui_canvas_capture((int)title);
             ((u32 *)frame)[7] = 0;
         } else {
             ((u32 *)frame)[7] = 0xFFFFFFFFu;
