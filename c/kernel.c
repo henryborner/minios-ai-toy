@@ -1097,6 +1097,8 @@ int run_module(const char *name) {
 #define TIME_SLICE_TICKS 1
 
 /* One large Ring 3 task for the MicroPython-class layout. */
+#define BIG_FIRST_SLOT  6
+#define BIG_SLOTS       2
 #define BIG_TASK_SLOT    7
 #define BIG_CODE_PHYS    0x00100000u
 #define BIG_CODE_MAX     0x00080000u
@@ -1157,6 +1159,12 @@ static void fpu_task_default(u8 *dst) {
         dst[i] = fpu_default[i];
 }
 
+int kernel_task_console(void) {
+    if (scheduler_active && current_task >= 0 && current_task < NTASKS)
+        return tasks[current_task].console_id;
+    return -1;
+}
+
 static int current_console_id(void) {
     if (scheduler_active && current_task >= 0 && current_task < NTASKS)
         return tasks[current_task].console_id;
@@ -1214,7 +1222,7 @@ static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
 static u32 task_pd[NTASKS][1024] __attribute__((aligned(4096)));
 static u32 task_user_pt[NTASKS][1024] __attribute__((aligned(4096)));
 static u8 task_kstack[NTASKS][4096] __attribute__((aligned(16)));
-static u8 big_kstack[8192] __attribute__((aligned(16)));
+static u8 big_kstack[BIG_SLOTS][8192] __attribute__((aligned(16)));
 
 /* Direct-map the 4-16 MB physical window at 16-28 MB (declared above). */
 static u32 frame_bitmap[(FRAME_COUNT + 31) / 32];
@@ -1440,7 +1448,7 @@ static void task_set_name(int slot, const char *name) {
 
 static int task_create(const char *name, const u8 *src, const u8 *end) {
     int slot = -1;
-    for (int t = 0; t < BIG_TASK_SLOT; t++) {
+    for (int t = 0; t < BIG_FIRST_SLOT; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
             slot = t;
             break;
@@ -1508,8 +1516,13 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
 }
 
 static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
-    int slot = BIG_TASK_SLOT;
-    if (tasks[slot].state != TASK_FREE && tasks[slot].state != TASK_DONE)
+    int slot = -1;
+    for (int s = BIG_FIRST_SLOT; s < BIG_FIRST_SLOT + BIG_SLOTS; s++)
+        if (tasks[s].state == TASK_FREE || tasks[s].state == TASK_DONE) {
+            slot = s;
+            break;
+        }
+    if (slot < 0)
         return -1;
     if (image > BIG_CODE_MAX || bss > BIG_CODE_MAX - image)
         return -1;
@@ -1549,7 +1562,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     for (u32 i = 0; i < BIG_HEAP_PAGES; i++)
         task_user_pt[slot][heap_page + i] = (heap + i * 0x1000) | 0x007;
 
-    u32 top = (u32)(big_kstack + sizeof(big_kstack));
+    u32 top = (u32)(big_kstack[slot - BIG_FIRST_SLOT] + sizeof(big_kstack[0]));
     u32 *frame = (u32 *)(top - 52);
     for (int i = 0; i < 13; i++)
         frame[i] = 0;
@@ -2244,6 +2257,48 @@ static int run_user_module_ex(const char *name, int argc,
     user_module_last_size = size;
     user_module_cache_hit = (u8)cache_hit;
     start_tasks(slot);
+    return 1;
+}
+
+int run_two_python(const char *a, const char *b) {
+    u32 size = 0;
+    if (!fs_load_file_to("MPY.BIN", (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size)) {
+        gui_sys_print("[py2] MPY.BIN load failed.\n");
+        return 0;
+    }
+    struct module_header *h = (struct module_header *)BIG_CODE_PHYS;
+    if (h->magic[0] != 'U' || h->magic[1] != 'M' ||
+        h->magic[2] != 'P' || h->magic[3] != '1' ||
+        h->image_size > size || h->bss_size > BIG_CODE_MAX - h->image_size) {
+        gui_sys_print("[py2] bad MPY.BIN header.\n");
+        return 0;
+    }
+    int s0 = task_create_big("MPY.BIN", h->image_size, h->bss_size, h->entry_offset);
+    int s1 = task_create_big("MPY.BIN", h->image_size, h->bss_size, h->entry_offset);
+    if (s0 < 0 || s1 < 0) {
+        if (s0 >= 0) { tasks[s0].state = TASK_FREE; task_free_frames(s0); }
+        if (s1 >= 0) { tasks[s1].state = TASK_FREE; task_free_frames(s1); }
+        gui_sys_print("[py2] no dual big slots.\n");
+        return 0;
+    }
+    const char *a0[2] = { "py", a };
+    const char *a1[2] = { "py", b };
+    if (!build_args_on_stack(s0, 2, a0, BIG_USER_STACK,
+                             BIG_USER_STACK + BIG_STACK_SIZE) ||
+        !build_args_on_stack(s1, 2, a1, BIG_USER_STACK,
+                             BIG_USER_STACK + BIG_STACK_SIZE)) {
+        tasks[s0].state = TASK_FREE;
+        tasks[s1].state = TASK_FREE;
+        task_free_frames(s0);
+        task_free_frames(s1);
+        gui_sys_print("[py2] args failed.\n");
+        return 0;
+    }
+    tasks[s0].console_id = 0;
+    tasks[s1].console_id = 1;
+    __asm__ __volatile__("cli");
+    start_tasks(s0);
+    __asm__ __volatile__("sti");
     return 1;
 }
 

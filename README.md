@@ -112,3 +112,10 @@ ways. Expect rough edges; do not deploy it anywhere real.
 - Guest selftest command (Canvas open/draw/present/close) writes [selftest] PASS to COM1
 - 	ools/smoke_test.py covers guest selftest plus warmed frame-leak equality in 640 and forced 320 modes
 
+
+## Phase 3B prototype
+
+- Two concurrent MicroPython consoles (py2 A.PY B.PY) with independent code copies, stacks, heaps, page directories and console routing
+- Per-task console output routing; shell recovers after both tasks exit
+- Single-MPY path and smoke test remain green
+

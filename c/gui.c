@@ -1379,6 +1379,24 @@ static void run_command(struct console *c, char *line) {
         run_python_expr(c, line + 1);
     } else if (streq(line, "pystat")) {
         py_stats(c);
+    } else if (starts_with(line, "py2 ")) {
+        extern int run_two_python(const char *a, const char *b);
+        char a[32], b[32];
+        const char *p = line + 4;
+        int n = 0;
+        while (*p == ' ') p++;
+        while (*p && *p != ' ' && n < 31) a[n++] = *p++;
+        a[n] = 0;
+        while (*p == ' ') p++;
+        n = 0;
+        while (*p && *p != ' ' && n < 31) b[n++] = *p++;
+        b[n] = 0;
+        if (a[0] && b[0]) {
+            term_puts(c, "Launching two Python consoles...\n");
+            run_two_python(a, b);
+        } else {
+            term_puts(c, "usage: py2 A.PY B.PY\n");
+        }
     } else if (streq(line, "py") || streq(line, "python")) {
         launch_python(c, "");
     } else if (starts_with(line, "py ")) {
@@ -1531,6 +1549,10 @@ static void term_key(struct console *c, char ch) {
 }
 
 static struct console *active_console(void) {
+    extern int kernel_task_console(void);
+    int tc = kernel_task_console();
+    if (tc >= 0 && tc < NCONS)
+        return &consoles[tc];
     if (sys_output)
         return sys_output;
     if (focus_win >= WIN_C0 && focus_win <= WIN_C2)
