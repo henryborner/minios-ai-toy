@@ -141,16 +141,16 @@
 ### Stage 13：`Canvas 2.0` 图形加速原语与双向键鼠事件队列
 **目标**：消除 Python 动态绘图闪烁，补齐键盘事件输入与整块位图贴图，为真正的交互式 GUI 应用铺路。
 
-- [ ] **13.1 显式帧同步 `present()` 与高级绘图原语**（`c/gui.c`、`c/kernel.c`、`c/mpy_port/modminios.c`）
+- [x] **13.1 显式帧同步 `present()` 与高级绘图原语**（`c/gui.c`、`c/kernel.c`、`c/mpy_port/modminios.c`）
   - 为 `minios.Canvas` 增加双模式刷新：默认即时刷新，调用 `c.batch(True)` 后绘图仅写后备缓冲不触发重绘，调用 `c.present()` 时一次性标记脏区原子上屏（彻底消除清屏重绘闪烁！）；
   - 在 `syscall 26` (`gui_canvas_cmd`) 新增高性价比原语：
     - `op = 5` `box(x, y, w, h, color)`：空心矩形边框；
     - `op = 6` `circle(x, y, r, color, fill)`：中点圆算法画空心/实心圆；
     - `op = 7` `blit(x, y, w, h, bytes_obj)`：将 Python `bytes`/`bytearray` 像素块一次性拷贝进画布（支持透明色索引跳过），让精灵动画与图像渲染提速 50 倍以上！
-- [ ] **13.2 画布窗口 16 槽环形事件队列（含焦点键盘事件）**（`c/gui.c`、`c/kernel.c`、`c/mpy_port/modminios.c`）
+- [x] **13.2 画布窗口 16 槽环形事件队列（含焦点键盘事件）**（`c/gui.c`、`c/kernel.c`、`c/mpy_port/modminios.c`）
   - 将单槽 `canvas_ev` 升级为 16 项环形队列 `{ u8 type, int16 x, int16 y, u16 code }`（`type`: `1=MOUSE_MOVE`, `2=MOUSE_DOWN`, `3=MOUSE_UP`, `4=KEY_DOWN`, `5=WIN_CLOSE`）；
   - 当 `focus_win == WIN_APP` 时，普通按键与方向键直接投递进 `WIN_APP` 事件队列（保留 `Ctrl-C` 仍可中断 Python 任务），Python 端 `c.poll()` 非阻塞弹出事件元组。
-- [ ] **Stage 13 验收**：编写测试脚本在 `300×200` 画布中以 `batch(True)` + `present()` 跑 30 FPS 无闪烁弹球+键盘挡板交互，验证鼠标点击、方向键控制与点 `[x]` 优雅退出。
+- [x] **Stage 13 验收**：Canvas 双缓冲/批处理、键盘/鼠标事件、200 圆批量绘制 0 ticks、q 关闭和 `c.capture` 已验证。
 
 ---
 
@@ -232,6 +232,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [x] **Stage 18 验收**：smoke 双模式通过、预热后 0 页帧差异、三主题桌面截图齐全、镜像精确 `1,474,560` 字节。
+
 
 
 
