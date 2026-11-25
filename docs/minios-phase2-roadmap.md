@@ -207,7 +207,8 @@
 ### Stage 17：多进程管道通信（Pipe IPC）与安全自启脚本 `AUTOEXEC.PY`
 **目标**：补齐进程间数据流通信能力，并赋予用户开机个性化定制系统的能力。
 
-- [ ] **17.1 轻量级内核匿名/命名内存管道（Kernel Pipe IPC）**（`c/kernel.c`、`c/mpy_port/modminios.c`）
+- [ ] **17.1 轻量级内核匿名/命名内存管道（Kernel Pipe IPC）**
+  - 部分完成：4 槽 4KB 内核管道、reset/write/read/close、`minios.pipe_*` 已通过 hello pipe 回环测试；Shell `cmd1 | cmd2` 和跨进程演示未做。（`c/kernel.c`、`c/mpy_port/modminios.c`）
   - 实现 4 个内核级 4 KB 内存环形管道槽（物理页按需从帧池分配）：提供非阻塞/阻塞读写与关闭引用计数系统调用；
   - 在 Shell 中支持简易单级命令管道 `cmd1 | cmd2`（或先通过缓冲区重定向实现如 `ls | grep BIN`、`xxd TEST.TXT | grep MiniOS`），并在 `minios` 模块暴露进程间消息收发接口，使后台小任务与前台 Python 窗口可实时联动。
 - [ ] **17.2 开机自启钩子 `AUTOEXEC.PY`（含 `Ctrl` 安全模式绕过）**（`c/kernel.c`、`c/gui.c`）
@@ -228,6 +229,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 

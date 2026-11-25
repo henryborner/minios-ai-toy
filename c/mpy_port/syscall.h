@@ -35,6 +35,7 @@
 #define SYS_RUN_PY       30
 #define SYS_GETCHAR_NB   31
 #define SYS_TASK_INFO    32
+#define SYS_PIPE         33
 
 struct minios_taskinfo {
     uint32_t pid;
@@ -220,6 +221,11 @@ static inline int sys_getchar_nb(void) {
 
 static inline int sys_task_info(struct minios_taskinfo *out, uint32_t max) {
     return (int)(int32_t)minios_syscall2(SYS_TASK_INFO, (uint32_t)out, max);
+}
+
+static inline int sys_pipe(int op, int id, void *buf, uint32_t len) {
+    return (int)(int32_t)minios_syscall3(SYS_PIPE,
+        (uint32_t)((id << 8) | (op & 0xFF)), (uint32_t)buf, len);
 }
 
 #endif

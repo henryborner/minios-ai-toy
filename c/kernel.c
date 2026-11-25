@@ -1190,6 +1190,13 @@ struct fd_entry {
 static struct fd_entry fd_table[NTASKS][MAX_FDS];
 
 #define MAX_RAMFILES 16
+#define NPIPES 4
+struct kpipe {
+    u32 phys;
+    u16 head, tail, count;
+    u8 open_w;
+};
+static struct kpipe pipes[NPIPES];
 #define RAMFILE_MAX_PAGES 16
 struct ramfile {
     u8 used;
@@ -2281,6 +2288,57 @@ static int name16_eq(const char *a, const char *b) {
     return 1;
 }
 
+static int pipe_reset(int id) {
+    if (id < 0 || id >= NPIPES)
+        return -1;
+    if (pipes[id].phys) {
+        frame_free_pages(pipes[id].phys, 1);
+        pipes[id].phys = 0;
+    }
+    pipes[id].head = pipes[id].tail = pipes[id].count = 0;
+    pipes[id].open_w = 1;
+    return 0;
+}
+
+static int pipe_write(int id, const u8 *buf, u32 len) {
+    if (id < 0 || id >= NPIPES || !pipes[id].open_w)
+        return -1;
+    if (!pipes[id].phys) {
+        pipes[id].phys = frame_alloc_pages(1);
+        if (!pipes[id].phys)
+            return -1;
+        frame_zero(pipes[id].phys, 1);
+    }
+    u8 *p = (u8 *)direct_ptr(pipes[id].phys);
+    u32 n = 0;
+    while (n < len && pipes[id].count < 0x1000u) {
+        p[pipes[id].head] = buf[n++];
+        pipes[id].head = (u16)((pipes[id].head + 1) & 0xFFF);
+        pipes[id].count++;
+    }
+    return (int)n;
+}
+
+static int pipe_read(int id, u8 *buf, u32 max) {
+    if (id < 0 || id >= NPIPES)
+        return -1;
+    if (!pipes[id].phys) {
+        if (!pipes[id].open_w && pipes[id].count == 0)
+            return -1;
+        return 0;
+    }
+    u8 *p = (u8 *)direct_ptr(pipes[id].phys);
+    u32 n = 0;
+    while (n < max && pipes[id].count) {
+        buf[n++] = p[pipes[id].tail];
+        pipes[id].tail = (u16)((pipes[id].tail + 1) & 0xFFF);
+        pipes[id].count--;
+    }
+    if (n == 0 && !pipes[id].open_w)
+        return -1;
+    return (int)n;
+}
+
 static int ramfile_find(const char *name) {
     for (int i = 0; i < MAX_RAMFILES; i++) {
         if (ramfiles[i].used && name16_eq(ramfiles[i].name, name))
@@ -3361,6 +3419,27 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         } else {
             SYS_RET(frame) = 0;
         }
+    } else if (number == 33) {
+        u32 a1 = SYS_ARG1(frame);
+        u32 a2 = SYS_ARG2(frame);
+        u32 a3 = SYS_ARG3(frame);
+        int id = (int)(a1 >> 8);
+        int op = (int)(a1 & 0xFF);
+        int r = -1;
+        if (op == 0) {
+            r = pipe_reset(id);
+        } else if (op == 1) {
+            if (a3 <= 4096 && user_ptr_ok(a2, a3))
+                r = pipe_write(id, (const u8 *)a2, a3);
+        } else if (op == 2) {
+            if (a3 <= 4096 && user_ptr_ok(a2, a3))
+                r = pipe_read(id, (u8 *)a2, a3);
+        } else if (op == 3) {
+            if (id >= 0 && id < NPIPES)
+                pipes[id].open_w = 0;
+            r = 0;
+        }
+        SYS_RET(frame) = (u32)r;
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }
