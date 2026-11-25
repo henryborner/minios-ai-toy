@@ -1268,6 +1268,20 @@ static void run_command(struct console *c, char *line) {
         launch_tool(c, "-m demos", line + 5);
     } else if (streq(line, "futil")) {
         launch_tool(c, "-m futil", "");
+    } else if (starts_with(line, "futil ")) {
+        launch_tool(c, "-m futil", line + 6);
+    } else if (streq(line, "df")) {
+        launch_tool(c, "-m futil df", "");
+    } else if (starts_with(line, "cat ")) {
+        launch_tool(c, "-m futil cat", line + 4);
+    } else if (starts_with(line, "cp ")) {
+        launch_tool(c, "-m futil cp", line + 3);
+    } else if (starts_with(line, "rm ")) {
+        launch_tool(c, "-m futil rm", line + 3);
+    } else if (starts_with(line, "grep ")) {
+        launch_tool(c, "-m futil grep", line + 5);
+    } else if (starts_with(line, "touch ")) {
+        launch_tool(c, "-m futil touch", line + 6);
     } else if (starts_with(line, "xxd ")) {
         launch_tool(c, "-m xxd", line + 4);
     } else if (starts_with(line, "edit ")) {

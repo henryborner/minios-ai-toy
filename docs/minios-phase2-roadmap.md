@@ -163,7 +163,7 @@
 - [x] **14.2 程序员多进制速算工作台 `c/pylib/calc.py`**
   - 支持单次求值（`calc "0xFF00 | (1<<7)"`）与无参交互 REPL 模式（记忆上一次结果 `_`）；
   - 若结果为整数，自动多行对齐打印 `DEC`、`HEX`、`BIN`（按半字节分组并标注 set bits 位号）、有符号/无符号 `8/16/32-bit` 视图；若为浮点则高精度科学计数格式化。
-- [ ] **14.3 全功能文件瑞士军刀 `c/pylib/futil.py` 与 16 列宽屏 `c/pylib/xxd.py`**
+- [x] **14.3 全功能文件瑞士军刀 `c/pylib/futil.py` 与 16 列宽屏 `c/pylib/xxd.py`**
   - `futil` 支持完整 CLI 子命令：`ls`（彩色区分 `[RAM]`/`[DSK]` + 容量汇总）、`cat <FILE>`（带可选行号 `-n`）、`cp <SRC> <DST>`、`rm <FILE>`、`grep <PATTERN> [FILE]`（高亮匹配词）、`df`（RAMFS 与 SaveFS 剩余空间报告）、`touch` / `write`；
   - 在 `c/gui.c` 新增 Shell 快捷命令直通：`cat <F>`、`cp <A> <B>`、`rm <F>`、`grep <P> [F]`、`df`！
   - `xxd.py` 在 `640×480`（72 列终端）下自动以标准 **每行 16 字节**（`0000: xx xx .. | ................`）输出，在 `320×200` 下自动回退每行 8 字节，并支持偏移与长度参数 `xxd <FILE> [OFFSET] [LEN]`。
@@ -225,6 +225,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 
