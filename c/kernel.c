@@ -983,6 +983,10 @@ static int module_getchar(void) {
         return (int)seq[seq_pos++];
 
     for (;;) {
+        if (gui_canvas_keyboard()) {
+            __asm__ __volatile__("hlt");
+            continue;
+        }
         int cid = current_console_id();
         if (cid < 0 || cid >= KBD_CONSOLES)
             cid = 0;

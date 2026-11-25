@@ -438,7 +438,12 @@ int gui_focused_console(void) {
 
 int gui_runtime_keyboard_wanted(void) {
     return menu_open || list_open || focus_win == WIN_ABOUT ||
-           focus_win == WIN_SYS || focus_win == WIN_FILES;
+           focus_win == WIN_SYS || focus_win == WIN_FILES ||
+           focus_win == WIN_APP;
+}
+
+int gui_canvas_keyboard(void) {
+    return focus_win == WIN_APP;
 }
 
 static void focus_fallback(void) {
