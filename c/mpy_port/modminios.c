@@ -236,6 +236,26 @@ static mp_obj_t minios_write(mp_obj_t text_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(minios_write_obj, minios_write);
 
+static mp_obj_t minios_serial_write(mp_obj_t data) {
+    size_t len = 0;
+    const byte *buf = (const byte *)mp_obj_str_get_data(data, &len);
+    return mp_obj_new_int(sys_serial_write(buf, (uint32_t)len));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(minios_serial_write_obj, minios_serial_write);
+
+static mp_obj_t minios_serial_read(mp_obj_t max_in) {
+    int max = mp_obj_get_int(max_in);
+    if (max < 0) max = 0;
+    if (max > 4096) max = 4096;
+    byte *buf = m_new(byte, max ? max : 1);
+    int n = sys_serial_read(buf, (uint32_t)max);
+    if (n < 0) n = 0;
+    mp_obj_t r = mp_obj_new_bytes(buf, (size_t)n);
+    m_del(byte, buf, max ? max : 1);
+    return r;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(minios_serial_read_obj, minios_serial_read);
+
 static mp_obj_t minios_getchar(void) {
     return mp_obj_new_int(sys_getchar());
 }
@@ -387,6 +407,8 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
     { MP_ROM_QSTR(MP_QSTR_getchar), MP_ROM_PTR(&minios_getchar_obj) },
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&minios_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_serial_write), MP_ROM_PTR(&minios_serial_write_obj) },
+    { MP_ROM_QSTR(MP_QSTR_serial_read), MP_ROM_PTR(&minios_serial_read_obj) },
     { MP_ROM_QSTR(MP_QSTR_run_file), MP_ROM_PTR(&minios_run_file_obj) },
     { MP_ROM_QSTR(MP_QSTR_getchar_nb), MP_ROM_PTR(&minios_getchar_nb_obj) },
     { MP_ROM_QSTR(MP_QSTR_tasks), MP_ROM_PTR(&minios_tasks_obj) },

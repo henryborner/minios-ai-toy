@@ -198,6 +198,14 @@ static inline void sys_beep(uint32_t freq, uint32_t ms) {
     (void)minios_syscall3(SYS_HW_IO, 0, freq, ms);
 }
 
+static inline int sys_serial_write(const void *buf, uint32_t len) {
+    return (int)(int32_t)minios_syscall3(SYS_HW_IO, 1, (uint32_t)buf, len);
+}
+
+static inline int sys_serial_read(void *buf, uint32_t max) {
+    return (int)(int32_t)minios_syscall3(SYS_HW_IO, 2, (uint32_t)buf, max);
+}
+
 static inline int sys_poll_ctrl_c(void) {
     return (int)minios_syscall0(SYS_POLL_CTRL_C);
 }

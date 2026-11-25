@@ -8,9 +8,11 @@ __pycache__/
 *.ppm
 
 # Local toolchain (NASM) and dev helpers
-/tools/
+/tools/*
+!/tools/push.py
 
 # Scratch files
 /screenshots/*.bin
 *.log
+
 

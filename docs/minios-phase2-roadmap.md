@@ -196,7 +196,7 @@
 - [ ] **16.1 `RAMFS` 扩容至 16 文件 + 按需页帧伸缩 + `SaveFS v2` 兼容升级**（`c/kernel.c`）
   - 将 `MAX_RAMFILES` 提升至 **16**，单文件上限提升至 **64 KB**（按实际写入字节数以 4 KB 页粒度动态申请/释放帧池页面，空文件或短脚本仅占 1 页 = 4 KB，不再一上来固定吃掉 16 KB！）；
   - `SaveFS` 超块升级为 `"MSV2"`（支持最多 16 个文件目录项，仍位于 `LBA 2560–2819` 的 130 KB 扇区池内，且开机恢复同时兼容旧 `"MSV1"` 与新 `"MSV2"`）。
-- [ ] **16.2 补齐 `syscall 28` 串口非阻塞收发与宿主机 `tools/push.py`**（`c/kernel.c`、`c/mpy_port/modminios.c`、`tools/push.py`）
+- [x] **16.2 补齐 `syscall 28` 串口非阻塞收发与宿主机 `tools/push.py`**（`c/kernel.c`、`c/mpy_port/modminios.c`、`tools/push.py`）
   - 在 `kernel.c` 的 `syscall 28` (`SYS_HW_IO`) 中补齐 `op == 1`（串口发送缓冲区）与 `op == 2`（串口非阻塞读取可用字节，带 256B IRQ4 或轮询环形缓冲），并在 `modminios.c` 暴露 `minios.serial_write(data)` 与 `minios.serial_read(max_bytes)`；
   - 编写宿主机辅助工具 `tools/push.py`：配合 QEMU `-serial tcp:127.0.0.1:5555,server,nowait`，支持宿主机执行 `python tools/push.py my_script.py --run` 一键传入 MiniOS `RAMFS`！
 - [ ] **Stage 16 验收**：创建 12 个不同大小的 RAMFS 文件（含一个 40 KB 大文件），执行 `sync` 并重启 QEMU 验证全部 CRC32 无损恢复；实测宿主机串口推送脚本成功运行。
@@ -227,6 +227,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 

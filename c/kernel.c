@@ -3204,9 +3204,30 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 op = SYS_ARG1(frame);
         u32 a = SYS_ARG2(frame);
         u32 b = SYS_ARG3(frame);
-        if (op == 0)
-            pc_beep(a, b);
-        SYS_RET(frame) = 0;
+        if (op == 0) {
+            if (a < 20000 && b < 5000)
+                pc_beep(a, b);
+            SYS_RET(frame) = 0;
+        } else if (op == 1) {
+            if (b <= 65536 && user_ptr_ok(a, b)) {
+                for (u32 i = 0; i < b; i++)
+                    serial_putc((char)((const u8 *)a)[i]);
+                SYS_RET(frame) = b;
+            } else {
+                SYS_RET(frame) = 0;
+            }
+        } else if (op == 2) {
+            if (b <= 65536 && user_ptr_ok(a, b)) {
+                u32 n = 0;
+                while (n < b && (inb(COM1 + 5) & 1))
+                    ((u8 *)a)[n++] = inb(COM1);
+                SYS_RET(frame) = n;
+            } else {
+                SYS_RET(frame) = 0;
+            }
+        } else {
+            SYS_RET(frame) = 0;
+        }
     } else if (number == 29) {
         int cid = current_console_id();
         if (cid < 0 || cid >= KBD_CONSOLES)
