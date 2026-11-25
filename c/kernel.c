@@ -3136,9 +3136,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             for (u32 i = 0; i < sizeof(cmd); i++)
                 dst[i] = src[i];
             int r = -1;
-            if (cmd.text &&
-                (u32)cmd.text >= 0x400000 &&
-                (u32)cmd.text + cmd.len <= 0x800000)
+            if (cmd.text && user_ptr_ok((u32)cmd.text, cmd.len))
                 r = gui_canvas_cmd(&cmd);
             else if (!cmd.text && cmd.op != 4)
                 r = gui_canvas_cmd(&cmd);

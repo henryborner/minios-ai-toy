@@ -129,6 +129,19 @@ static mp_obj_t canvas_m_present(mp_obj_t self) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(canvas_m_present_obj, canvas_m_present);
 
+static mp_obj_t canvas_m_circles(mp_obj_t self, mp_obj_t blob) {
+    (void)self;
+    struct minios_canvas_cmd cmd = {0};
+    size_t len = 0;
+    const byte *buf = (const byte *)mp_obj_str_get_data(blob, &len);
+    cmd.op = 9;
+    cmd.text = (const char *)buf;
+    cmd.len = (uint32_t)len;
+    canvas_cmd(&cmd);
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(canvas_m_circles_obj, canvas_m_circles);
+
 static mp_obj_t canvas_m_capture(mp_obj_t self, mp_obj_t on) {
     (void)self;
     return mp_obj_new_int(sys_canvas_ctl(8, (const char *)(uintptr_t)mp_obj_get_int(on)));
@@ -293,6 +306,7 @@ static const mp_rom_map_elem_t canvas_locals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_batch), MP_ROM_PTR(&canvas_m_batch_obj) },
     { MP_ROM_QSTR(MP_QSTR_present), MP_ROM_PTR(&canvas_m_present_obj) },
     { MP_ROM_QSTR(MP_QSTR_capture), MP_ROM_PTR(&canvas_m_capture_obj) },
+    { MP_ROM_QSTR(MP_QSTR_circles), MP_ROM_PTR(&canvas_m_circles_obj) },
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&canvas_m_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_close), MP_ROM_PTR(&canvas_m_close_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&canvas_m_beep_obj) },

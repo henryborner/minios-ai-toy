@@ -1994,6 +1994,40 @@ static void draw_context(void) {
     }
 }
 
+static void canvas_pixel(int x, int y, u8 color);
+
+static void canvas_circle(int cx, int cy, int r, u8 color, int fill) {
+    if (!canvas_target || r < 0)
+        return;
+    if (r > canvas_w + canvas_h)
+        r = canvas_w + canvas_h;
+    int x = r;
+    for (int yy = 0; yy <= r; yy++) {
+        while (x > 0 && x * x + yy * yy > r * r)
+            x--;
+        int ys[2] = { cy + yy, cy - yy };
+        int nys = yy ? 2 : 1;
+        for (int k = 0; k < nys; k++) {
+            int py = ys[k];
+            if ((unsigned)py >= (unsigned)canvas_h)
+                continue;
+            u8 *row = canvas_target + py * CANVAS_MAX_W;
+            if (fill) {
+                int x0 = cx - x, x1 = cx + x;
+                if (x0 < 0) x0 = 0;
+                if (x1 >= canvas_w) x1 = canvas_w - 1;
+                for (int px = x0; px <= x1; px++)
+                    row[px] = color;
+            } else {
+                int px = cx - x;
+                if ((unsigned)px < (unsigned)canvas_w) row[px] = color;
+                px = cx + x;
+                if ((unsigned)px < (unsigned)canvas_w) row[px] = color;
+            }
+        }
+    }
+}
+
 static void canvas_pixel(int x, int y, u8 color) {
     if (canvas_target && (unsigned)x < (unsigned)canvas_w &&
         (unsigned)y < (unsigned)canvas_h)
@@ -2136,24 +2170,20 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
         canvas_rect((int)cmd->x, (int)cmd->y, 1, (int)cmd->h, (u8)cmd->color);
         canvas_rect((int)cmd->x + (int)cmd->w - 1, (int)cmd->y, 1, (int)cmd->h, (u8)cmd->color);
     } else if (cmd->op == 6) {
-        int r = (int)cmd->w;
-        int cx = (int)cmd->x, cy = (int)cmd->y;
-        int x = r;
-        for (int yy = 0; yy <= r; yy++) {
-            while (x > 0 && x * x + yy * yy > r * r)
-                x--;
-            if (cmd->h) {
-                for (int xx = -x; xx <= x; xx++) {
-                    canvas_pixel(cx + xx, cy + yy, (u8)cmd->color);
-                    if (yy)
-                        canvas_pixel(cx + xx, cy - yy, (u8)cmd->color);
-                }
-            } else {
-                canvas_pixel(cx - x, cy + yy, (u8)cmd->color);
-                canvas_pixel(cx + x, cy + yy, (u8)cmd->color);
-                canvas_pixel(cx - x, cy - yy, (u8)cmd->color);
-                canvas_pixel(cx + x, cy - yy, (u8)cmd->color);
-            }
+        canvas_circle((int)cmd->x, (int)cmd->y, (int)cmd->w,
+                      (u8)cmd->color, (int)cmd->h);
+    } else if (cmd->op == 9) {
+        if (!cmd->text || (cmd->len % 20) != 0)
+            return -1;
+        const u8 *p = (const u8 *)cmd->text;
+        for (u32 i = 0; i < cmd->len; i += 20) {
+            int cx = (int)(p[0] | (p[1] << 8) | (p[2] << 16) | (p[3] << 24));
+            int cy = (int)(p[4] | (p[5] << 8) | (p[6] << 16) | (p[7] << 24));
+            int rr = (int)(p[8] | (p[9] << 8) | (p[10] << 16) | (p[11] << 24));
+            u8 col = p[12];
+            int fill = (int)(p[16] | (p[17] << 8) | (p[18] << 16) | (p[19] << 24));
+            canvas_circle(cx, cy, rr, col, fill);
+            p += 20;
         }
     } else if (cmd->op == 7) {
         if (!cmd->text || cmd->len < cmd->w * cmd->h)
