@@ -2917,16 +2917,39 @@ static int fd_close(int fd) {
 #define USER_BASE 0x400000u
 #define USER_END  0x800000u
 
+static int user_page_present(u32 addr) {
+    if (addr < USER_BASE || addr >= USER_END)
+        return 0;
+    u32 idx = (addr - USER_BASE) >> 12;
+    if (!scheduler_active)
+        return (page_table1[idx] & 5) == 5;
+    if (current_task < 0 || current_task >= NTASKS)
+        return 0;
+    return (task_user_pt[current_task][idx] & 5) == 5;
+}
+
 static int user_ptr_ok(u32 ptr, u32 size) {
-    return ptr >= USER_BASE && ptr < USER_END && size <= USER_END - ptr;
+    if (ptr < USER_BASE || ptr >= USER_END || size > USER_END - ptr)
+        return 0;
+    if (size == 0)
+        return 1;
+    u32 last = ptr + size - 1;
+    for (u32 p = ptr & ~0xFFFu; p <= last; p += 0x1000)
+        if (!user_page_present(p))
+            return 0;
+    return 1;
 }
 
 static int user_str_ok(u32 ptr, u32 max) {
-    if (ptr < USER_BASE || ptr >= USER_END)
+    if (ptr < USER_BASE || ptr >= USER_END || !user_page_present(ptr))
         return 0;
-    for (u32 i = 0; i < max && ptr + i < USER_END; i++)
-        if (*(const char *)(ptr + i) == 0)
+    for (u32 i = 0; i < max && ptr + i < USER_END; i++) {
+        u32 a = ptr + i;
+        if ((a & 0xFFF) == 0 && !user_page_present(a))
+            return 0;
+        if (*(const char *)a == 0)
             return 1;
+    }
     return 0;
 }
 
@@ -2984,7 +3007,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else if (number == 8) {
         u32 name = ((u32 *)frame)[4];
         int pid = 0;
-        if (name >= 0x400000 && name < 0x800000)
+        if (user_str_ok(name, 256))
             pid = task_spawn_user((const char *)name);
         ((u32 *)frame)[7] = (u32)pid;
     } else if (number == 9) {
@@ -3000,7 +3023,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else if (number == 12) {
         u32 name = ((u32 *)frame)[4];
         int fd = -1;
-        if (name >= 0x400000 && name < 0x800000)
+        if (user_str_ok(name, 256))
             fd = fd_open((const char *)name);
         ((u32 *)frame)[7] = (u32)fd;
     } else if (number == 13) {
@@ -3008,8 +3031,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 buf = ((u32 *)frame)[6];
         u32 len = ((u32 *)frame)[5];
         int r = -1;
-        if (buf >= 0x400000 && buf < 0x800000 && len <= 0x10000 &&
-            buf + len <= 0x800000)
+        if (len <= 0x10000 && user_ptr_ok(buf, len))
             r = fd_read((int)fd, (u8 *)buf, len);
         ((u32 *)frame)[7] = (u32)r;
     } else if (number == 14) {
@@ -3022,7 +3044,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 name = ((u32 *)frame)[4];
         u32 flags = ((u32 *)frame)[6];
         int fd = -1;
-        if (name >= 0x400000 && name < 0x800000)
+        if (user_str_ok(name, 256))
             fd = fd_open_ex((const char *)name, flags);
         ((u32 *)frame)[7] = (u32)fd;
     } else if (number == 17) {
@@ -3030,14 +3052,13 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 buf = ((u32 *)frame)[6];
         u32 len = ((u32 *)frame)[5];
         int r = -1;
-        if (buf >= 0x400000 && buf < 0x800000 && len <= 0x10000 &&
-            buf + len <= 0x800000)
+        if (len <= 0x10000 && user_ptr_ok(buf, len))
             r = fd_write((int)fd, (const u8 *)buf, len);
         ((u32 *)frame)[7] = (u32)r;
     } else if (number == 18) {
         u32 name = ((u32 *)frame)[4];
         int r = -1;
-        if (name >= 0x400000 && name < 0x800000)
+        if (user_str_ok(name, 256))
             r = fd_unlink((const char *)name);
         ((u32 *)frame)[7] = (u32)r;
     } else if (number == 19) {
@@ -3045,7 +3066,8 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 argv = ((u32 *)frame)[6];
         u32 argc = ((u32 *)frame)[5];
         int pid = 0;
-        if (name >= 0x400000 && name < 0x800000)
+        if (user_str_ok(name, 256) && argc <= 16 &&
+            user_ptr_ok(argv, argc * 4))
             pid = task_spawn_args((const char *)name, argv, argc);
         ((u32 *)frame)[7] = (u32)pid;
     } else if (number == 20) {
