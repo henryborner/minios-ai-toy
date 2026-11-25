@@ -21,31 +21,59 @@
 irq0_stub:
         pusha
         cld
-        mov     edx, esp            ; pointer to EIP/CS/EFLAGS/ESP/SS frame
+        mov     edx, esp            ; frame pointer before segment saves
+        push    ds
+        push    es
+        mov     ax, 0x10
+        mov     ds, ax
+        mov     es, ax
         push    edx
         call    irq0_handler
         add     esp, 4
+        pop     es
+        pop     ds
         popa
         iretd
 
 irq1_stub:
         pusha
         cld
+        push    ds
+        push    es
+        mov     ax, 0x10
+        mov     ds, ax
+        mov     es, ax
         call    irq1_handler
+        pop     es
+        pop     ds
         popa
         iretd
 
 irq6_stub:
         pusha
         cld
+        push    ds
+        push    es
+        mov     ax, 0x10
+        mov     ds, ax
+        mov     es, ax
         call    irq6_handler
+        pop     es
+        pop     ds
         popa
         iretd
 
 irq12_stub:
         pusha
         cld
+        push    ds
+        push    es
+        mov     ax, 0x10
+        mov     ds, ax
+        mov     es, ax
         call    irq12_handler
+        pop     es
+        pop     ds
         popa
         iretd
 

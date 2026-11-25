@@ -372,7 +372,7 @@ static void mouse_byte(u8 data) {
 void irq1_handler(void) {
     u8 st = inb(0x64);
     u8 sc = inb(0x60);
-    serial_puts(st & 0x20 ? "[A]" : "[K]");
+
     if (st & 0x20)
         mouse_byte(sc);
     else
@@ -391,7 +391,7 @@ void irq6_handler(void) {
 void irq12_handler(void) {
     u8 st = inb(0x64);
     u8 data = inb(0x60);
-    serial_puts(st & 0x20 ? "[A]" : "[K]");
+
     if (st & 0x20)
         mouse_byte(data);
     else
@@ -3310,6 +3310,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

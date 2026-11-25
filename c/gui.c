@@ -36,7 +36,7 @@
 #define MENU_Y (TASKBAR_Y - MENU_H - 4)
 
 #define LIST_W 188
-#define LIST_H 112
+#define LIST_H (14 + WIN_COUNT * 16 + 14)
 #define LIST_X ((scr_w - LIST_W) / 2)
 #define LIST_Y ((TASKBAR_Y - LIST_H) / 2)
 
@@ -589,8 +589,12 @@ static void term_newline(struct console *c) {
         c->n++;
     } else {
         for (int r = 1; r < TERM_ROWS; r++)
-            for (int col = 0; col < TERM_COLS; col++)
+            for (int col = 0; col < TERM_COLS; col++) {
                 c->term[r - 1][col] = c->term[r][col];
+                if (c->attrs)
+                    c->attrs[(r - 1) * TERM_COLS + col] =
+                        c->attrs[r * TERM_COLS + col];
+            }
         for (int col = 0; col < TERM_COLS; col++) {
             c->term[TERM_ROWS - 1][col] = 0;
             if (c->attrs)
@@ -699,10 +703,10 @@ static void term_sgr(struct console *c) {
         else if (x == 22) fg &= 7;
         else if (x >= 30 && x <= 37) fg = (u8)(x - 30);
         else if (x >= 90 && x <= 97) fg = (u8)(x - 90 + 8);
-        else if (x == 39) fg = 0;
+        else if (x == 39) fg = term_default_attr & 15;
         else if (x >= 40 && x <= 47) bg = (u8)(x - 40);
         else if (x >= 100 && x <= 107) bg = (u8)(x - 100 + 8);
-        else if (x == 49) bg = 15;
+        else if (x == 49) bg = term_default_attr >> 4;
     }
     c->cur_attr = (u8)((bg << 4) | (fg & 15));
 }
@@ -2037,6 +2041,10 @@ static void canvas_circle(int cx, int cy, int r, u8 color, int fill) {
                 if ((unsigned)px < (unsigned)canvas_w) row[px] = color;
                 px = cx + x;
                 if ((unsigned)px < (unsigned)canvas_w) row[px] = color;
+                canvas_pixel(cx - yy, cy + x, color);
+                canvas_pixel(cx + yy, cy + x, color);
+                canvas_pixel(cx - yy, cy - x, color);
+                canvas_pixel(cx + yy, cy - x, color);
             }
         }
     }
@@ -2135,6 +2143,11 @@ void gui_canvas_close(void) {
 }
 
 void gui_canvas_batch(int on) {
+    if (on && canvas_buf && canvas_back) {
+        for (int y = 0; y < canvas_h; y++)
+            for (int x = 0; x < canvas_w; x++)
+                canvas_back[y * CANVAS_MAX_W + x] = canvas_buf[y * CANVAS_MAX_W + x];
+    }
     canvas_batch = on;
     canvas_target = (on && canvas_back) ? canvas_back : canvas_buf;
 }
@@ -2145,8 +2158,7 @@ void gui_canvas_present(void) {
             for (int x = 0; x < canvas_w; x++)
                 canvas_buf[y * CANVAS_MAX_W + x] = canvas_back[y * CANVAS_MAX_W + x];
     }
-    canvas_batch = 0;
-    canvas_target = canvas_buf;
+    canvas_target = canvas_batch ? canvas_back : canvas_buf;
     gui_dirty = 1;
 }
 
@@ -2234,6 +2246,12 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
         menu_open || list_open || ctx_open ||
         drag_win >= 0 || resize_win >= 0 || scroll_drag >= 0)
         return 0;
+    if (wins[WIN_APP].visible &&
+        inside(x, y, wins[WIN_APP].x + 2, wins[WIN_APP].y + 12,
+               canvas_w, canvas_h))
+        canvas_push_event(GUI_EV_MOUSE_MOVE,
+                          x - (wins[WIN_APP].x + 2),
+                          y - (wins[WIN_APP].y + 12), 0, 0);
     int shape = 0;
     int hit = hit_test(x, y);
     if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + WIN_COUNT * 9) {
@@ -2679,6 +2697,9 @@ static void activate_hit(int hit) {
         extern int kernel_unlink_gui(const char *name);
         extern int run_user_module(const char *name);
         extern void sync_savefs(void);
+        extern int kernel_runtime_busy(void);
+        if (kernel_runtime_busy())
+            return;
         char name[17];
         u32 size = 0, kind = 0;
         if (!kernel_readdir_gui((u32)(files_scroll + files_sel), name, &size, &kind))
@@ -3176,6 +3197,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
