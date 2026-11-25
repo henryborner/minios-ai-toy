@@ -932,6 +932,7 @@ struct module_header {
     u32 image_size;
     u32 bss_size;
     u32 heap_size;
+    u32 ro_size;
 } __attribute__((packed));
 
 struct minios_api {
@@ -1137,6 +1138,7 @@ struct task {
     u16 code_pages;
     u16 stack_pages;
     u16 heap_pages;
+    u8 shared_ro;
     u8  state;
     char name[16];
     u32 pid;
@@ -1154,6 +1156,7 @@ struct task {
 static struct task tasks[NTASKS];
 static int current_task;
 static u32 quantum_ticks;
+static u32 shared_ro_phys, shared_ro_pages, shared_ro_image, shared_ro_refs;
 
 static void wake_kbd_tasks(int c) {
     for (int t = 1; t < NTASKS; t++) {
@@ -1407,6 +1410,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].wait_kbd = 0;
         tasks[t].kesp = 0;
         tasks[t].tf = 0;
+        tasks[t].shared_ro = 0;
         for (int f = 0; f < MAX_FDS; f++)
             fd_table[t][f].used = 0;
     }
@@ -1539,6 +1543,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].code_pages = 1;
     tasks[slot].stack_pages = 1;
     tasks[slot].heap_pages = 0;
+    tasks[slot].shared_ro = 0;
     tasks[slot].state = TASK_READY;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
@@ -1571,29 +1576,66 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     u32 code_pages = (image + bss + 4095) / 4096;
     if (code_pages == 0 || code_pages > BIG_CODE_MAX / 4096)
         return -1;
+    struct module_header *mh = (struct module_header *)BIG_CODE_PHYS;
+    u32 ro_pages = 0;
+    if (mh->magic[0] == 'U' && mh->magic[1] == 'M' &&
+        mh->magic[2] == 'P' && mh->magic[3] == '1' &&
+        mh->ro_size > 0 && mh->ro_size <= image)
+        ro_pages = (mh->ro_size + 4095) / 4096;
+    if (ro_pages > code_pages)
+        return -1;
+    u32 data_pages = code_pages - ro_pages;
 
-    u32 code = frame_alloc_pages(code_pages);
+    u32 code = data_pages ? frame_alloc_pages(data_pages) : 0;
     u32 stack = frame_alloc_pages(BIG_STACK_PAGES);
     u32 heap = frame_alloc_pages(BIG_HEAP_PAGES);
-    if (!code || !stack || !heap) {
-        if (code) frame_free_pages(code, code_pages);
+    if ((data_pages && !code) || !stack || !heap) {
+        if (code) frame_free_pages(code, data_pages);
         if (stack) frame_free_pages(stack, BIG_STACK_PAGES);
         if (heap) frame_free_pages(heap, BIG_HEAP_PAGES);
         return -1;
     }
 
-    u8 *codev = (u8 *)direct_ptr(code);
     u8 *src = (u8 *)BIG_CODE_PHYS;
-    for (u32 i = 0; i < code_pages * 0x1000u; i++)
-        codev[i] = 0;
-    for (u32 i = 0; i < image; i++)
-        codev[i] = src[i];
+    if (ro_pages) {
+        if (!shared_ro_phys) {
+            shared_ro_phys = frame_alloc_pages(ro_pages);
+            if (!shared_ro_phys) {
+                if (code) frame_free_pages(code, data_pages);
+                frame_free_pages(stack, BIG_STACK_PAGES);
+                frame_free_pages(heap, BIG_HEAP_PAGES);
+                return -1;
+            }
+            for (u32 i = 0; i < ro_pages * 0x1000u; i++)
+                ((u8 *)direct_ptr(shared_ro_phys))[i] = src[i];
+            shared_ro_pages = ro_pages;
+            shared_ro_image = image;
+            shared_ro_refs = 0;
+        } else if (shared_ro_pages != ro_pages || shared_ro_image != image) {
+            if (code) frame_free_pages(code, data_pages);
+            frame_free_pages(stack, BIG_STACK_PAGES);
+            frame_free_pages(heap, BIG_HEAP_PAGES);
+            return -1;
+        }
+    }
+    if (data_pages) {
+        u8 *codev = (u8 *)direct_ptr(code);
+        for (u32 i = 0; i < data_pages * 0x1000u; i++)
+            codev[i] = 0;
+        u32 off = ro_pages * 0x1000u;
+        if (image > off) {
+            for (u32 i = 0; i < image - off; i++)
+                codev[i] = src[off + i];
+        }
+    }
     frame_zero(stack, BIG_STACK_PAGES);
     frame_zero(heap, BIG_HEAP_PAGES);
 
     task_fill_pd(slot);
-    for (u32 i = 0; i < code_pages; i++)
-        task_user_pt[slot][i] = (code + i * 0x1000) | 0x007;
+    for (u32 i = 0; i < ro_pages; i++)
+        task_user_pt[slot][i] = (shared_ro_phys + i * 0x1000) | 0x005;
+    for (u32 i = 0; i < data_pages; i++)
+        task_user_pt[slot][ro_pages + i] = (code + i * 0x1000) | 0x007;
 
     u32 stack_page = (BIG_USER_STACK - BIG_USER_CODE) / 0x1000;
     for (u32 i = 0; i < BIG_STACK_PAGES; i++)
@@ -1619,9 +1661,12 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].code_phys = code;
     tasks[slot].stack_phys = stack;
     tasks[slot].heap_phys = heap;
-    tasks[slot].code_pages = (u16)code_pages;
+    tasks[slot].code_pages = (u16)data_pages;
     tasks[slot].stack_pages = BIG_STACK_PAGES;
     tasks[slot].heap_pages = BIG_HEAP_PAGES;
+    tasks[slot].shared_ro = ro_pages ? 1 : 0;
+    if (ro_pages)
+        shared_ro_refs++;
     tasks[slot].state = TASK_READY;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
@@ -1743,6 +1788,17 @@ static void __attribute__((unused)) switch_task(int next) {
 }
 
 static void task_free_frames(int slot) {
+    if (tasks[slot].shared_ro) {
+        if (shared_ro_refs)
+            shared_ro_refs--;
+        if (!shared_ro_refs && shared_ro_phys) {
+            frame_free_pages(shared_ro_phys, shared_ro_pages);
+            shared_ro_phys = 0;
+            shared_ro_pages = 0;
+            shared_ro_image = 0;
+        }
+        tasks[slot].shared_ro = 0;
+    }
     if (tasks[slot].code_phys)
         frame_free_pages(tasks[slot].code_phys, tasks[slot].code_pages);
     if (tasks[slot].stack_phys)

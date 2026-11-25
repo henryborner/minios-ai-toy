@@ -19,7 +19,8 @@ SECTIONS
         *(.rodata.*)
     }
 
-    .data : ALIGN(16) {
+    .data : ALIGN(4096) {
+        __ro_size = . - 0x00400000;
         *(.data)
         *(.data.*)
     }

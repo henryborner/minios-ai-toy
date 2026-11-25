@@ -16,6 +16,7 @@
         extern __entry_offset
         extern __image_size
         extern __bss_size
+        extern __ro_size
 
         section .ump_header
 _ump_header:
@@ -24,6 +25,7 @@ _ump_header:
         dd __image_size
         dd __bss_size
         dd 0x00180000               ; 1.5 MB heap request hint
+        dd __ro_size
 
         section .text
 _start:
