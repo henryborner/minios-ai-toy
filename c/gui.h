@@ -20,7 +20,6 @@ void gui_sys_print_console(int console, const char *s);
 void gui_sys_write_console(int console, const char *s, u32 len);
 int gui_focused_console(void);
 int gui_runtime_keyboard_wanted(void);
-int gui_canvas_keyboard(void);
 int gui_dirty_pending(void);
 void gui_mark_dirty(void);
 void gui_flush(void);
