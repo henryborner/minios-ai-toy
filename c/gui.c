@@ -1645,10 +1645,12 @@ static void draw_system(void) {
     window_frame(WIN_SYS);
     int x = w->x, y = w->y;
     const char *tabs[3] = { "Overview", "Tasks", "Memory" };
+    int tw = (w->w >= 300) ? 76 : 72;
     for (int i = 0; i < 3; i++) {
-        int tx = x + 6 + i * 66;
-        fill_rect(tx, y + 13, 62, 13, sys_tab == i ? 1 : 8);
-        text(tx + 4, y + 15, tabs[i], 15);
+        int tx = x + 6 + i * (tw + 4);
+        fill_rect(tx, y + 13, tw, 13, sys_tab == i ? 1 : 8);
+        fill_rect(tx, y + 13, tw, 1, 15);
+        text(tx + 5, y + 15, tabs[i], 15);
     }
     if (sys_tab == 0) {
         text(x + 6, y + 30, "MiniOS 2.0 - System Info", 1);
@@ -2408,8 +2410,9 @@ static int hit_test(int x, int y) {
                     return HIT_FILES_ROW_BASE + r;
         }
         if (id == WIN_SYS) {
+            int tw = (w->w >= 300) ? 76 : 72;
             for (int t = 0; t < 3; t++)
-                if (inside(x, y, w->x + 6 + t * 66, w->y + 13, 62, 13))
+                if (inside(x, y, w->x + 6 + t * (tw + 4), w->y + 13, tw, 13))
                     return HIT_SYS_TAB_BASE + t;
             if (sys_tab == 1) {
                 for (int r = 0; r < 8; r++)
@@ -2534,6 +2537,8 @@ static void resize_move(int x, int y) {
     if (north) top = y;
     if (south) bottom = y;
     int minw = (resize_win <= WIN_C2) ? 208 : 160;
+    if (resize_win == WIN_SYS && minw < 232)
+        minw = 232;
     int minh = (resize_win <= WIN_C2) ? 96 : (resize_win == WIN_APP ? 110 : 90);
     if (right - left < minw) {
         if (west) left = right - minw;
