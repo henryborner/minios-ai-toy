@@ -40,7 +40,7 @@ Current build:
 
 ```text
 kernel:  63,408 B / 131,072 B
-BSS end: 0x322414
+BSS end: 0x323414
 MPY:     208,912 B
 image:   1,474,560 B
 ```
@@ -127,7 +127,7 @@ to its own console even while another console has focus.
   continues processing input and yields again when a user task is ready.
 - A pending prompt is deferred while a console has a live task; `task_exit`
   restores `C:\>` when the task ends.
-- `py2 A.PY B.PY` and `py3 A.PY B.PY C.PY` create multiple MPY tasks.\n- `jobs` lists PID/console/state/pages/name; `fg PID` focuses the owning console; `pybg SCRIPT`/`spawn SCRIPT` creates a new console and launches Python there.\n- `pyn A.PY B.PY ...` grows consoles as needed and launches up to eight MPY tasks.
+- `py2 A.PY B.PY` and `py3 A.PY B.PY C.PY` create multiple MPY tasks.\n- `jobs` lists PID/console/state/pages/name; `fg PID` focuses/resumes the owning console; `stop PID` stops a task and `bg PID` resumes it; `pybg SCRIPT`/`spawn SCRIPT` creates a new console and launches Python there.\n- `pyn A.PY B.PY ...` grows consoles as needed and launches up to eight MPY tasks.
 - `selftest` runs three Canvas open/draw/present/close cycles and writes
   `[selftest] PASS` or FAIL to COM1.
 
@@ -213,6 +213,7 @@ It is a regression test, not a cold-start absolute leak proof.
 - No networking, sound, USB or real-hardware target.
 - SaveFS legacy migration has a one-time window.
 - Not a secure or production OS.
+
 
 
 

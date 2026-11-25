@@ -1497,20 +1497,38 @@ static void run_command(struct console *c, char *line) {
         int con;
         char name[16];
         term_puts(c, "PID CON STATE PAGES NAME\n");
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; ; i++) {
             if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
                 break;
             term_u32(c, pid);
             term_puts(c, "   ");
             term_u32(c, (u32)con);
             term_puts(c, "   ");
-            term_puts(c, state == 2 ? "R" : (state == 4 ? "B" : "S"));
+            term_puts(c, state == 2 ? "R" : (state == 4 ? "B" :
+                              (state == 5 ? "T" : "S")));
             term_puts(c, "     ");
             term_u32(c, pages);
             term_puts(c, "  ");
             term_puts(c, name);
             term_puts(c, "\n");
         }
+    } else if (starts_with(line, "stop ") || starts_with(line, "bg ")) {
+        extern int task_stop_pid(u32 pid);
+        extern int task_bg_pid(u32 pid);
+        int stopping = starts_with(line, "stop ");
+        u32 want = 0;
+        const char *p = line + (stopping ? 5 : 3);
+        while (*p >= '0' && *p <= '9')
+            want = want * 10 + (u32)(*p++ - '0');
+        int r = stopping ? task_stop_pid(want) : task_bg_pid(want);
+        if (stopping)
+            term_puts(c, r ? "stopped pid " : "stop: pid not found ");
+        else
+            term_puts(c, r == 1 ? "resumed pid " :
+                      (r == 2 ? "already running pid " : "bg: pid not found "));
+        if (r)
+            term_u32(c, want);
+        term_puts(c, "\n");
     } else if (starts_with(line, "fg ")) {
         extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
         u32 want = 0;
@@ -1520,11 +1538,13 @@ static void run_command(struct console *c, char *line) {
         u32 pid, state, pages;
         int con;
         char name[16];
-        for (int i = 0; i < 16; i++) {
+        for (int i = 0; ; i++) {
             if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
                 break;
             int cid = con - 1;
             if (pid == want && cid >= 0 && cid < console_count) {
+                extern int task_bg_pid(u32 pid);
+                task_bg_pid(pid);
                 focus_window(consoles[cid].win_id);
                 term_puts(c, "fg: focused pid ");
                 term_u32(c, pid);
@@ -1588,7 +1608,7 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python pyn py4 py4test pybg spawn jobs fg newcon clear echo console windows\n");
+        term_puts(c, "py python pyn py4 py4test pybg spawn jobs fg bg stop newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
@@ -2371,7 +2391,8 @@ static void draw_system(void) {
             if (i == sys_task_sel) fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
             num_text(x + 6, ry, pid, 0);
             num_text(x + 40, ry, (u32)con, 0);
-            text(x + 58, ry, state == 2 ? "R" : (state == 4 ? "B" : "S"), 0);
+            text(x + 58, ry, state == 2 ? "R" : (state == 4 ? "B" :
+                              (state == 5 ? "T" : "S")), 0);
             num_text(x + 76, ry, pages, 0);
             text(x + 100, ry, name, 0);
         }
@@ -4100,6 +4121,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 

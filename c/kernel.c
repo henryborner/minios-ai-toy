@@ -1165,6 +1165,7 @@ int run_module(const char *name) {
 #define TASK_RUNNING 2
 #define TASK_DONE    3
 #define TASK_BLOCKED 4
+#define TASK_STOPPED 5
 #define WAIT_NONE    0xFFFFFFFFu
 
 #define TIME_SLICE_TICKS 1
@@ -1454,6 +1455,8 @@ static void task_system_init(void) {
 }
 
 static void task_free_heap(int slot) {
+    if (!tasks[slot].upt)
+        return;
     for (int i = 0; i < tasks[slot].heap_pages; i++) {
         u32 pte = tasks[slot].upt[HEAP_PAGE_INDEX + i];
         if (pte & 1)
@@ -2072,7 +2075,7 @@ static void task_exit(u32 status) {
     extern void gui_prompt_console(int cid);
     extern void gui_canvas_release_owner(u32 pid);
     gui_canvas_release_owner(tasks[me].pid);
-    if (cid >= 0)
+    if (cid >= 0 && !console_has_live_task(cid))
         gui_prompt_console(cid);
     if (me != 0)
         sched_switch(0);
@@ -2159,6 +2162,7 @@ void task_ps(void) {
         if (tasks[t].state == TASK_READY) state = "READY";
         else if (tasks[t].state == TASK_RUNNING) state = "RUN";
         else if (tasks[t].state == TASK_BLOCKED) state = "BLOCK";
+        else if (tasks[t].state == TASK_STOPPED) state = "STOP";
         p = ps_str(p, state);
         *p++ = ' ';
         p = ps_u32(p, (u32)tasks[t].code_pages + tasks[t].stack_pages +
@@ -2222,6 +2226,26 @@ int task_kill_pid(u32 pid) {
     gui_canvas_release_owner(tpid);
     if (!console_has_live_task(cid))
         gui_prompt_console(cid);
+    return 1;
+}
+
+int task_stop_pid(u32 pid) {
+    int t = find_pid(pid);
+    if (t <= 0 || pid == 0)
+        return 0;
+    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+        return 0;
+    tasks[t].state = TASK_STOPPED;
+    return 1;
+}
+
+int task_bg_pid(u32 pid) {
+    int t = find_pid(pid);
+    if (t <= 0 || pid == 0)
+        return 0;
+    if (tasks[t].state != TASK_STOPPED)
+        return 2;
+    tasks[t].state = TASK_READY;
     return 1;
 }
 
