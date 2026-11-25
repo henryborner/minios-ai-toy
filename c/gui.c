@@ -24,7 +24,7 @@
 #define WIN_C2 2
 #define WIN_SYS 3
 #define WIN_ABOUT 4
-#define NCANVAS 4
+#define NCANVAS 8
 #define WIN_APP 5
 #define WIN_FILES (WIN_APP + NCANVAS)
 #define WIN_COUNT (WIN_FILES + 1)
@@ -2366,18 +2366,22 @@ void gui_canvas_open(const char *title) {
                 break;
             }
     }
-    if (slot < 0) {
-        slot = 0;
-        canvas_active = &canvases[slot];
-        focus_window(WIN_APP + slot);
+    if (slot < 0)
         return;
-    }
     canvas_active = &canvases[slot];
     if (!canvas_buf) {
+        extern u32 kernel_free_frames(void);
+        extern void kernel_free_pages_ptr(void *p, u32 pages);
         u32 pages = ((u32)(CANVAS_MAX_W * CANVAS_MAX_H) + 4095u) / 4096u;
+        if (kernel_free_frames() < pages * 2 + 32)
+            return;
         canvas_buf = (u8 *)kernel_alloc_pages_zero(pages);
         canvas_back = (u8 *)kernel_alloc_pages_zero(pages);
         if (!canvas_buf || !canvas_back) {
+            if (canvas_buf)
+                kernel_free_pages_ptr(canvas_buf, pages);
+            if (canvas_back)
+                kernel_free_pages_ptr(canvas_back, pages);
             canvas_buf = canvas_back = 0;
             canvas_target = 0;
             return;
