@@ -160,7 +160,7 @@
 - [ ] **14.1 全屏交互式文本/代码编辑器 `c/pylib/ed.py`（Nano-Lite）**
   - 重写 `ed.py`：支持读取已有文件（MiniFS 文件修改后另存至同名 RAMFS 覆盖层）或新建文件；
   - 利用 ANSI 转义序列在当前 Console 窗口内渲染全屏编辑界面：顶部反色状态栏显示文件名、行列号与 `[Modified]` 状态，正文带行号翻页，方向键自由移动光标、直接打字插入、`Backspace`/`Del` 删字合行、`Enter` 换行、`Ctrl-S` 保存至 RAMFS、`Ctrl-W` 保存并调用 `os.sync()` 刷写软盘、`Ctrl-R` 保存并立即试跑当前 Python 脚本、`Ctrl-Q` 退出重绘清屏。
-- [ ] **14.2 程序员多进制速算工作台 `c/pylib/calc.py`**
+- [x] **14.2 程序员多进制速算工作台 `c/pylib/calc.py`**
   - 支持单次求值（`calc "0xFF00 | (1<<7)"`）与无参交互 REPL 模式（记忆上一次结果 `_`）；
   - 若结果为整数，自动多行对齐打印 `DEC`、`HEX`、`BIN`（按半字节分组并标注 set bits 位号）、有符号/无符号 `8/16/32-bit` 视图；若为浮点则高精度科学计数格式化。
 - [ ] **14.3 全功能文件瑞士军刀 `c/pylib/futil.py` 与 16 列宽屏 `c/pylib/xxd.py`**
@@ -225,6 +225,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 
