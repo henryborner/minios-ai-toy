@@ -711,6 +711,8 @@ static void term_sgr(struct console *c) {
     c->cur_attr = (u8)((bg << 4) | (fg & 15));
 }
 
+static void term_prompt(struct console *c);
+
 static int term_ansi_final(struct console *c, char ch) {
     if (ch == 'D') {
         if (c->col > 0)
@@ -725,6 +727,9 @@ static int term_ansi_final(struct console *c, char ch) {
             c->term[c->cur][i] = 0;
             term_attr_put(c, c->cur, i, c->cur_attr);
         }
+    } else if (ch == 'J') {
+        term_clear(c);
+        term_prompt(c);
     }
     return 1;
 }
@@ -2153,7 +2158,7 @@ void gui_canvas_batch(int on) {
 }
 
 void gui_canvas_present(void) {
-    if (canvas_buf && canvas_back) {
+    if (canvas_batch && canvas_buf && canvas_back) {
         for (int y = 0; y < canvas_h; y++)
             for (int x = 0; x < canvas_w; x++)
                 canvas_buf[y * CANVAS_MAX_W + x] = canvas_back[y * CANVAS_MAX_W + x];
