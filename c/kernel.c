@@ -32,9 +32,45 @@ u32 heap_used;
 
 static u8 heap[64 * 1024];
 
-#define KBD_CONSOLES 8
-static volatile u8 kbd_buf[KBD_CONSOLES][64];
-static volatile u8 kbd_head[KBD_CONSOLES], kbd_tail[KBD_CONSOLES];
+void *kernel_alloc_pages_zero(u32 pages);
+void kernel_free_pages_ptr(void *p, u32 pages);
+static volatile u8 (*kbd_buf)[64];
+static volatile u8 *kbd_head, *kbd_tail;
+static int kbd_console_count;
+
+int kernel_kbd_resize(int n) {
+    if (n <= kbd_console_count)
+        return 1;
+    u32 buf_pages = ((u32)n * 64u + 4095u) / 4096u;
+    u32 vec_pages = ((u32)n + 4095u) / 4096u;
+    volatile u8 (*nb)[64] = (volatile u8 (*)[64])kernel_alloc_pages_zero(buf_pages);
+    volatile u8 *nh = (volatile u8 *)kernel_alloc_pages_zero(vec_pages);
+    volatile u8 *nt = (volatile u8 *)kernel_alloc_pages_zero(vec_pages);
+    if (!nb || !nh || !nt)
+        return 0;
+    for (int i = 0; i < n; i++) {
+        nh[i] = nt[i] = 0;
+        for (int j = 0; j < 64; j++)
+            nb[i][j] = 0;
+    }
+    if (kbd_buf) {
+        int old = kbd_console_count;
+        for (int i = 0; i < old; i++) {
+            nh[i] = kbd_head[i];
+            nt[i] = kbd_tail[i];
+            for (int j = 0; j < 64; j++)
+                nb[i][j] = kbd_buf[i][j];
+        }
+        kernel_free_pages_ptr((void *)kbd_buf, ((u32)old * 64u + 4095u) / 4096u);
+        kernel_free_pages_ptr((void *)kbd_head, ((u32)old + 4095u) / 4096u);
+        kernel_free_pages_ptr((void *)kbd_tail, ((u32)old + 4095u) / 4096u);
+    }
+    kbd_buf = nb;
+    kbd_head = nh;
+    kbd_tail = nt;
+    kbd_console_count = n;
+    return 1;
+}
 static volatile u8 gui_special_pending;
 static int current_console_id(void);
 static int console_has_live_task(int cid);
@@ -239,7 +275,7 @@ static void wake_kbd_tasks(int c);
 
 static void kbd_push(u8 ch) {
     int c = gui_focused_console();
-    if (c < 0 || c >= KBD_CONSOLES)
+    if (c < 0 || c >= kbd_console_count)
         c = 0;
     u8 next = (u8)((kbd_head[c] + 1) & 63);
     if (next != kbd_tail[c]) {
@@ -507,7 +543,7 @@ static void gui_poll_runtime(void) {
     }
 
     int cid = gui_focused_console();
-    if (cid < 0 || cid >= KBD_CONSOLES)
+    if (cid < 0 || cid >= kbd_console_count)
         cid = 0;
     int ring0_runtime = runtime_busy && !scheduler_active;
     if (!scheduler_active && !ring0_runtime &&
@@ -1024,7 +1060,7 @@ static int module_getchar(void) {
             continue;
         }
         int cid = current_console_id();
-        if (cid < 0 || cid >= KBD_CONSOLES)
+        if (cid < 0 || cid >= kbd_console_count)
             cid = 0;
         while (kbd_tail[cid] != kbd_head[cid]) {
             u8 ch = kbd_buf[cid][kbd_tail[cid]];
@@ -4022,7 +4058,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         }
     } else if (number == 29) {
         int cid = current_console_id();
-        if (cid < 0 || cid >= KBD_CONSOLES)
+        if (cid < 0 || cid >= kbd_console_count)
             cid = 0;
         int found = 0;
         u8 t = kbd_tail[cid];
@@ -4045,7 +4081,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         }
     } else if (number == 31) {
         int cid = current_console_id();
-        if (cid < 0 || cid >= KBD_CONSOLES)
+        if (cid < 0 || cid >= kbd_console_count)
             cid = 0;
         if (kbd_tail[cid] == kbd_head[cid]) {
             SYS_RET(frame) = 0xFFFFFFFFu;
@@ -4156,6 +4192,7 @@ void kmain(void) {
     cpu_vendor();
     serial_init();
     task_system_init();
+    kernel_kbd_resize(4);
     vbe_init();
     gui_alloc_fb();
     gui_init();
@@ -4191,7 +4228,7 @@ void kmain(void) {
         }
 
         int cid = gui_focused_console();
-        if (cid < 0 || cid >= KBD_CONSOLES)
+        if (cid < 0 || cid >= kbd_console_count)
             cid = 0;
         if (!console_has_live_task(cid)) {
             while (kbd_tail[cid] != kbd_head[cid]) {
@@ -4220,6 +4257,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

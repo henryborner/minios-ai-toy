@@ -73,6 +73,8 @@
 
 struct console {
     int x, y, w, h;
+    int win_id;
+    char title[32];
     char term[TERM_ROWS][TERM_COLS];
     int n;
     int cur;
@@ -154,8 +156,12 @@ static int con_h = 144;
 static int term_vis = 14;
 static int term_width = 35;
 
-static struct console consoles[NCONS];
+static struct console *consoles;
+static int console_cap;
 static int console_count = 4;
+static void console_tables_grow(void);
+static int console_index_for_window(int wid);
+static struct console *console_for_window(int wid);
 static char console_titles[NCONS][32];
 static int focus_win;
 static int last_console;
@@ -170,6 +176,7 @@ static int ctx_count;
 static int ctx_target;
 
 static u8 *term_attrs;
+static int term_attrs_cap = NCONS;
 static u8 term_default_attr = 0xF0;
 static int term_dark;
 static volatile int pending_py_flag;
@@ -505,16 +512,16 @@ static void focus_window(int id) {
     wins[id].minimized = 0;
     focus_win = id;
     bring_front(id);
-    if (id >= WIN_C0 && id <= WIN_C7) {
-        sys_output = &consoles[id];
-        last_console = id;
+    int ci = console_index_for_window(id);
+    if (ci >= 0) {
+        sys_output = &consoles[ci];
+        last_console = ci;
     }
 }
 
 int gui_focused_console(void) {
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C7)
-        return focus_win;
-    return last_console;
+    int ci = console_index_for_window(focus_win);
+    return ci >= 0 ? ci : last_console;
 }
 
 int gui_runtime_keyboard_wanted(void) {
@@ -746,7 +753,10 @@ static void init_windows(void) {
         console_titles[i][6] = 'e'; console_titles[i][7] = ' ';
         console_titles[i][8] = (char)('1' + i);
         console_titles[i][9] = 0;
-        wins[i].title = console_titles[i];
+        consoles[i].win_id = i;
+        for (int k = 0; k < 10; k++)
+            consoles[i].title[k] = console_titles[i][k];
+        wins[i].title = consoles[i].title;
     }
 
     wins[WIN_SYS].w = (scr_w >= 640) ? 320 : SYS_W;
@@ -1331,11 +1341,88 @@ static void py_stats(struct console *c) {
     term_puts(c, "\n");
 }
 
+static void term_attrs_grow(int need) {
+    extern void *kernel_alloc_pages_zero(u32 pages);
+    extern void kernel_free_pages_ptr(void *p, u32 pages);
+    if (need <= term_attrs_cap)
+        return;
+    int ncap = term_attrs_cap;
+    while (ncap < need)
+        ncap *= 2;
+    u32 bytes = (u32)ncap * TERM_ROWS * TERM_COLS;
+    u8 *na = (u8 *)kernel_alloc_pages_zero((bytes + 4095u) / 4096u);
+    if (!na)
+        return;
+    for (u32 i = 0; i < bytes; i++)
+        na[i] = term_default_attr;
+    if (term_attrs) {
+        u32 old = (u32)term_attrs_cap * TERM_ROWS * TERM_COLS;
+        for (u32 i = 0; i < old; i++)
+            na[i] = term_attrs[i];
+        kernel_free_pages_ptr(term_attrs, (old + 4095u) / 4096u);
+    }
+    term_attrs = na;
+    term_attrs_cap = ncap;
+    for (int i = 0; i < console_count; i++)
+        consoles[i].attrs = term_attrs + i * TERM_ROWS * TERM_COLS;
+}
+
+static void console_tables_grow(void) {
+    extern void *kernel_alloc_pages_zero(u32 pages);
+    extern void kernel_free_pages_ptr(void *p, u32 pages);
+    int ncap = console_cap ? console_cap * 2 : NCONS;
+    u32 bytes = (u32)(ncap * sizeof(struct console));
+    struct console *nc = (struct console *)kernel_alloc_pages_zero(
+        (bytes + 4095u) / 4096u);
+    if (!nc)
+        return;
+    int sys_idx = (sys_output && consoles) ? (int)(sys_output - consoles) : -1;
+    for (int i = 0; i < console_count; i++)
+        nc[i] = consoles[i];
+    if (consoles)
+        kernel_free_pages_ptr(consoles,
+            ((u32)(console_cap * sizeof(struct console)) + 4095u) / 4096u);
+    consoles = nc;
+    console_cap = ncap;
+    for (int i = 0; i < console_count; i++)
+        if (consoles[i].win_id >= 0)
+            wins[consoles[i].win_id].title = consoles[i].title;
+    if (sys_idx >= 0 && sys_idx < console_count)
+        sys_output = &consoles[sys_idx];
+}
+
+static int console_index_for_window(int wid) {
+    if (!consoles)
+        return -1;
+    for (int i = 0; i < console_count; i++)
+        if (consoles[i].win_id == wid)
+            return i;
+    return -1;
+}
+
+static struct console *console_for_window(int wid) {
+    int idx = console_index_for_window(wid);
+    return idx >= 0 ? &consoles[idx] : 0;
+}
+
 static int gui_new_console(void) {
-    if (console_count >= NCONS)
+    if (console_count >= console_cap)
+        console_tables_grow();
+    if (console_count >= console_cap)
         return 0;
     int id = console_count++;
+    extern int kernel_kbd_resize(int n);
+    if (!kernel_kbd_resize(id + 1)) {
+        console_count--;
+        return 0;
+    }
     struct console *c = &consoles[id];
+    c->win_id = (id < NCONS) ? id : win_add();
+    if (c->win_id < 0) {
+        console_count--;
+        return 0;
+    }
+    term_attrs_grow(id + 1);
     c->x = (scr_w >= 640) ? 36 + id * 5 : 8 + id * 2;
     c->y = (scr_w >= 640) ? 28 + id * 6 : 12 + id * 3;
     c->w = con_w;
@@ -1343,16 +1430,30 @@ static int gui_new_console(void) {
     c->attrs = term_attrs + id * TERM_ROWS * TERM_COLS;
     term_init(c, id);
     term_prompt(c);
-    wins[id].x = c->x;
-    wins[id].y = c->y;
-    wins[id].w = c->w;
-    wins[id].h = c->h;
-    wins[id].visible = 1;
-    wins[id].minimized = 0;
-    wins[id].maximized = 0;
-    wins[id].title = console_titles[id];
+    if (id < NCONS) {
+        for (int k = 0; k < 10; k++)
+            c->title[k] = console_titles[id][k];
+    } else {
+        const char *pre = "Console ";
+        int n = 0;
+        while (*pre) c->title[n++] = *pre++;
+        int num = id + 1;
+        char digs[4];
+        int dn = 0;
+        do { digs[dn++] = (char)('0' + num % 10); num /= 10; } while (num);
+        while (dn) c->title[n++] = digs[--dn];
+        c->title[n] = 0;
+    }
+    wins[c->win_id].x = c->x;
+    wins[c->win_id].y = c->y;
+    wins[c->win_id].w = c->w;
+    wins[c->win_id].h = c->h;
+    wins[c->win_id].visible = 1;
+    wins[c->win_id].minimized = 0;
+    wins[c->win_id].maximized = 0;
+    wins[c->win_id].title = c->title;
     last_console = id;
-    focus_window(id);
+    focus_window(c->win_id);
     gui_dirty = 1;
     return 1;
 }
@@ -1788,7 +1889,7 @@ static void term_key(struct console *c, char ch) {
         run_command(c, command);
         extern int kernel_console_has_live(int cid);
         int cid = (int)(c - consoles);
-        if (cid >= 0 && cid < NCONS && kernel_console_has_live(cid))
+        if (cid >= 0 && cid < console_count && kernel_console_has_live(cid))
             c->pending_prompt = 1;
         else
             term_prompt(c);
@@ -1888,13 +1989,14 @@ static void term_key(struct console *c, char ch) {
 static struct console *active_console(void) {
     extern int kernel_task_console(void);
     int tc = kernel_task_console();
-    if (tc >= 0 && tc < NCONS)
+    if (tc >= 0 && tc < console_count)
         return &consoles[tc];
     if (sys_output)
         return sys_output;
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C7)
-        return &consoles[focus_win];
-    return &consoles[WIN_C0];
+    struct console *fc = console_for_window(focus_win);
+    if (fc)
+        return fc;
+    return &consoles[0];
 }
 
 /* -----------------------------------------------------------------------------
@@ -1977,7 +2079,7 @@ static void draw_desktop(void) {
 }
 
 static int taskbar_show(int id) {
-    if (id >= 0 && id < console_count)
+    if (console_index_for_window(id) >= 0)
         return 1;
     if (id == WIN_SYS)
         return 0;
@@ -1985,9 +2087,17 @@ static int taskbar_show(int id) {
 }
 
 static int taskbar_label(int id, char *buf) {
-    if (id >= 0 && id < NCONS) {
+    int ci = console_index_for_window(id);
+    if (ci >= 0) {
         buf[0] = 'C'; buf[1] = 'o'; buf[2] = 'n';
-        buf[3] = (char)('1' + id); buf[4] = 0;
+        int num = ci + 1;
+        if (num >= 10) {
+            buf[3] = (char)('0' + num / 10);
+            buf[4] = (char)('0' + num % 10);
+            buf[5] = 0;
+            return 5;
+        }
+        buf[3] = (char)('0' + num); buf[4] = 0;
         return 4;
     }
     const char *s = wins[id].title;
@@ -2090,9 +2200,9 @@ static void window_frame(int id) {
         fill_rect(w->x + w->w - 3 - i, w->y + w->h - 3 - i, 2, 2, 8);
 }
 
-static void draw_console(int id) {
-    struct console *c = &consoles[id];
-    window_frame(id);
+static void draw_console(int ci) {
+    struct console *c = &consoles[ci];
+    window_frame(c->win_id);
     clip_set(c->x + 1, c->y + 11, c->w - 2, c->h - 12);
     fill_rect(c->x + 1, c->y + 11, c->w - 2, c->h - 12, term_default_attr >> 4);
     int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
@@ -2109,7 +2219,7 @@ static void draw_console(int id) {
             char ch = c->term[idx][col];
             int cx = c->x + 4 + col * 8;
             int cy = c->y + 14 + r * 9;
-            int inv = sel_active && sel_id == id && idx >= slo && idx <= shi &&
+            int inv = sel_active && sel_id == c->win_id && idx >= slo && idx <= shi &&
                       col >= clo && col <= chi;
             fill_rect(cx, cy, 8, 9, inv ? (attr & 15) : (attr >> 4));
             if (ch)
@@ -2117,7 +2227,7 @@ static void draw_console(int id) {
         }
     }
     scrollbar_draw(c);
-    if (focus_win == id && c->scroll == 0 && ((ticks / 50) & 1)) {
+    if (focus_win == c->win_id && c->scroll == 0 && ((ticks / 50) & 1)) {
         int row = c->cur - start;
         if (row >= 0 && row < c->rows)
             fill_rect(c->x + 4 + c->col * 8, c->y + 14 + row * 9, 1, 8, 0);
@@ -2456,7 +2566,7 @@ static void open_context(int x, int y) {
     ctx_target = -1;
     for (int i = win_live - 1; i >= 0; i--) {
         int id = zorder[i];
-        if (id <= WIN_C7 && wins[id].visible &&
+        if (wins[id].visible &&
             inside(x, y, wins[id].x, wins[id].y, wins[id].w, wins[id].h)) {
             ctx_target = id;
             break;
@@ -2916,6 +3026,12 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
 
 void gui_alloc_fb(void) {
     extern void *kernel_alloc_pages_zero(u32 pages);
+    if (!consoles) {
+        u32 n = (u32)(NCONS * sizeof(struct console));
+        consoles = (struct console *)kernel_alloc_pages_zero((n + 4095u) / 4096u);
+        if (consoles)
+            console_cap = NCONS;
+    }
     if (!fb) {
         u32 pages = ((u32)(scr_w * scr_h) + 4095u) / 4096u;
         fb = (u8 *)kernel_alloc_pages_zero(pages);
@@ -2947,8 +3063,9 @@ void gui_redraw(void) {
         int id = zorder[i];
         if (!wins[id].visible)
             continue;
-        if (id >= WIN_C0 && id <= WIN_C7)
-            draw_console(id);
+        int ci = console_index_for_window(id);
+        if (ci >= 0)
+            draw_console(ci);
         else if (id == WIN_SYS)
             draw_system();
         else if (id == WIN_ABOUT)
@@ -3087,8 +3204,8 @@ static int hit_test(int x, int y) {
         }
         if (inside(x, y, w->x + 1, w->y + 1, w->w - 2, 10))
             return HIT_TITLE_BASE + id;
-        if (id >= WIN_C0 && id <= WIN_C7 &&
-            scrollbar_hit(&consoles[id], x, y))
+        int sci = console_index_for_window(id);
+        if (sci >= 0 && scrollbar_hit(&consoles[sci], x, y))
             return HIT_SCROLL_BASE + id;
         return HIT_BODY_BASE + id;
     }
@@ -3119,8 +3236,9 @@ void gui_toggle_maximize(int id) {
         w->h = w->saved_h;
         w->maximized = 0;
     }
-    if (id >= WIN_C0 && id <= WIN_C7) {
-        sync_console_layout(id);
+    int cid = console_index_for_window(id);
+    if (cid >= 0) {
+        sync_console_layout(cid);
     } else if (canvas_slot_for_window(id) >= 0) {
         canvas_active = &canvases[canvas_slot_for_window(id)];
         canvas_w = w->w - 4;
@@ -3188,10 +3306,11 @@ static void resize_move(int x, int y) {
     if (east) right = x;
     if (north) top = y;
     if (south) bottom = y;
-    int minw = (resize_win <= WIN_C7) ? 208 : 160;
+    int rci = console_index_for_window(resize_win);
+    int minw = (rci >= 0) ? 208 : 160;
     if (resize_win == WIN_SYS && minw < 232)
         minw = 232;
-    int minh = (resize_win <= WIN_C7) ? 96 :
+    int minh = (rci >= 0) ? 96 :
                (canvas_slot_for_window(resize_win) >= 0 ? 110 : 90);
     if (right - left < minw) {
         if (west) left = right - minw;
@@ -3209,8 +3328,8 @@ static void resize_move(int x, int y) {
     w->y = top;
     w->w = right - left;
     w->h = bottom - top;
-    if (resize_win >= WIN_C0 && resize_win <= WIN_C7) {
-        struct console *c = &consoles[resize_win];
+    if (rci >= 0) {
+        struct console *c = &consoles[rci];
         c->x = w->x;
         c->y = w->y;
         c->w = w->w;
@@ -3497,8 +3616,9 @@ void gui_mouse_wheel(int dz) {
         gui_dirty = 1;
         return;
     }
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C7) {
-        term_scroll_by(&consoles[focus_win], dz * 3);
+    struct console *fcw = console_for_window(focus_win);
+    if (fcw) {
+        term_scroll_by(fcw, dz * 3);
         gui_dirty = 1;
     } else if (focus_win == WIN_FILES) {
         files_scroll -= dz;
@@ -3634,8 +3754,9 @@ void gui_mouse_event(int x, int y, int buttons) {
         } else if (hit >= HIT_BODY_BASE && hit < HIT_BODY_BASE + win_live) {
             int id = hit - HIT_BODY_BASE;
             focus_window(id);
-            if (id <= WIN_C7) {
-                struct console *c = &consoles[id];
+            int ctx_ci = console_index_for_window(id);
+            if (ctx_ci >= 0) {
+                struct console *c = &consoles[ctx_ci];
                 int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
                 int rr = (y - (c->y + 14)) / 9;
                 int cc = (x - (c->x + 4)) / 8;
@@ -3752,7 +3873,7 @@ void gui_key(char ch) {
             hide_window(WIN_ABOUT);
         else if (focus_win == WIN_SYS)
             hide_window(WIN_SYS);
-        if (focus_win < WIN_C0 || focus_win > WIN_C7)
+        if (console_index_for_window(focus_win) < 0)
             focus_window(WIN_C0);
         return;
     }
@@ -3807,21 +3928,22 @@ void gui_key(char ch) {
         }
         return;
     }
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C7) {
+    struct console *fck = console_for_window(focus_win);
+    if (fck) {
         if (ch == '\t') {
             list_open = 1;
             list_sel = focus_win;
             return;
         }
         if (key == GUI_KEY_PGUP) {
-            term_scroll_by(&consoles[focus_win], consoles[focus_win].rows - 1);
+            term_scroll_by(fck, fck->rows - 1);
             return;
         }
         if (key == GUI_KEY_PGDN) {
-            term_scroll_by(&consoles[focus_win], -(consoles[focus_win].rows - 1));
+            term_scroll_by(fck, -(fck->rows - 1));
             return;
         }
-        term_key(&consoles[focus_win], ch);
+        term_key(fck, ch);
     }
 }
 
@@ -3882,7 +4004,7 @@ void gui_sys_write(const char *s, u32 len) {
 }
 
 void gui_prompt_console(int cid) {
-    if (cid < WIN_C0 || cid > WIN_C7)
+    if (cid < 0 || cid >= console_count)
         return;
     consoles[cid].pending_prompt = 0;
     term_prompt(&consoles[cid]);
@@ -3897,7 +4019,7 @@ void gui_sys_print(const char *s) {
 }
 
 void gui_sys_write_console(int console, const char *s, u32 len) {
-    if (console < WIN_C0 || console > WIN_C7)
+    if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
     for (u32 i = 0; i < len; i++)
@@ -3906,7 +4028,7 @@ void gui_sys_write_console(int console, const char *s, u32 len) {
 }
 
 void gui_sys_print_console(int console, const char *s) {
-    if (console < WIN_C0 || console > WIN_C7)
+    if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
     while (*s)
