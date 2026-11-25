@@ -28,7 +28,7 @@ and a snapshot filesystem at the end of the floppy.
 | Shared MPY read-only pages | Complete |
 | A/B atomic SaveFS (MSV3) | Complete |
 | Guest `selftest` + smoke test | Complete |
-| Multi-Canvas windows (8 slots, memory-admitted) | Complete prototype |
+| Dynamic Canvas window table | Complete prototype |
 | Optional ATA/FAT data disk | Not yet |
 | Ring 3 Shell | Not yet; Task 0 plays the Shell for now |
 
@@ -126,8 +126,8 @@ Build guardrails:
 Current measured sizes after Phase 3E Step 3A:
 
 ```text
-kernel:  60,968 / 131,072 B
-BSS end: 0x349FFB
+kernel:  62,292 / 131,072 B
+BSS end: 0x348B73
 MPY:     208,912 B
 image:   1,474,560 B
 ```
@@ -152,7 +152,7 @@ baseline.
   there is no general `&`/background command yet.
 - Shared MPY pages require the same image; a different image while tasks are
   alive is rejected.
-- Canvas windows are assigned by task PID and admitted only when free frames can hold the two ~62-page buffers (`NCANVAS=8` is a safety bound); buffers are freed on close/task exit. Python big-task slots remain capped at three.
+- Window objects and Canvas state are assigned from a growable frame-backed table; Canvas windows are bound to a task PID and admitted only when free frames cover both ~62-page buffers. Python big-task slots remain capped at three.
 - No ATA/FAT disk, no real-hardware support, no networking.
 - SaveFS is atomic for new MSV3 snapshots, but legacy migration has one upgrade
   window.
@@ -169,6 +169,7 @@ baseline.
 
 MIT for the MiniOS code. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for
 third-party attribution, especially MicroPython (MIT).
+
 
 
 

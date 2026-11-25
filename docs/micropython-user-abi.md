@@ -120,4 +120,5 @@ consoles continue running. `sleep` uses the same mechanism with a timer wake.
 - No copy-on-write.
 - No general fork; spawn creates a fresh task.
 - Shared RO only for the same UMP1 image.
-- One Canvas window currently; multi-Canvas is not implemented.
+- Canvas windows use dynamic window ids and a growable frame-backed table; Python big-task slots remain three.
+

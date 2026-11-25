@@ -24,10 +24,9 @@
 #define WIN_C2 2
 #define WIN_SYS 3
 #define WIN_ABOUT 4
-#define NCANVAS 8
-#define WIN_APP 5
-#define WIN_FILES (WIN_APP + NCANVAS)
-#define WIN_COUNT (WIN_FILES + 1)
+#define WIN_FILES 5
+#define WIN_SYS_COUNT 6
+#define WIN_CANVAS_BASE WIN_SYS_COUNT
 
 #define MENU_X 2
 #define MENU_W 120
@@ -37,7 +36,7 @@
 #define MENU_Y (TASKBAR_Y - MENU_H - 4)
 
 #define LIST_W 188
-#define LIST_H (14 + WIN_COUNT * 16 + 14)
+#define LIST_H 236
 #define LIST_X ((scr_w - LIST_W) / 2)
 #define LIST_Y ((TASKBAR_Y - LIST_H) / 2)
 
@@ -104,13 +103,21 @@ struct canvas_state {
     u8 *buf, *back, *target;
     int w, h;
     int open, batch, key_capture;
+    int win_id;
     u32 owner_pid;
     char title[32];
     struct gui_canvas_event queue[32];
     u8 qhead, qtail;
 };
-static struct canvas_state canvases[NCANVAS];
-static struct canvas_state *canvas_active = &canvases[0];
+static struct canvas_state *canvases;
+static int canvas_cap, canvas_live;
+static struct canvas_state *canvas_active;
+static struct window *wins;
+static int *zorder;
+static int win_cap, win_live;
+static void win_tables_grow(void);
+static int win_add(void);
+static void canvas_tables_grow(void);
 
 #define canvas_buf       (canvas_active->buf)
 #define canvas_back      (canvas_active->back)
@@ -133,9 +140,7 @@ static int con_h = 144;
 static int term_vis = 14;
 static int term_width = 35;
 
-static struct window wins[WIN_COUNT];
 static struct console consoles[NCONS];
-static int zorder[WIN_COUNT];
 static int focus_win;
 static int last_console;
 static struct console *sys_output;
@@ -438,19 +443,19 @@ static void make_uptime(void) {
  * ----------------------------------------------------------------------------- */
 static void bring_front(int id) {
     int pos = 0;
-    for (int i = 0; i < WIN_COUNT; i++) {
+    for (int i = 0; i < win_live; i++) {
         if (zorder[i] == id) {
             pos = i;
             break;
         }
     }
-    for (int i = pos; i < WIN_COUNT - 1; i++)
+    for (int i = pos; i < win_live - 1; i++)
         zorder[i] = zorder[i + 1];
-    zorder[WIN_COUNT - 1] = id;
+    zorder[win_live - 1] = id;
 }
 
 static void focus_window(int id) {
-    if (id < 0 || id >= WIN_COUNT)
+    if (id < 0 || id >= win_live)
         return;
     wins[id].visible = 1;
     wins[id].minimized = 0;
@@ -469,7 +474,7 @@ int gui_focused_console(void) {
 }
 
 int gui_runtime_keyboard_wanted(void) {
-    if (focus_win >= WIN_APP && focus_win < WIN_APP + NCANVAS) {
+    if (canvas_slot_for_window(focus_win) >= 0) {
         int ci = canvas_slot_for_window(focus_win);
         if (ci >= 0)
             return canvases[ci].open && canvases[ci].key_capture;
@@ -481,16 +486,46 @@ int gui_runtime_keyboard_wanted(void) {
 extern u32 kernel_current_pid(void);
 
 static int canvas_slot_for_window(int id) {
-    if (id >= WIN_APP && id < WIN_APP + NCANVAS)
-        return id - WIN_APP;
+    for (int i = 0; i < canvas_live; i++)
+        if (canvases[i].win_id == id)
+            return i;
     return -1;
 }
 
 static int canvas_slot_for_owner(u32 pid) {
-    for (int i = 0; i < NCANVAS; i++)
+    for (int i = 0; i < canvas_live; i++)
         if (canvases[i].open && canvases[i].owner_pid == pid)
             return i;
     return -1;
+}
+
+static int canvas_first_window(void) {
+    for (int i = 0; i < canvas_live; i++)
+        if (canvases[i].open)
+            return canvases[i].win_id;
+    return -1;
+}
+
+static int canvas_alloc_slot(void) {
+    for (int i = 0; i < canvas_live; i++)
+        if (!canvases[i].open && canvases[i].owner_pid == 0)
+            return i;
+    if (canvas_live >= canvas_cap)
+        canvas_tables_grow();
+    if (canvas_live >= canvas_cap)
+        return -1;
+    int slot = canvas_live++;
+    struct canvas_state *cs = &canvases[slot];
+    for (u32 i = 0; i < sizeof(*cs); i++)
+        ((u8 *)cs)[i] = 0;
+    cs->w = (scr_w >= 640) ? 300 : 180;
+    cs->h = (scr_w >= 640) ? 200 : 120;
+    cs->win_id = win_add();
+    if (cs->win_id < 0) {
+        canvas_live--;
+        return -1;
+    }
+    return slot;
 }
 
 static int canvas_current_slot(void) {
@@ -512,7 +547,7 @@ void gui_canvas_capture(int on) {
 }
 
 static void focus_fallback(void) {
-    for (int i = WIN_COUNT - 1; i >= 0; i--) {
+    for (int i = win_live - 1; i >= 0; i--) {
         int id = zorder[i];
         if (wins[id].visible) {
             focus_window(id);
@@ -536,7 +571,77 @@ static void minimize_window(int id) {
         focus_fallback();
 }
 
+extern void *kernel_alloc_pages_zero(u32 pages);
+extern void kernel_free_pages_ptr(void *p, u32 pages);
+
+static void win_tables_grow(void) {
+    int ncap = win_cap ? win_cap * 2 : 16;
+    u32 wb = (u32)(ncap * sizeof(struct window));
+    u32 zb = (u32)(ncap * sizeof(int));
+    u32 wp = (wb + 4095u) / 4096u;
+    u32 zp = (zb + 4095u) / 4096u;
+    struct window *nw = (struct window *)kernel_alloc_pages_zero(wp);
+    int *nz = (int *)kernel_alloc_pages_zero(zp);
+    if (!nw || !nz) {
+        if (nw) kernel_free_pages_ptr(nw, wp);
+        if (nz) kernel_free_pages_ptr(nz, zp);
+        return;
+    }
+    for (int i = 0; i < win_live; i++) {
+        nw[i] = wins[i];
+        nz[i] = zorder[i];
+    }
+    if (wins) {
+        u32 oldp = ((u32)(win_cap * sizeof(struct window)) + 4095u) / 4096u;
+        kernel_free_pages_ptr(wins, oldp);
+    }
+    if (zorder) {
+        u32 oldp = ((u32)(win_cap * sizeof(int)) + 4095u) / 4096u;
+        kernel_free_pages_ptr(zorder, oldp);
+    }
+    wins = nw;
+    zorder = nz;
+    win_cap = ncap;
+}
+
+static int win_add(void) {
+    if (win_live >= win_cap)
+        win_tables_grow();
+    if (win_live >= win_cap)
+        return -1;
+    int id = win_live++;
+    wins[id].visible = 0;
+    wins[id].minimized = 0;
+    wins[id].maximized = 0;
+    wins[id].title = "";
+    zorder[id] = id;
+    return id;
+}
+
+static void canvas_tables_grow(void) {
+    int ncap = canvas_cap ? canvas_cap * 2 : 4;
+    u32 bytes = (u32)(ncap * sizeof(struct canvas_state));
+    u32 pages = (bytes + 4095u) / 4096u;
+    struct canvas_state *nc =
+        (struct canvas_state *)kernel_alloc_pages_zero(pages);
+    if (!nc)
+        return;
+    for (int i = 0; i < canvas_live; i++)
+        nc[i] = canvases[i];
+    if (canvases) {
+        u32 oldp = ((u32)(canvas_cap * sizeof(struct canvas_state)) + 4095u) / 4096u;
+        kernel_free_pages_ptr(canvases, oldp);
+    }
+    canvases = nc;
+    canvas_cap = ncap;
+}
+
 static void init_windows(void) {
+    win_cap = win_live = 0;
+    canvas_cap = canvas_live = 0;
+    win_tables_grow();
+    canvas_tables_grow();
+    canvas_active = &canvases[0];
     if (scr_w >= 640) {
         term_width = 72;
         term_vis = 26;
@@ -552,8 +657,6 @@ static void init_windows(void) {
         wins[WIN_SYS].x = 300; wins[WIN_SYS].y = 260;
         wins[WIN_ABOUT].x = (scr_w - ABOUT_W) / 2;
         wins[WIN_ABOUT].y = (TASKBAR_Y - ABOUT_H) / 2;
-        wins[WIN_APP].x = scr_w - (canvas_w + 4) - 12;
-        wins[WIN_APP].y = 26;
     } else {
         term_width = 35;
         term_vis = 14;
@@ -568,20 +671,7 @@ static void init_windows(void) {
 
         wins[WIN_SYS].x = 42; wins[WIN_SYS].y = 42;
         wins[WIN_ABOUT].x = 56; wins[WIN_ABOUT].y = 48;
-        wins[WIN_APP].x = 68; wins[WIN_APP].y = 34;
     }
-
-    for (int i = 0; i < NCANVAS; i++) {
-        canvases[i].w = (scr_w >= 640) ? 300 : 180;
-        canvases[i].h = (scr_w >= 640) ? 200 : 120;
-        canvases[i].owner_pid = 0;
-        canvases[i].open = 0;
-        canvases[i].buf = 0;
-        canvases[i].back = 0;
-        canvases[i].target = 0;
-        canvases[i].title[0] = 0;
-    }
-    canvas_active = &canvases[0];
 
     for (int i = 0; i < NCONS; i++) {
         wins[i].w = con_w;
@@ -604,18 +694,6 @@ static void init_windows(void) {
     wins[WIN_ABOUT].minimized = 0;
     wins[WIN_ABOUT].title = "About MiniOS";
 
-    for (int ci = 0; ci < NCANVAS; ci++) {
-        int id = WIN_APP + ci;
-        wins[id].x = (scr_w >= 640) ? scr_w - (canvases[ci].w + 4) - 12 - ci * 22
-                                    : 60 + ci * 8;
-        wins[id].y = (scr_w >= 640) ? 26 + ci * 26 : 34 + ci * 8;
-        wins[id].w = canvases[ci].w + 4;
-        wins[id].h = canvases[ci].h + 14;
-        wins[id].visible = 0;
-        wins[id].minimized = 0;
-        wins[id].title = canvases[ci].title;
-    }
-
     wins[WIN_FILES].x = (scr_w >= 640) ? 24 : 20;
     wins[WIN_FILES].y = (scr_w >= 640) ? 286 : 104;
     wins[WIN_FILES].w = (scr_w >= 640) ? 380 : 272;
@@ -624,7 +702,8 @@ static void init_windows(void) {
     wins[WIN_FILES].minimized = 0;
     wins[WIN_FILES].title = "Files - MiniOS";
 
-    for (int i = 0; i < WIN_COUNT; i++)
+    win_live = WIN_SYS_COUNT;
+    for (int i = 0; i < win_live; i++)
         zorder[i] = i;
     focus_win = WIN_C0;
 }
@@ -1738,7 +1817,8 @@ static void draw_taskbar(void) {
     taskbar_button(200, ty + 2, 56, "Wins", HIT_TB_WIN, list_open);
     if (scr_w >= 640) {
         taskbar_button(258, ty + 2, 50, "Con3", HIT_TB_C3, focus_win == WIN_C2);
-        taskbar_button(310, ty + 2, 58, "Canvas", HIT_TB_APP, focus_win == WIN_APP);
+        taskbar_button(310, ty + 2, 58, "Canvas", HIT_TB_APP,
+                       canvas_slot_for_window(focus_win) >= 0);
         taskbar_button(372, ty + 2, 48, "Files", HIT_TB_FILES, focus_win == WIN_FILES);
     }
 
@@ -2011,7 +2091,7 @@ static void draw_list(void) {
     fill_rect(LIST_X + 1, LIST_Y + 1, LIST_W - 2, 10, 1);
     text(LIST_X + 4, LIST_Y + 2, "Windows (F4)", 15);
 
-    for (int i = 0; i < WIN_COUNT; i++) {
+    for (int i = 0; i < win_live; i++) {
         int iy = LIST_Y + 14 + i * 16;
         int hit = HIT_LIST_BASE + i;
         int selected = (list_sel == i);
@@ -2138,7 +2218,7 @@ static int ctx_height(void) {
 
 static void open_context(int x, int y) {
     ctx_target = -1;
-    for (int i = WIN_COUNT - 1; i >= 0; i--) {
+    for (int i = win_live - 1; i >= 0; i--) {
         int id = zorder[i];
         if (id <= WIN_C2 && wins[id].visible &&
             inside(x, y, wins[id].x, wins[id].y, wins[id].w, wins[id].h)) {
@@ -2210,7 +2290,7 @@ static void activate_context(int idx) {
         focus_window(WIN_C1);
     } else if (idx == 7) {
         int ox = 20, oy = 24;
-        for (int id = 0; id < WIN_COUNT; id++) {
+        for (int id = 0; id < win_live; id++) {
             if (!wins[id].visible)
                 continue;
             struct window *w = &wins[id];
@@ -2359,13 +2439,8 @@ void gui_canvas_open(const char *title) {
     extern u32 kernel_current_pid(void);
     u32 pid = kernel_current_pid();
     int slot = canvas_slot_for_owner(pid);
-    if (slot < 0) {
-        for (int i = 0; i < NCANVAS; i++)
-            if (!canvases[i].open) {
-                slot = i;
-                break;
-            }
-    }
+    if (slot < 0)
+        slot = canvas_alloc_slot();
     if (slot < 0)
         return;
     canvas_active = &canvases[slot];
@@ -2389,7 +2464,9 @@ void gui_canvas_open(const char *title) {
         canvas_target = canvas_buf;
         canvas_qhead = canvas_qtail = 0;
     }
-    int id = WIN_APP + slot;
+    int id = canvas_active->win_id;
+    wins[id].x = (scr_w >= 640) ? 120 + slot * 24 : 50 + slot * 8;
+    wins[id].y = (scr_w >= 640) ? 34 + slot * 22 : 30 + slot * 6;
     wins[id].w = canvas_w + 4;
     wins[id].h = canvas_h + 14;
     int i = 0;
@@ -2414,13 +2491,13 @@ void gui_canvas_open(const char *title) {
 void gui_canvas_release_owner(u32 pid) {
     extern void kernel_free_pages_ptr(void *p, u32 pages);
     u32 pages = ((u32)(CANVAS_MAX_W * CANVAS_MAX_H) + 4095u) / 4096u;
-    for (int i = 0; i < NCANVAS; i++) {
+    for (int i = 0; i < canvas_live; i++) {
         if (!canvases[i].open || canvases[i].owner_pid != pid)
             continue;
         canvas_active = &canvases[i];
         canvas_open = 0;
         canvas_key_capture = 0;
-        hide_window(WIN_APP + i);
+        hide_window(canvas_active->win_id);
         if (canvas_buf)
             kernel_free_pages_ptr(canvas_buf, pages);
         if (canvas_back)
@@ -2444,7 +2521,7 @@ void gui_canvas_close(void) {
     canvas_key_capture = 0;
     canvas_push_event(GUI_EV_CLOSE, 0, 0, 0, 0);
     canvas_queue[(u8)((canvas_qhead + 31) & 31)].closed = 1;
-    hide_window(WIN_APP + slot);
+    hide_window(canvas_active->win_id);
     u32 pages = ((u32)(CANVAS_MAX_W * CANVAS_MAX_H) + 4095u) / 4096u;
     if (canvas_buf)
         kernel_free_pages_ptr(canvas_buf, pages);
@@ -2568,20 +2645,21 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
         menu_open || list_open || ctx_open ||
         drag_win >= 0 || resize_win >= 0 || scroll_drag >= 0)
         return 0;
-    for (int ci = 0; ci < NCANVAS; ci++) {
-        int cid = WIN_APP + ci;
-        if (!wins[cid].visible)
+    for (int ci = 0; ci < canvas_live; ci++) {
+        int cid = canvases[ci].win_id;
+        if (cid < 0 || !wins[cid].visible)
             continue;
         canvas_active = &canvases[ci];
         if (inside(x, y, wins[cid].x + 2, wins[cid].y + 12,
-                   canvas_w, canvas_h))
+                   canvas_w, canvas_h)) {
             canvas_push_event(GUI_EV_MOUSE_MOVE,
                               x - (wins[cid].x + 2),
                               y - (wins[cid].y + 12), 0, 0);
+        }
     }
     int shape = 0;
     int hit = hit_test(x, y);
-    if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + WIN_COUNT * 9) {
+    if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + win_live * 9) {
         int d = (hit - HIT_RESIZE_BASE) % 9;
         if (d == 1 || d == 2) shape = 1;
         else if (d == 3 || d == 4) shape = 2;
@@ -2628,7 +2706,7 @@ void gui_redraw(void) {
     make_uptime();
     draw_desktop();
     draw_taskbar();
-    for (int i = 0; i < WIN_COUNT; i++) {
+    for (int i = 0; i < win_live; i++) {
         int id = zorder[i];
         if (!wins[id].visible)
             continue;
@@ -2638,7 +2716,7 @@ void gui_redraw(void) {
             draw_system();
         else if (id == WIN_ABOUT)
             draw_about();
-        else if (id >= WIN_APP && id < WIN_APP + NCANVAS)
+        else if (canvas_slot_for_window(id) >= 0)
             draw_canvas(id);
         else if (id == WIN_FILES)
             draw_files();
@@ -2682,7 +2760,7 @@ static int hit_test(int x, int y) {
         return HIT_NONE;
     }
     if (list_open) {
-        for (int i = 0; i < WIN_COUNT; i++) {
+        for (int i = 0; i < win_live; i++) {
             int iy = LIST_Y + 14 + i * 16;
             if (inside(x, y, LIST_X + 3, iy, LIST_W - 6, 14))
                 return HIT_LIST_BASE + i;
@@ -2712,7 +2790,7 @@ static int hit_test(int x, int y) {
         return HIT_NONE;
     }
 
-    for (int i = WIN_COUNT - 1; i >= 0; i--) {
+    for (int i = win_live - 1; i >= 0; i--) {
         int id = zorder[i];
         struct window *w = &wins[id];
         if (!w->visible || !inside(x, y, w->x, w->y, w->w, w->h))
@@ -2810,7 +2888,7 @@ void gui_toggle_maximize(int id) {
     }
     if (id >= WIN_C0 && id <= WIN_C2) {
         sync_console_layout(id);
-    } else if (id >= WIN_APP && id < WIN_APP + NCANVAS) {
+    } else if (canvas_slot_for_window(id) >= 0) {
         canvas_active = &canvases[canvas_slot_for_window(id)];
         canvas_w = w->w - 4;
         canvas_h = w->h - 14;
@@ -2881,7 +2959,7 @@ static void resize_move(int x, int y) {
     if (resize_win == WIN_SYS && minw < 232)
         minw = 232;
     int minh = (resize_win <= WIN_C2) ? 96 :
-               ((resize_win >= WIN_APP && resize_win < WIN_APP + NCANVAS) ? 110 : 90);
+               (canvas_slot_for_window(resize_win) >= 0 ? 110 : 90);
     if (right - left < minw) {
         if (west) left = right - minw;
         else right = left + minw;
@@ -2912,7 +2990,7 @@ static void resize_move(int x, int y) {
         if (rows > 46) rows = 46;
         c->cols = cols;
         c->rows = rows;
-    } else if (resize_win >= WIN_APP && resize_win < WIN_APP + NCANVAS) {
+    } else if (canvas_slot_for_window(resize_win) >= 0) {
         canvas_active = &canvases[canvas_slot_for_window(resize_win)];
         canvas_w = w->w - 4;
         canvas_h = w->h - 14;
@@ -3007,7 +3085,12 @@ static void activate_hit(int hit) {
     if (hit == HIT_TB_C1) { taskbar_window(WIN_C0); return; }
     if (hit == HIT_TB_C2) { taskbar_window(WIN_C1); return; }
     if (hit == HIT_TB_C3) { taskbar_window(WIN_C2); return; }
-    if (hit == HIT_TB_APP) { taskbar_window(WIN_APP); return; }
+    if (hit == HIT_TB_APP) {
+        int id = canvas_first_window();
+        if (id >= 0)
+            taskbar_window(id);
+        return;
+    }
     if (hit == HIT_TB_FILES) { taskbar_window(WIN_FILES); return; }
     if (hit >= HIT_SYS_TAB_BASE && hit < HIT_SYS_TAB_BASE + 3) {
         sys_tab = hit - HIT_SYS_TAB_BASE;
@@ -3090,16 +3173,16 @@ static void activate_hit(int hit) {
         menu_open = 0;
         return;
     }
-    if (hit >= HIT_MAX_BASE && hit < HIT_MAX_BASE + WIN_COUNT) {
+    if (hit >= HIT_MAX_BASE && hit < HIT_MAX_BASE + win_live) {
         extern void gui_toggle_maximize(int id);
         gui_toggle_maximize(hit - HIT_MAX_BASE);
         return;
     }
-    if (hit >= HIT_MIN_BASE && hit < HIT_MIN_BASE + WIN_COUNT) {
+    if (hit >= HIT_MIN_BASE && hit < HIT_MIN_BASE + win_live) {
         minimize_window(hit - HIT_MIN_BASE);
         return;
     }
-    if (hit >= HIT_CLOSE_BASE && hit < HIT_CLOSE_BASE + WIN_COUNT) {
+    if (hit >= HIT_CLOSE_BASE && hit < HIT_CLOSE_BASE + win_live) {
         int id = hit - HIT_CLOSE_BASE;
         int cslot = canvas_slot_for_window(id);
         if (cslot >= 0) {
@@ -3118,7 +3201,7 @@ static void activate_hit(int hit) {
         focus_window(WIN_C0);
         return;
     }
-    if (hit >= HIT_LIST_BASE && hit < HIT_LIST_BASE + WIN_COUNT) {
+    if (hit >= HIT_LIST_BASE && hit < HIT_LIST_BASE + win_live) {
         int id = hit - HIT_LIST_BASE;
         list_open = 0;
         focus_window(id);
@@ -3185,7 +3268,7 @@ void gui_mouse_wheel(int dz) {
     if (list_open) {
         list_sel -= dz;
         if (list_sel < 0) list_sel = 0;
-        if (list_sel >= WIN_COUNT) list_sel = WIN_COUNT - 1;
+        if (list_sel >= win_live) list_sel = win_live - 1;
         gui_dirty = 1;
         return;
     }
@@ -3236,10 +3319,10 @@ void gui_mouse_event(int x, int y, int buttons) {
     }
 
     if (list_open) {
-        if (!(buttons & 1) && hit >= HIT_LIST_BASE && hit < HIT_LIST_BASE + WIN_COUNT)
+        if (!(buttons & 1) && hit >= HIT_LIST_BASE && hit < HIT_LIST_BASE + win_live)
             list_sel = hit - HIT_LIST_BASE;
         if (press) {
-            if (hit >= HIT_LIST_BASE && hit < HIT_LIST_BASE + WIN_COUNT) {
+            if (hit >= HIT_LIST_BASE && hit < HIT_LIST_BASE + win_live) {
                 list_sel = hit - HIT_LIST_BASE;
                 pressed_hit = hit;
             } else {
@@ -3274,9 +3357,9 @@ void gui_mouse_event(int x, int y, int buttons) {
         return;
     }
 
-    for (int ci = 0; ci < NCANVAS; ci++) {
-        int cid = WIN_APP + ci;
-        if (!wins[cid].visible)
+    for (int ci = 0; ci < canvas_live; ci++) {
+        int cid = canvases[ci].win_id;
+        if (cid < 0 || !wins[cid].visible)
             continue;
         canvas_active = &canvases[ci];
         if (inside(x, y, wins[cid].x + 2, wins[cid].y + 12,
@@ -3294,12 +3377,12 @@ void gui_mouse_event(int x, int y, int buttons) {
 
     if (press) {
         pressed_hit = hit;
-        if (hit >= HIT_SCROLL_BASE && hit < HIT_SCROLL_BASE + WIN_COUNT) {
+        if (hit >= HIT_SCROLL_BASE && hit < HIT_SCROLL_BASE + win_live) {
             int id = hit - HIT_SCROLL_BASE;
             focus_window(id);
             scroll_drag = id;
             scrollbar_set_from_y(&consoles[id], y);
-        } else if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + WIN_COUNT * 9) {
+        } else if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + win_live * 9) {
             int off = hit - HIT_RESIZE_BASE;
             int id = off / 9;
             int d = off % 9;
@@ -3310,7 +3393,7 @@ void gui_mouse_event(int x, int y, int buttons) {
             resize_sy = wins[id].y;
             resize_sw = wins[id].w;
             resize_sh = wins[id].h;
-        } else if (hit >= HIT_TITLE_BASE && hit < HIT_TITLE_BASE + WIN_COUNT) {
+        } else if (hit >= HIT_TITLE_BASE && hit < HIT_TITLE_BASE + win_live) {
             static u32 last_title_tick;
             static int last_title_id = -1;
             int id = hit - HIT_TITLE_BASE;
@@ -3323,7 +3406,7 @@ void gui_mouse_event(int x, int y, int buttons) {
                 focus_window(id);
                 start_drag(id, x, y);
             }
-        } else if (hit >= HIT_BODY_BASE && hit < HIT_BODY_BASE + WIN_COUNT) {
+        } else if (hit >= HIT_BODY_BASE && hit < HIT_BODY_BASE + win_live) {
             int id = hit - HIT_BODY_BASE;
             focus_window(id);
             if (id <= WIN_C2) {
@@ -3426,7 +3509,7 @@ void gui_key(char ch) {
         if (ch == 27) {
             list_open = 0;
         } else if (ch == '\t') {
-            list_sel = (list_sel + 1) % WIN_COUNT;
+            list_sel = (list_sel + 1) % win_live;
         } else if (ch == '\n') {
             int id = list_sel;
             list_open = 0;
@@ -3455,7 +3538,7 @@ void gui_key(char ch) {
         }
         return;
     }
-    if (focus_win >= WIN_APP && focus_win < WIN_APP + NCANVAS) {
+    if (canvas_slot_for_window(focus_win) >= 0) {
         int ci = canvas_slot_for_window(focus_win);
         if (ci >= 0) {
             canvas_active = &canvases[ci];
@@ -3607,6 +3690,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
