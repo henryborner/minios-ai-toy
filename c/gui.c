@@ -18,14 +18,15 @@
 #define ABOUT_W 208
 #define ABOUT_H 104
 
-#define NCONS 3
+#define NCONS 4
 #define WIN_C0 0
 #define WIN_C1 1
 #define WIN_C2 2
-#define WIN_SYS 3
-#define WIN_ABOUT 4
-#define WIN_FILES 5
-#define WIN_SYS_COUNT 6
+#define WIN_C3 3
+#define WIN_SYS 4
+#define WIN_ABOUT 5
+#define WIN_FILES 6
+#define WIN_SYS_COUNT 7
 #define WIN_CANVAS_BASE WIN_SYS_COUNT
 
 #define MENU_X 2
@@ -498,14 +499,14 @@ static void focus_window(int id) {
     wins[id].minimized = 0;
     focus_win = id;
     bring_front(id);
-    if (id >= WIN_C0 && id <= WIN_C2) {
+    if (id >= WIN_C0 && id <= WIN_C3) {
         sys_output = &consoles[id];
         last_console = id;
     }
 }
 
 int gui_focused_console(void) {
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C2)
+    if (focus_win >= WIN_C0 && focus_win <= WIN_C3)
         return focus_win;
     return last_console;
 }
@@ -696,6 +697,7 @@ static void init_windows(void) {
         wins[WIN_C0].x = 12;  wins[WIN_C0].y = 24;
         wins[WIN_C1].x = 28;  wins[WIN_C1].y = 198;
         wins[WIN_C2].x = 20;  wins[WIN_C2].y = 110;
+        wins[WIN_C3].x = 36;  wins[WIN_C3].y = 136;
 
         wins[WIN_SYS].x = 300; wins[WIN_SYS].y = 260;
         wins[WIN_ABOUT].x = (scr_w - ABOUT_W) / 2;
@@ -711,6 +713,7 @@ static void init_windows(void) {
         wins[WIN_C0].x = 12;  wins[WIN_C0].y = 22;
         wins[WIN_C1].x = 16;  wins[WIN_C1].y = 28;
         wins[WIN_C2].x = 20;  wins[WIN_C2].y = 34;
+        wins[WIN_C3].x = 24;  wins[WIN_C3].y = 40;
 
         wins[WIN_SYS].x = 42; wins[WIN_SYS].y = 42;
         wins[WIN_ABOUT].x = 56; wins[WIN_ABOUT].y = 48;
@@ -725,6 +728,7 @@ static void init_windows(void) {
     wins[WIN_C0].title = "Console 1 - MiniOS";
     wins[WIN_C1].title = "Console 2 - MiniOS";
     wins[WIN_C2].title = "Console 3 - MiniOS";
+    wins[WIN_C3].title = "Console 4 - MiniOS";
 
     wins[WIN_SYS].w = (scr_w >= 640) ? 320 : SYS_W;
     wins[WIN_SYS].h = (scr_w >= 640) ? 190 : SYS_H;
@@ -1566,6 +1570,22 @@ static void run_command(struct console *c, char *line) {
         run_python_expr(c, line + 1);
     } else if (streq(line, "pystat")) {
         py_stats(c);
+    } else if (starts_with(line, "py4 ")) {
+        extern int run_four_python(const char *, const char *, const char *, const char *);
+        char names[4][32];
+        const char *p = line + 4;
+        for (int i = 0; i < 4; i++) {
+            int n = 0;
+            while (*p == ' ') p++;
+            while (*p && *p != ' ' && n < 31) names[i][n++] = *p++;
+            names[i][n] = 0;
+        }
+        if (names[0][0] && names[1][0] && names[2][0] && names[3][0]) {
+            term_puts(c, "Launching four Python consoles...\n");
+            run_four_python(names[0], names[1], names[2], names[3]);
+        } else {
+            term_puts(c, "usage: py4 A.PY B.PY C.PY D.PY\n");
+        }
     } else if (starts_with(line, "py3 ")) {
         extern int run_three_python(const char *a, const char *b, const char *c);
         char names[3][32];
@@ -1763,7 +1783,7 @@ static struct console *active_console(void) {
         return &consoles[tc];
     if (sys_output)
         return sys_output;
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C2)
+    if (focus_win >= WIN_C0 && focus_win <= WIN_C3)
         return &consoles[focus_win];
     return &consoles[WIN_C0];
 }
@@ -1848,7 +1868,7 @@ static void draw_desktop(void) {
 }
 
 static int taskbar_show(int id) {
-    if (id >= 0 && id <= WIN_C2)
+    if (id >= 0 && id <= WIN_C3)
         return 1;
     if (id == WIN_SYS)
         return 0;
@@ -1856,7 +1876,7 @@ static int taskbar_show(int id) {
 }
 
 static int taskbar_label(int id, char *buf) {
-    if (id >= 0 && id <= WIN_C2) {
+    if (id >= 0 && id <= WIN_C3) {
         buf[0] = 'C'; buf[1] = 'o'; buf[2] = 'n';
         buf[3] = (char)('1' + id); buf[4] = 0;
         return 4;
@@ -2327,7 +2347,7 @@ static void open_context(int x, int y) {
     ctx_target = -1;
     for (int i = win_live - 1; i >= 0; i--) {
         int id = zorder[i];
-        if (id <= WIN_C2 && wins[id].visible &&
+        if (id <= WIN_C3 && wins[id].visible &&
             inside(x, y, wins[id].x, wins[id].y, wins[id].w, wins[id].h)) {
             ctx_target = id;
             break;
@@ -2818,7 +2838,7 @@ void gui_redraw(void) {
         int id = zorder[i];
         if (!wins[id].visible)
             continue;
-        if (id >= WIN_C0 && id <= WIN_C2)
+        if (id >= WIN_C0 && id <= WIN_C3)
             draw_console(id);
         else if (id == WIN_SYS)
             draw_system();
@@ -2958,7 +2978,7 @@ static int hit_test(int x, int y) {
         }
         if (inside(x, y, w->x + 1, w->y + 1, w->w - 2, 10))
             return HIT_TITLE_BASE + id;
-        if (id >= WIN_C0 && id <= WIN_C2 &&
+        if (id >= WIN_C0 && id <= WIN_C3 &&
             scrollbar_hit(&consoles[id], x, y))
             return HIT_SCROLL_BASE + id;
         return HIT_BODY_BASE + id;
@@ -2990,7 +3010,7 @@ void gui_toggle_maximize(int id) {
         w->h = w->saved_h;
         w->maximized = 0;
     }
-    if (id >= WIN_C0 && id <= WIN_C2) {
+    if (id >= WIN_C0 && id <= WIN_C3) {
         sync_console_layout(id);
     } else if (canvas_slot_for_window(id) >= 0) {
         canvas_active = &canvases[canvas_slot_for_window(id)];
@@ -3036,7 +3056,7 @@ static void drag_move(int x, int y) {
         snap_mode = 2;
     w->x = nx;
     w->y = ny;
-    if (drag_win >= WIN_C0 && drag_win <= WIN_C2) {
+    if (drag_win >= WIN_C0 && drag_win <= WIN_C3) {
         consoles[drag_win].x = nx;
         consoles[drag_win].y = ny;
     }
@@ -3059,10 +3079,10 @@ static void resize_move(int x, int y) {
     if (east) right = x;
     if (north) top = y;
     if (south) bottom = y;
-    int minw = (resize_win <= WIN_C2) ? 208 : 160;
+    int minw = (resize_win <= WIN_C3) ? 208 : 160;
     if (resize_win == WIN_SYS && minw < 232)
         minw = 232;
-    int minh = (resize_win <= WIN_C2) ? 96 :
+    int minh = (resize_win <= WIN_C3) ? 96 :
                (canvas_slot_for_window(resize_win) >= 0 ? 110 : 90);
     if (right - left < minw) {
         if (west) left = right - minw;
@@ -3080,7 +3100,7 @@ static void resize_move(int x, int y) {
     w->y = top;
     w->w = right - left;
     w->h = bottom - top;
-    if (resize_win >= WIN_C0 && resize_win <= WIN_C2) {
+    if (resize_win >= WIN_C0 && resize_win <= WIN_C3) {
         struct console *c = &consoles[resize_win];
         c->x = w->x;
         c->y = w->y;
@@ -3112,7 +3132,7 @@ static void resize_move(int x, int y) {
 }
 
 static void sync_console_layout(int id) {
-    if (id < WIN_C0 || id > WIN_C2)
+    if (id < WIN_C0 || id > WIN_C3)
         return;
     struct window *w = &wins[id];
     struct console *c = &consoles[id];
@@ -3368,7 +3388,7 @@ void gui_mouse_wheel(int dz) {
         gui_dirty = 1;
         return;
     }
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C2) {
+    if (focus_win >= WIN_C0 && focus_win <= WIN_C3) {
         term_scroll_by(&consoles[focus_win], dz * 3);
         gui_dirty = 1;
     } else if (focus_win == WIN_FILES) {
@@ -3505,7 +3525,7 @@ void gui_mouse_event(int x, int y, int buttons) {
         } else if (hit >= HIT_BODY_BASE && hit < HIT_BODY_BASE + win_live) {
             int id = hit - HIT_BODY_BASE;
             focus_window(id);
-            if (id <= WIN_C2) {
+            if (id <= WIN_C3) {
                 struct console *c = &consoles[id];
                 int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
                 int rr = (y - (c->y + 14)) / 9;
@@ -3623,7 +3643,7 @@ void gui_key(char ch) {
             hide_window(WIN_ABOUT);
         else if (focus_win == WIN_SYS)
             hide_window(WIN_SYS);
-        if (focus_win < WIN_C0 || focus_win > WIN_C2)
+        if (focus_win < WIN_C0 || focus_win > WIN_C3)
             focus_window(WIN_C0);
         return;
     }
@@ -3678,7 +3698,7 @@ void gui_key(char ch) {
         }
         return;
     }
-    if (focus_win >= WIN_C0 && focus_win <= WIN_C2) {
+    if (focus_win >= WIN_C0 && focus_win <= WIN_C3) {
         if (ch == '\t') {
             list_open = 1;
             list_sel = focus_win;
@@ -3738,6 +3758,10 @@ void gui_special(int key) {
         focus_window(WIN_C2);
         menu_open = 0;
         list_open = 0;
+    } else if (key == 9) {
+        focus_window(WIN_C3);
+        menu_open = 0;
+        list_open = 0;
     }
 }
 
@@ -3749,7 +3773,7 @@ void gui_sys_write(const char *s, u32 len) {
 }
 
 void gui_prompt_console(int cid) {
-    if (cid < WIN_C0 || cid > WIN_C2)
+    if (cid < WIN_C0 || cid > WIN_C3)
         return;
     consoles[cid].pending_prompt = 0;
     term_prompt(&consoles[cid]);
@@ -3764,7 +3788,7 @@ void gui_sys_print(const char *s) {
 }
 
 void gui_sys_write_console(int console, const char *s, u32 len) {
-    if (console < WIN_C0 || console > WIN_C2)
+    if (console < WIN_C0 || console > WIN_C3)
         return;
     struct console *c = &consoles[console];
     for (u32 i = 0; i < len; i++)
@@ -3773,7 +3797,7 @@ void gui_sys_write_console(int console, const char *s, u32 len) {
 }
 
 void gui_sys_print_console(int console, const char *s) {
-    if (console < WIN_C0 || console > WIN_C2)
+    if (console < WIN_C0 || console > WIN_C3)
         return;
     struct console *c = &consoles[console];
     while (*s)
@@ -3803,6 +3827,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 

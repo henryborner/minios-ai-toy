@@ -49,7 +49,7 @@ and a snapshot filesystem at the end of the floppy.
   and heap.
 - **WM**: draggable/resizable windows, minimize/maximize, snap, tile/cascade,
   frame-pool meter.
-- **Three consoles** with ANSI colors, scrollback, history, keyboard routing
+- **Four consoles** with ANSI colors, scrollback, history, keyboard routing
   and clipboard.
 - **Frozen Python tools**: `calc`, `top`, `demos`, `xxd`, `ed`, `futil`,
   `bench`, Paint, Plot, Snake and Life.
@@ -127,7 +127,7 @@ Current measured sizes after Phase 3E Step 3A:
 
 ```text
 kernel:  63,408 / 131,072 B
-BSS end: 0x327B8F
+BSS end: 0x329E67
 MPY:     208,912 B
 image:   1,474,560 B
 ```
@@ -169,6 +169,7 @@ baseline.
 
 MIT for the MiniOS code. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for
 third-party attribution, especially MicroPython (MIT).
+
 
 
 
