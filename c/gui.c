@@ -1530,28 +1530,62 @@ static void run_command(struct console *c, char *line) {
             }
         }
         term_puts(c, "fg: pid not found\n");
-    } else if (starts_with(line, "pybg ")) {
+    } else if (starts_with(line, "pyn ")) {
+        extern int run_n_python(const char *const *names, int n);
+        char names[8][32];
+        const char *p = line + 4;
+        int n = 0;
+        while (n < 8) {
+            while (*p == ' ') p++;
+            if (!*p) break;
+            int k = 0;
+            while (*p && *p != ' ' && k < 31) names[n][k++] = *p++;
+            names[n][k] = 0;
+            n++;
+        }
+        if (n < 1) {
+            term_puts(c, "usage: pyn A.PY [B.PY ...]\n");
+        } else {
+            int self = (int)(c - consoles);
+            while (console_count < n)
+                if (!gui_new_console())
+                    break;
+            c = &consoles[self];
+            if (console_count < n) {
+                term_puts(c, "pyn: not enough consoles\n");
+            } else {
+                const char *argv[8];
+                for (int i = 0; i < n; i++)
+                    argv[i] = names[i];
+                if (!run_n_python(argv, n))
+                    term_puts(c, "pyn failed\n");
+            }
+        }
+    } else if (starts_with(line, "pybg ") || starts_with(line, "spawn ")) {
         int oldc = (int)(c - consoles);
         if (!gui_new_console()) {
             term_puts(c, "pybg: no free console\n");
             return;
         }
         int nc = console_count - 1;
-        launch_python(&consoles[nc], line + 5);
+        int arg_off = starts_with(line, "pybg ") ? 5 : 6;
+        launch_python(&consoles[nc], line + arg_off);
+        c = &consoles[oldc];
         if (oldc >= 0 && oldc < console_count)
             focus_window(oldc);
         term_puts(c, "pybg: started on Console ");
         term_u32(c, (u32)(nc + 1));
         term_puts(c, "\n");
     } else if (streq(line, "newcon")) {
+        int self = (int)(c - consoles);
         if (gui_new_console())
-            term_puts(c, "new console created.\n");
+            term_puts(&consoles[self], "new console created.\n");
         else
             term_puts(c, "console limit reached.\n");
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python pybg jobs fg newcon clear echo console windows\n");
+        term_puts(c, "py python pyn pybg spawn jobs fg newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
@@ -4058,6 +4092,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 

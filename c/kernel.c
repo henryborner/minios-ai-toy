@@ -2664,6 +2664,52 @@ int run_four_python(const char *a, const char *b, const char *c, const char *d) 
     return 1;
 }
 
+int run_n_python(const char *const *names, int n) {
+    if (n < 1 || n > 8)
+        return 0;
+    u32 size = 0;
+    if (!fs_load_file_to("MPY.BIN", (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size))
+        return 0;
+    struct module_header *h = (struct module_header *)BIG_CODE_PHYS;
+    if (h->magic[0] != 'U' || h->magic[1] != 'M' ||
+        h->magic[2] != 'P' || h->magic[3] != '1' ||
+        h->image_size > size || h->bss_size > BIG_CODE_MAX - h->image_size)
+        return 0;
+    int slots[8];
+    for (int i = 0; i < n; i++)
+        slots[i] = task_create_big("MPY.BIN", h->image_size, h->bss_size,
+                                   h->entry_offset);
+    for (int i = 0; i < n; i++)
+        if (slots[i] < 0) {
+            for (int j = 0; j < n; j++)
+                if (slots[j] >= 0) {
+                    tasks[slots[j]].state = TASK_FREE;
+                    task_free_frames(slots[j]);
+                }
+            return 0;
+        }
+    const char *av[8][2];
+    for (int i = 0; i < n; i++) {
+        av[i][0] = "py";
+        av[i][1] = names[i];
+    }
+    for (int i = 0; i < n; i++) {
+        if (!build_args_on_stack(slots[i], 2, av[i], BIG_USER_STACK,
+                                 BIG_USER_STACK + BIG_STACK_SIZE)) {
+            for (int j = 0; j < n; j++) {
+                tasks[slots[j]].state = TASK_FREE;
+                task_free_frames(slots[j]);
+            }
+            return 0;
+        }
+        tasks[slots[i]].console_id = (u8)i;
+    }
+    __asm__ __volatile__("cli");
+    start_tasks(slots[0]);
+    __asm__ __volatile__("sti");
+    return 1;
+}
+
 int run_user_module(const char *name) {
     return run_user_module_ex(name, 0, 0);
 }
