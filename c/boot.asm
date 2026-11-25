@@ -1,16 +1,16 @@
 ; =============================================================================
 ;  MiniOS C-kernel boot sector (LBA 0)
 ;  Loads:
-;    - 128 sectors (64 KB) kernel from LBA 1..128   -> 0x1000:0x0000 (0x10000)
-;    -  64 sectors (32 KB) MPK1   from LBA 129..192 -> 0x7000:0x0000 (0x70000)
-;    -   1 sector  (512 B) stage2 from LBA 193      -> 0x0000:0x7E00 (0x07E00)
+;    - 256 sectors (128 KB) kernel from LBA 1..256  -> 0x1000:0x0000 (0x10000)
+;    -  64 sectors (32 KB) MPK1   from LBA 257..320 -> 0x7000:0x0000 (0x70000)
+;    -   1 sector  (512 B) stage2 from LBA 321      -> 0x0000:0x7E00 (0x07E00)
 ;  Then transfers control to stage2 for VBE 640x480x8 LFB setup + 32-bit PM.
 ; =============================================================================
         BITS 16
         ORG 0x7C00
 
 KERNEL_SEG      equ 0x1000       ; ES for 0x10000
-KERNEL_SECTORS  equ 128
+KERNEL_SECTORS  equ 256
 PACK_SEG        equ 0x7000       ; ES for 0x70000
 PACK_SECTORS    equ 64
 STAGE2_OFFSET   equ 0x7E00       ; 0x0000:0x7E00 (outside 0x8000 FDC DMA buf)
@@ -35,34 +35,34 @@ start:
         int     0x13
         jc      fail
 
-        ; Kernel: LBA 1..128 (CHS 0/0/2), loaded to 0x10000.
+        ; Kernel: LBA 1..256 (CHS 0/0/2), loaded to 0x10000.
         mov     ax, KERNEL_SEG
         mov     es, ax
         xor     bx, bx
         mov     byte [cyl], 0
         mov     byte [head], 0
         mov     byte [sect], 2
-        mov     byte [left], KERNEL_SECTORS
+        mov     word [left], KERNEL_SECTORS
         call    load_sectors
 
-        ; Program pack: LBA 129..192 (CHS 3/1/4), loaded to 0x70000.
+        ; Program pack: LBA 257..320 (CHS 7/0/6), loaded to 0x70000.
         mov     ax, PACK_SEG
         mov     es, ax
         xor     bx, bx
-        mov     byte [cyl], 3
-        mov     byte [head], 1
-        mov     byte [sect], 4
-        mov     byte [left], PACK_SECTORS
+        mov     byte [cyl], 7
+        mov     byte [head], 0
+        mov     byte [sect], 6
+        mov     word [left], PACK_SECTORS
         call    load_sectors
 
-        ; Stage 2 VBE/PM trampoline: LBA 193 (CHS 5/0/14), loaded to 0x0000:0x7E00.
+        ; Stage 2 VBE/PM trampoline: LBA 321 (CHS 8/1/16), loaded to 0x0000:0x7E00.
         xor     ax, ax
         mov     es, ax
         mov     bx, STAGE2_OFFSET
-        mov     byte [cyl], 5
-        mov     byte [head], 0
-        mov     byte [sect], 14
-        mov     byte [left], 1
+        mov     byte [cyl], 8
+        mov     byte [head], 1
+        mov     byte [sect], 16
+        mov     word [left], 1
         call    load_sectors
 
         cmp     word [STAGE2_OFFSET + 510], 0xAA55
@@ -103,7 +103,7 @@ load_sectors:
         jnz     .next
         inc     byte [cyl]
 .next:
-        dec     byte [left]
+        dec     word [left]
         jnz     .loop
         ret
 
@@ -136,10 +136,12 @@ boot_drive      db 0
 cyl             db 0
 head            db 0
 sect            db 0
-left            db 0
+left            dw 0
 retry           db 0
 msg_loading     db 'Loading MiniOS 2.0...', 13, 10, 0
 msg_fail        db 'Floppy read error.', 13, 10, 0
 
         times 510 - ($ - $$) db 0
         dw 0xAA55
+
+

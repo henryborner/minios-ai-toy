@@ -807,7 +807,7 @@ void list_programs(void) {
 /* -----------------------------------------------------------------------------
  * Runtime MiniFS at LBA 200: header, directory, file data.
  * ----------------------------------------------------------------------------- */
-#define FS_LBA 200u
+#define FS_LBA 328u
 #define FS_MAX_ENTRIES 64
 #define FS_MAX_FILE 4096
 
@@ -3903,6 +3903,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

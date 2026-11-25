@@ -16,15 +16,15 @@ BUILD = CDIR / "build"
 IMAGE = ROOT / "MiniOS-C.img"
 FLOPPY_SIZE = 1_474_560
 BOOT_SIZE = 512
-KERNEL_SECTORS = 128
+KERNEL_SECTORS = 256
 KERNEL_MAX = KERNEL_SECTORS * 512
 PACK_SECTORS = 64
 PACK_BYTES = PACK_SECTORS * 512
 PACK_OFFSET = (1 + KERNEL_SECTORS) * 512
-STAGE2_LBA = 193
+STAGE2_LBA = 321
 STAGE2_OFFSET = STAGE2_LBA * 512
 STAGE2_SIZE = 512
-FS_LBA = 200
+FS_LBA = 328
 FS_OFFSET = FS_LBA * 512
 SAVEFS_LBA = 2560
 FS_MAX_BYTES = (SAVEFS_LBA - FS_LBA) * 512
@@ -217,11 +217,11 @@ def main() -> int:
     m = re.search(r"^([0-9a-fA-F]+)\s+g\s+.*__bss_end$", syms, re.MULTILINE)
     bss_end = int(m.group(1), 16) if m else 0
     code_left = KERNEL_MAX - len(kernel_data)
-    bss_left = 0x70000 - bss_end
+    bss_left = 0x400000 - bss_end
     print(f"[kernel] code {len(kernel_data):,} B / {KERNEL_MAX:,} B, BSS end 0x{bss_end:x}, "
           f"headroom code {code_left:,} B / BSS {bss_left:,} B")
-    if bss_end >= 0x70000:
-        raise SystemExit(f"[kernel] BSS overflow: 0x{bss_end:x} >= 0x70000")
+    if bss_end >= 0x400000:
+        raise SystemExit(f"[kernel] BSS overflow: 0x{bss_end:x} >= 0x400000")
     if len(kernel_data) > KERNEL_MAX:
         raise SystemExit("[kernel] 64 KB loader overflow")
 
@@ -279,8 +279,8 @@ def main() -> int:
 
     digest = hashlib.sha256(image).hexdigest()
     print(f"[boot]   {len(boot_data):>6} bytes (LBA 0)")
-    print(f"[kernel] {len(kernel_data):>6} bytes (LBA 1..128, max {KERNEL_MAX})")
-    print(f"[pack]   {len(pack):>6} bytes at offset {PACK_OFFSET} (LBA 129..192)")
+    print(f"[kernel] {len(kernel_data):>6} bytes (LBA 1..{KERNEL_SECTORS}, max {KERNEL_MAX})")
+    print(f"[pack]   {len(pack):>6} bytes at offset {PACK_OFFSET} (LBA {1+KERNEL_SECTORS}..{KERNEL_SECTORS+PACK_SECTORS})")
     print(f"[stage2] {len(stage2_data):>6} bytes at offset {STAGE2_OFFSET} (LBA {STAGE2_LBA})")
     print(f"[minifs] {len(fs):>6} bytes at offset {FS_OFFSET} (LBA {FS_LBA}..{FS_LBA + len(fs)//512 - 1})")
     print(f"[savefs] {260*512:>6} bytes reserved at LBA {SAVEFS_LBA}..2819")
@@ -291,6 +291,8 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+
+
 
 
 

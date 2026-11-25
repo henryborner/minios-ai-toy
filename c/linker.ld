@@ -3,7 +3,7 @@ ENTRY(_start)
 
 SECTIONS
 {
-    . = 0x10000;
+    . = 0x300000;
 
     .text : {
         KEEP(entry.o(.text))
@@ -29,3 +29,4 @@ SECTIONS
     }
     __bss_end = .;
 }
+
