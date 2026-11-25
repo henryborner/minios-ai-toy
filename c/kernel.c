@@ -387,6 +387,7 @@ static void keyboard_scancode(u8 sc) {
     if (sc == 0x3F) { gui_special_pending = 5; return; }
     if (sc == 0x40) { gui_special_pending = 6; return; }
     if (sc == 0x41) { gui_special_pending = 9; return; }
+    if (sc == 0x42) { gui_special_pending = 10; return; }
 
     char ch = keymap[sc];
     if (!ch)

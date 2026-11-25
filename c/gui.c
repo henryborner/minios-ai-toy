@@ -4084,6 +4084,11 @@ void gui_special(int key) {
         focus_window(WIN_C3);
         menu_open = 0;
         list_open = 0;
+    } else if (key == 10) {
+        if (console_count > 4)
+            focus_window(consoles[4].win_id);
+        menu_open = 0;
+        list_open = 0;
     }
 }
 
