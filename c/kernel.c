@@ -1185,6 +1185,8 @@ struct task {
     u32 cr3;
     u32 *pd;
     u32 *upt;
+    u32 pd_phys;
+    u32 upt_phys;
     u8 *kstack;
     u16 kstack_pages;
     struct fd_entry *fds;
@@ -1516,16 +1518,21 @@ static int task_alloc_slot(void) {
 }
 
 static int task_fill_pd(int slot) {
-    tasks[slot].pd = (u32 *)kernel_alloc_pages_zero(1);
-    tasks[slot].upt = (u32 *)kernel_alloc_pages_zero(1);
-    if (!tasks[slot].pd || !tasks[slot].upt)
+    u32 pd_phys = frame_alloc_pages(1);
+    u32 upt_phys = frame_alloc_pages(1);
+    if (!pd_phys || !upt_phys) {
+        if (pd_phys) frame_free_pages(pd_phys, 1);
+        if (upt_phys) frame_free_pages(upt_phys, 1);
         return 0;
-    for (int i = 0; i < 1024; i++) {
-        tasks[slot].pd[i] = 0;
-        tasks[slot].upt[i] = 0;
     }
+    frame_zero(pd_phys, 1);
+    frame_zero(upt_phys, 1);
+    tasks[slot].pd = (u32 *)direct_ptr(pd_phys);
+    tasks[slot].upt = (u32 *)direct_ptr(upt_phys);
+    tasks[slot].pd_phys = pd_phys;
+    tasks[slot].upt_phys = upt_phys;
     tasks[slot].pd[0] = (u32)task_kernel_pt | 0x003;
-    tasks[slot].pd[1] = (u32)tasks[slot].upt | 0x007;
+    tasks[slot].pd[1] = upt_phys | 0x007;
     for (int i = 0; i < 3; i++)
         tasks[slot].pd[4 + i] = (u32)direct_pt[i] | 0x003;
     if (vbe_active)
@@ -1649,7 +1656,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
 
     task_init_kernel_context(slot, frame);
     tasks[slot].kstack_top = top;
-    tasks[slot].cr3 = (u32)tasks[slot].pd;
+    tasks[slot].cr3 = tasks[slot].pd_phys;
     tasks[slot].code_phys = code;
     tasks[slot].stack_phys = stack;
     tasks[slot].heap_phys = 0;
@@ -1782,7 +1789,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
 
     task_init_kernel_context(slot, frame);
     tasks[slot].kstack_top = top;
-    tasks[slot].cr3 = (u32)tasks[slot].pd;
+    tasks[slot].cr3 = tasks[slot].pd_phys;
     tasks[slot].code_phys = code;
     tasks[slot].stack_phys = stack;
     tasks[slot].heap_phys = heap;
@@ -1917,21 +1924,6 @@ static void __attribute__((unused)) switch_task(int next) {
 }
 
 static void task_free_frames(int slot) {
-    if (slot > 0) {
-        if (tasks[slot].pd)
-            kernel_free_pages_ptr(tasks[slot].pd, 1);
-        if (tasks[slot].upt)
-            kernel_free_pages_ptr(tasks[slot].upt, 1);
-        if (tasks[slot].kstack)
-            kernel_free_pages_ptr(tasks[slot].kstack, tasks[slot].kstack_pages);
-        if (tasks[slot].fds)
-            kernel_free_pages_ptr(tasks[slot].fds, 1);
-        tasks[slot].pd = 0;
-        tasks[slot].upt = 0;
-        tasks[slot].kstack = 0;
-        tasks[slot].fds = 0;
-        tasks[slot].kstack_pages = 0;
-    }
     if (tasks[slot].shared_ro) {
         if (shared_ro_refs)
             shared_ro_refs--;
@@ -1948,6 +1940,23 @@ static void task_free_frames(int slot) {
     if (tasks[slot].stack_phys)
         frame_free_pages(tasks[slot].stack_phys, tasks[slot].stack_pages);
     task_free_heap(slot);
+    if (slot > 0) {
+        if (tasks[slot].pd)
+            kernel_free_pages_ptr(tasks[slot].pd, 1);
+        if (tasks[slot].upt)
+            kernel_free_pages_ptr(tasks[slot].upt, 1);
+        if (tasks[slot].kstack)
+            kernel_free_pages_ptr(tasks[slot].kstack, tasks[slot].kstack_pages);
+        if (tasks[slot].fds)
+            kernel_free_pages_ptr(tasks[slot].fds, 1);
+        tasks[slot].pd = 0;
+        tasks[slot].upt = 0;
+        tasks[slot].kstack = 0;
+        tasks[slot].fds = 0;
+        tasks[slot].kstack_pages = 0;
+        tasks[slot].pd_phys = 0;
+        tasks[slot].upt_phys = 0;
+    }
     tasks[slot].code_phys = 0;
     tasks[slot].stack_phys = 0;
     tasks[slot].heap_phys = 0;
@@ -4303,6 +4312,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

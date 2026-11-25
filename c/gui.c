@@ -1585,7 +1585,7 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python pyn pybg spawn jobs fg newcon clear echo console windows\n");
+        term_puts(c, "py python pyn py4 py4test pybg spawn jobs fg newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
@@ -4092,6 +4092,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
