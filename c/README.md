@@ -122,7 +122,7 @@ to its own console even while another console has focus.
   clipboard.
 - Windows: drag, 8-way resize, minimize/maximize, snap, tile/cascade.
 - Desktop icons and Classic/Midnight/Amber themes.
-- Task 0 runs the Shell command loop and GUI event loop.\n- Alt+Tab cycles visible windows forward by window id; Alt+Shift+Tab cycles backward without z-order ping-pong. Right Alt 0xE0/0x38 is handled.\n  The keyboard IRQ only queues a special event; GUI focus changes happen in\n  Task 0 context.
+- Task 0 runs the Shell command loop and GUI event loop.\n- Alt+Tab cycles visible windows forward by window id; Alt+Shift+Tab cycles backward without z-order ping-pong. Right Alt 0xE0/0x38 is handled.\n- The taskbar iterates the window table: consoles, Files, Canvas and other\n  visible/minimized windows get dynamic buttons. Overflow is clipped at the clock;\n  the F4 list remains the full window inventory.\n  The keyboard IRQ only queues a special event; GUI focus changes happen in\n  Task 0 context.
 - Shell commands that create tasks return after the task is READY; Task 0
   continues processing input and yields again when a user task is ready.
 - A pending prompt is deferred while a console has a live task; `task_exit`
@@ -213,6 +213,7 @@ It is a regression test, not a cold-start absolute leak proof.
 - No networking, sound, USB or real-hardware target.
 - SaveFS legacy migration has a one-time window.
 - Not a secure or production OS.
+
 
 
 

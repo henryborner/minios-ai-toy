@@ -44,9 +44,7 @@
 #define HIT_TB_C2 3
 #define HIT_TB_SYS 4
 #define HIT_TB_WIN 5
-#define HIT_TB_C3 6
-#define HIT_TB_APP 7
-#define HIT_TB_FILES 8
+#define HIT_TB_WINDOW_BASE 400000
 #define HIT_MENU_BASE 100
 #define HIT_OK 300
 #define HIT_CTX_BASE 1000
@@ -538,7 +536,7 @@ static int canvas_slot_for_owner(u32 pid) {
     return -1;
 }
 
-static int canvas_first_window(void) {
+static int __attribute__((unused)) canvas_first_window(void) {
     for (int i = 0; i < canvas_live; i++)
         if (canvases[i].open)
             return canvases[i].win_id;
@@ -1849,6 +1847,53 @@ static void draw_desktop(void) {
     draw_icons();
 }
 
+static int taskbar_show(int id) {
+    if (id >= 0 && id <= WIN_C2)
+        return 1;
+    if (id == WIN_SYS)
+        return 0;
+    return wins[id].visible || wins[id].minimized;
+}
+
+static int taskbar_label(int id, char *buf) {
+    if (id >= 0 && id <= WIN_C2) {
+        buf[0] = 'C'; buf[1] = 'o'; buf[2] = 'n';
+        buf[3] = (char)('1' + id); buf[4] = 0;
+        return 4;
+    }
+    const char *s = wins[id].title;
+    if (id == WIN_FILES) s = "Files";
+    else if (id == WIN_ABOUT) s = "About";
+    int n = 0;
+    while (n < 8 && s && s[n])
+        n++;
+    for (int i = 0; i < n; i++)
+        buf[i] = s[i];
+    buf[n] = 0;
+    return n;
+}
+
+static int taskbar_dynamic_hit(int mx, int my) {
+    if (my < TASKBAR_Y)
+        return -1;
+    int dx = 160;
+    int limit = scr_w - 60;
+    for (int id = 0; id < win_live; id++) {
+        if (!taskbar_show(id))
+            continue;
+        char label[10];
+        int n = taskbar_label(id, label);
+        int bw = n * 8 + 10;
+        if (bw < 28) bw = 28;
+        if (dx + bw > limit)
+            break;
+        if (mx >= dx && mx < dx + bw)
+            return id;
+        dx += bw + 2;
+    }
+    return -1;
+}
+
 static void draw_taskbar(void) {
     int ty = TASKBAR_Y;
     fill_rect(0, ty, scr_w, 14, 7);
@@ -1856,15 +1901,23 @@ static void draw_taskbar(void) {
     fill_rect(0, ty + 1, scr_w, 1, 8);
 
     taskbar_button(2, ty + 2, 44, "Start", HIT_START, menu_open);
-    taskbar_button(48, ty + 2, 50, "Con1", HIT_TB_C1, focus_win == WIN_C0);
-    taskbar_button(100, ty + 2, 50, "Con2", HIT_TB_C2, focus_win == WIN_C1);
-    taskbar_button(152, ty + 2, 46, "Sys", HIT_TB_SYS, focus_win == WIN_SYS);
-    taskbar_button(200, ty + 2, 56, "Wins", HIT_TB_WIN, list_open);
-    if (scr_w >= 640) {
-        taskbar_button(258, ty + 2, 50, "Con3", HIT_TB_C3, focus_win == WIN_C2);
-        taskbar_button(310, ty + 2, 58, "Canvas", HIT_TB_APP,
-                       canvas_slot_for_window(focus_win) >= 0);
-        taskbar_button(372, ty + 2, 48, "Files", HIT_TB_FILES, focus_win == WIN_FILES);
+    taskbar_button(48, ty + 2, 50, "Sys", HIT_TB_SYS, focus_win == WIN_SYS);
+    taskbar_button(100, ty + 2, 56, "Wins", HIT_TB_WIN, list_open);
+
+    int dx = 160;
+    int limit = scr_w - 60;
+    for (int id = 0; id < win_live; id++) {
+        if (!taskbar_show(id))
+            continue;
+        char label[10];
+        int n = taskbar_label(id, label);
+        int bw = n * 8 + 10;
+        if (bw < 28) bw = 28;
+        if (dx + bw > limit)
+            break;
+        taskbar_button(dx, ty + 2, bw, label, HIT_TB_WINDOW_BASE + id,
+                       focus_win == id);
+        dx += bw + 2;
     }
 
     int cx = scr_w - 56;
@@ -2835,16 +2888,10 @@ static int hit_test(int x, int y) {
 
     if (y >= TASKBAR_Y) {
         if (inside(x, y, 2, TASKBAR_Y, 44, 14)) return HIT_START;
-        if (inside(x, y, 48, TASKBAR_Y, 50, 14)) return HIT_TB_C1;
-        if (inside(x, y, 100, TASKBAR_Y, 50, 14)) return HIT_TB_C2;
-        if (inside(x, y, 152, TASKBAR_Y, 46, 14)) return HIT_TB_SYS;
-        if (inside(x, y, 200, TASKBAR_Y, 56, 14)) return HIT_TB_WIN;
-        if (scr_w >= 640) {
-            if (inside(x, y, 258, TASKBAR_Y, 50, 14)) return HIT_TB_C3;
-            if (inside(x, y, 310, TASKBAR_Y, 58, 14)) return HIT_TB_APP;
-            if (inside(x, y, 372, TASKBAR_Y, 48, 14)) return HIT_TB_FILES;
-        }
-        return HIT_NONE;
+        if (inside(x, y, 48, TASKBAR_Y, 50, 14)) return HIT_TB_SYS;
+        if (inside(x, y, 100, TASKBAR_Y, 56, 14)) return HIT_TB_WIN;
+        int id = taskbar_dynamic_hit(x, y);
+        return id >= 0 ? (HIT_TB_WINDOW_BASE + id) : HIT_NONE;
     }
 
     for (int i = win_live - 1; i >= 0; i--) {
@@ -3139,16 +3186,10 @@ static void activate_hit(int hit) {
         list_open = 0;
         return;
     }
-    if (hit == HIT_TB_C1) { taskbar_window(WIN_C0); return; }
-    if (hit == HIT_TB_C2) { taskbar_window(WIN_C1); return; }
-    if (hit == HIT_TB_C3) { taskbar_window(WIN_C2); return; }
-    if (hit == HIT_TB_APP) {
-        int id = canvas_first_window();
-        if (id >= 0)
-            taskbar_window(id);
+    if (hit >= HIT_TB_WINDOW_BASE && hit < HIT_TB_WINDOW_BASE + win_live) {
+        taskbar_window(hit - HIT_TB_WINDOW_BASE);
         return;
     }
-    if (hit == HIT_TB_FILES) { taskbar_window(WIN_FILES); return; }
     if (hit >= HIT_SYS_TAB_BASE && hit < HIT_SYS_TAB_BASE + 3) {
         sys_tab = hit - HIT_SYS_TAB_BASE;
         focus_window(WIN_SYS);
