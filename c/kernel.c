@@ -1190,13 +1190,12 @@ struct fd_entry {
 static struct fd_entry fd_table[NTASKS][MAX_FDS];
 
 #define MAX_RAMFILES 16
-#define RAMFILE_PAGES 16
+#define RAMFILE_MAX_PAGES 16
 struct ramfile {
     u8 used;
     char name[16];
-    u32 phys;
-    u32 capacity;
     u32 size;
+    u32 pages[RAMFILE_MAX_PAGES];
 };
 static struct ramfile ramfiles[MAX_RAMFILES];
 
@@ -2290,6 +2289,50 @@ static int ramfile_find(const char *name) {
     return -1;
 }
 
+static void ramfile_free_from(struct ramfile *r, int first) {
+    for (int p = first; p < RAMFILE_MAX_PAGES; p++) {
+        if (r->pages[p]) {
+            frame_free_pages(r->pages[p], 1);
+            r->pages[p] = 0;
+        }
+    }
+}
+
+static int ramfile_rw(struct ramfile *r, u32 off, u8 *buf, u32 len, int wr) {
+    if (!r || off + len < off || off + len > RAMFILE_MAX_PAGES * 0x1000u)
+        return -1;
+    u32 done = 0;
+    while (done < len) {
+        u32 pos = off + done;
+        u32 page = pos >> 12;
+        u32 in = pos & 0xFFFu;
+        u32 chunk = 0x1000u - in;
+        if (chunk > len - done)
+            chunk = len - done;
+        if (wr && !r->pages[page]) {
+            u32 p = frame_alloc_pages(1);
+            if (!p)
+                return (int)done;
+            frame_zero(p, 1);
+            r->pages[page] = p;
+        }
+        if (r->pages[page]) {
+            u8 *dst = (u8 *)direct_ptr(r->pages[page]) + in;
+            if (wr)
+                for (u32 i = 0; i < chunk; i++)
+                    dst[i] = buf[done + i];
+            else
+                for (u32 i = 0; i < chunk; i++)
+                    buf[done + i] = dst[i];
+        } else if (!wr) {
+            for (u32 i = 0; i < chunk; i++)
+                buf[done + i] = 0;
+        }
+        done += chunk;
+    }
+    return (int)done;
+}
+
 static int ramfile_create(const char *name) {
     int idx = -1;
     for (int i = 0; i < MAX_RAMFILES; i++) {
@@ -2300,14 +2343,10 @@ static int ramfile_create(const char *name) {
     }
     if (idx < 0)
         return -1;
-    u32 phys = frame_alloc_pages(RAMFILE_PAGES);
-    if (!phys)
-        return -1;
-    frame_zero(phys, RAMFILE_PAGES);
     ramfiles[idx].used = 1;
-    ramfiles[idx].phys = phys;
-    ramfiles[idx].capacity = RAMFILE_PAGES * 0x1000u;
     ramfiles[idx].size = 0;
+    for (int p = 0; p < RAMFILE_MAX_PAGES; p++)
+        ramfiles[idx].pages[p] = 0;
     for (int i = 0; i < 16; i++)
         ramfiles[idx].name[i] = name[i];
     return idx;
@@ -2316,7 +2355,7 @@ static int ramfile_create(const char *name) {
 static void ramfile_delete(int idx) {
     if (idx < 0 || idx >= MAX_RAMFILES || !ramfiles[idx].used)
         return;
-    frame_free_pages(ramfiles[idx].phys, RAMFILE_PAGES);
+    ramfile_free_from(&ramfiles[idx], 0);
     ramfiles[idx].used = 0;
     for (int t = 0; t < NTASKS; t++) {
         for (int f = 0; f < MAX_FDS; f++) {
@@ -2333,20 +2372,30 @@ int serial_upload_file(const char *name) {
         idx = ramfile_create(name);
     if (idx < 0)
         return 0;
-    ramfiles[idx].size = 0;
-    u8 *p = (u8 *)direct_ptr(ramfiles[idx].phys);
-    u32 n = 0;
+    struct ramfile *r = &ramfiles[idx];
+    ramfile_free_from(r, 0);
+    r->size = 0;
+    u8 tmp[256];
+    u32 n = 0, tn = 0;
     u8 old_busy = runtime_busy;
     runtime_busy = 1;
     gui_sys_print("[serial] send bytes, end with Ctrl-Z...\n");
-    while (n < ramfiles[idx].capacity) {
+    while (n + tn < RAMFILE_MAX_PAGES * 0x1000u) {
         int ch = serial_getc();
         if (ch < 0 || ch == 0x1A)
             break;
-        p[n++] = (u8)ch;
+        tmp[tn++] = (u8)ch;
+        if (tn == sizeof(tmp)) {
+            if (ramfile_rw(r, n, tmp, tn, 1) != (int)tn)
+                break;
+            n += tn;
+            tn = 0;
+        }
     }
+    if (tn && ramfile_rw(r, n, tmp, tn, 1) == (int)tn)
+        n += tn;
     runtime_busy = old_busy;
-    ramfiles[idx].size = n;
+    r->size = n;
     gui_sys_print("[serial] upload done: ");
     if (n >= 100000) gui_sys_print("?");
     else {
@@ -2366,13 +2415,20 @@ int serial_download_file(const char *name) {
     if (idx < 0)
         return 0;
     struct ramfile *r = &ramfiles[idx];
-    u8 *p = (u8 *)direct_ptr(r->phys);
     serial_puts("<<<FILE ");
     for (int i = 0; i < 16 && r->name[i]; i++)
         serial_putc(r->name[i]);
     serial_puts(">>>\n");
-    for (u32 i = 0; i < r->size; i++)
-        serial_putc((char)p[i]);
+    u8 tmp[256];
+    for (u32 i = 0; i < r->size; ) {
+        u32 n = r->size - i;
+        if (n > sizeof(tmp)) n = sizeof(tmp);
+        if (ramfile_rw(r, i, tmp, n, 0) != (int)n)
+            break;
+        for (u32 j = 0; j < n; j++)
+            serial_putc((char)tmp[j]);
+        i += n;
+    }
     serial_puts("\n<<<END>>>\n");
     return 1;
 }
@@ -2386,7 +2442,7 @@ void serial_info(void) {
  * ----------------------------------------------------------------------------- */
 #define SAVE_HEADER_LBA  2560u
 #define SAVE_DATA_LBA    2561u
-#define SAVE_DATA_SECTORS 256u
+#define SAVE_DATA_SECTORS 259u
 #define SAVE_MAGIC "MSV1"
 
 struct savefs_entry {
@@ -2427,32 +2483,42 @@ static int savefs_sync(void) {
     h.magic[0] = 'M'; h.magic[1] = 'S'; h.magic[2] = 'V'; h.magic[3] = '2';
     h.generation = ++savefs_generation;
 
-    u32 lba = SAVE_DATA_LBA;
-    u32 count = 0;
+    u32 total = 0, count = 0;
     for (int i = 0; i < MAX_RAMFILES; i++) {
         if (!ramfiles[i].used)
             continue;
-        if (count >= 16 || ramfiles[i].size > RAMFILE_PAGES * 0x1000u)
+        if (count >= 16 || ramfiles[i].size > RAMFILE_MAX_PAGES * 0x1000u)
             return 0;
-        u32 sectors = (ramfiles[i].size + 511u) / 512u;
-        if (lba + sectors > SAVE_DATA_LBA + SAVE_DATA_SECTORS)
-            return 0;
-        const u8 *data = (const u8 *)direct_ptr(ramfiles[i].phys);
+        total += (ramfiles[i].size + 511u) / 512u;
+        count++;
+    }
+    if (total > SAVE_DATA_SECTORS)
+        return 0;
+
+    u32 lba = SAVE_DATA_LBA;
+    count = 0;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used)
+            continue;
+        struct ramfile *r = &ramfiles[i];
+        u32 sectors = (r->size + 511u) / 512u;
+        u32 crc = 0xFFFFFFFFu;
         for (u32 s = 0; s < sectors; s++) {
             for (int j = 0; j < 512; j++)
                 fs_sector[j] = 0;
-            u32 chunk = ramfiles[i].size - s * 512u;
+            u32 chunk = r->size - s * 512u;
             if (chunk > 512) chunk = 512;
-            for (u32 j = 0; j < chunk; j++)
-                fs_sector[j] = data[s * 512u + j];
+            if (ramfile_rw(r, s * 512u, fs_sector, chunk, 0) != (int)chunk)
+                return 0;
+            crc = crc32_bytes(crc, fs_sector, chunk);
             if (!fdc_write_sector(lba + s, fs_sector))
                 return 0;
         }
         for (int j = 0; j < 16; j++)
-            h.entries[count].name[j] = ramfiles[i].name[j];
-        h.entries[count].size = ramfiles[i].size;
+            h.entries[count].name[j] = r->name[j];
+        h.entries[count].size = r->size;
         h.entries[count].start_lba = lba;
-        h.entries[count].crc = crc32_finish(crc32_bytes(0xFFFFFFFFu, data, ramfiles[i].size));
+        h.entries[count].crc = crc32_finish(crc);
         count++;
         lba += sectors;
     }
@@ -2484,11 +2550,12 @@ static int savefs_restore(void) {
         : (u32)sizeof(h);
     if (crc32_finish(crc32_bytes(0xFFFFFFFFu, hp, hdr_len)) != stored)
         return 0;
-    if (h.count > 16)
+    u32 max_entries = (h.magic[3] == '1') ? 8u : 16u;
+    if (h.count > max_entries)
         return 0;
 
     for (u32 i = 0; i < h.count; i++) {
-        if (h.entries[i].size > RAMFILE_PAGES * 0x1000u)
+        if (h.entries[i].size > RAMFILE_MAX_PAGES * 0x1000u)
             return 0;
         u32 sectors = (h.entries[i].size + 511u) / 512u;
         if (h.entries[i].start_lba < SAVE_DATA_LBA ||
@@ -2504,7 +2571,6 @@ static int savefs_restore(void) {
             goto fail;
         made[made_count++] = idx;
         struct ramfile *r = &ramfiles[idx];
-        u8 *dst = (u8 *)direct_ptr(r->phys);
         u32 sectors = (h.entries[i].size + 511u) / 512u;
         u32 crc = 0xFFFFFFFFu;
         u32 done = 0;
@@ -2513,8 +2579,8 @@ static int savefs_restore(void) {
                 goto fail;
             u32 chunk = h.entries[i].size - done;
             if (chunk > 512) chunk = 512;
-            for (u32 j = 0; j < chunk; j++)
-                dst[done + j] = fs_sector[j];
+            if (ramfile_rw(r, done, fs_sector, chunk, 1) != (int)chunk)
+                goto fail;
             crc = crc32_bytes(crc, fs_sector, chunk);
             done += chunk;
         }
@@ -2605,10 +2671,11 @@ static int fd_read(int fd, u8 *buf, u32 len) {
         u32 n = r->size - f->offset;
         if (n > len)
             n = len;
-        u8 *p = (u8 *)direct_ptr(r->phys) + f->offset;
-        for (u32 i = 0; i < n; i++)
-            buf[i] = p[i];
-        f->offset += n;
+        int got = ramfile_rw(r, f->offset, buf, n, 0);
+        if (got < 0)
+            return -1;
+        f->offset += (u32)got;
+        n = (u32)got;
         f->size = r->size;
         return (int)n;
     }
@@ -2665,6 +2732,7 @@ static int fd_open_ex(const char *name, u32 flags) {
         e->size = ramfiles[ri].size;
         e->offset = 0;
         if ((flags & O_TRUNC) && e->writable) {
+            ramfile_free_from(&ramfiles[ri], 0);
             ramfiles[ri].size = 0;
             e->size = 0;
         }
@@ -2709,12 +2777,13 @@ static int fd_write(int fd, const u8 *buf, u32 len) {
     if (f->ram_index >= MAX_RAMFILES || !ramfiles[f->ram_index].used)
         return -1;
     struct ramfile *r = &ramfiles[f->ram_index];
-    if (f->offset + len > r->capacity)
+    if (f->offset + len > RAMFILE_MAX_PAGES * 0x1000u)
         return -1;
-    u8 *p = (u8 *)direct_ptr(r->phys) + f->offset;
-    for (u32 i = 0; i < len; i++)
-        p[i] = buf[i];
-    f->offset += len;
+    int wrote = ramfile_rw(r, f->offset, (u8 *)buf, len, 1);
+    if (wrote <= 0)
+        return -1;
+    f->offset += (u32)wrote;
+    len = (u32)wrote;
     if (f->offset > r->size)
         r->size = f->offset;
     f->size = r->size;
