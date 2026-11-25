@@ -178,7 +178,7 @@
 ### Stage 15：原生图形桌面应用套件（像素画板 `Paint` + 交互函数绘图仪 + 桌面小游戏）
 **目标**：用冻结 Python 模块 + `Canvas 2.0` 打造一套让人眼前一亮的图形化桌面小程序，并接入开始菜单。
 
-- [ ] **15.1 256 色像素画板 `c/pylib/paint.py`（Shell 命令 `paint [NAME.PIC]`）**
+- [x] **15.1 256 色像素画板 `c/pylib/paint.py`（Shell 命令 `paint [NAME.PIC]`）**
   - 在 `300×200` Canvas 窗口构建完整迷你画图软件：左侧工具按钮（铅笔、直线、矩形、圆、油漆桶填充、清屏、保存、导出 Python 列表），底部色板条点击选色，鼠标左键作画、右键吸管取色；
   - 支持紧凑 RLE 格式保存至 `RAMFS`（如 `ART.PIC`），配合 `sync` 跨重启永久保存用户的像素画作品！
 - [ ] **15.2 交互式数学函数绘图仪升级（`c/pylib/demos.py` / `plot`）**
@@ -227,6 +227,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 
