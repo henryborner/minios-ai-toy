@@ -133,6 +133,8 @@ static int term_dark;
 static int canvas_open;
 static int canvas_batch;
 static int canvas_key_capture;
+static volatile int pending_py_flag;
+static char pending_py_name[17];
 static int files_scroll;
 static int files_sel;
 static int sys_tab;
@@ -1033,6 +1035,26 @@ static void launch_python(struct console *c, const char *rest) {
 
     if (!run_user_module_args("MPY.BIN", argc, argv))
         term_puts(c, "Python launch failed.\n");
+}
+
+void gui_request_py(const char *name) {
+    int i = 0;
+    while (name[i] && i < 16) {
+        pending_py_name[i] = name[i];
+        i++;
+    }
+    pending_py_name[i] = 0;
+    pending_py_flag = 1;
+}
+
+void gui_run_pending_py(void) {
+    if (!pending_py_flag)
+        return;
+    pending_py_flag = 0;
+    char name[17];
+    for (int i = 0; i < 17; i++)
+        name[i] = pending_py_name[i];
+    launch_python(&consoles[WIN_C0], name);
 }
 
 static void launch_tool(struct console *c, const char *file, const char *arg) {

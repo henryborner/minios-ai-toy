@@ -22,6 +22,8 @@ int gui_focused_console(void);
 int gui_runtime_keyboard_wanted(void);
 int gui_canvas_keyboard(void);
 void gui_canvas_capture(int on);
+void gui_request_py(const char *name);
+void gui_run_pending_py(void);
 int gui_dirty_pending(void);
 void gui_mark_dirty(void);
 void gui_flush(void);

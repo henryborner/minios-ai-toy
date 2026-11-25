@@ -139,7 +139,14 @@ while True:
     elif ch == "\x12":
         save(lines)
         mod = 0
-        msg = "saved. run with: py " + name
+        try:
+            minios.run_file(name)
+            msg = "saved; queued run " + name
+        except Exception as e:
+            msg = "saved; run failed: " + str(e)
+        print("\x1b[2J\x1b[H", end="")
+        print("run", name)
+        break
     elif ch == "\x11":
         if mod:
             save(lines)

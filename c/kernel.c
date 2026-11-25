@@ -3208,6 +3208,14 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             t = (u8)((t + 1) & 63);
         }
         ((u32 *)frame)[7] = (u32)found;
+    } else if (number == 30) {
+        u32 name = ((u32 *)frame)[4];
+        if (user_str_ok(name, 64)) {
+            gui_request_py((const char *)name);
+            ((u32 *)frame)[7] = 0;
+        } else {
+            ((u32 *)frame)[7] = 0xFFFFFFFFu;
+        }
     } else {
         gui_sys_print("[ring3] unknown syscall.\n");
     }
@@ -3277,6 +3285,7 @@ void kmain(void) {
 
     for (;;) {
         int event = 0;
+        gui_run_pending_py();
 
         if (gui_special_pending) {
             u8 special = gui_special_pending;

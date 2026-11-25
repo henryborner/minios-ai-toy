@@ -32,6 +32,7 @@
 #define SYS_CANVAS_EVENT 27
 #define SYS_HW_IO        28
 #define SYS_POLL_CTRL_C  29
+#define SYS_RUN_PY       30
 
 #define MINIOS_O_CREAT   1u
 #define MINIOS_O_TRUNC   2u
@@ -189,6 +190,10 @@ static inline void sys_beep(uint32_t freq, uint32_t ms) {
 
 static inline int sys_poll_ctrl_c(void) {
     return (int)minios_syscall0(SYS_POLL_CTRL_C);
+}
+
+static inline int sys_run_py(const char *name) {
+    return (int)(int32_t)minios_syscall1(SYS_RUN_PY, (uint32_t)name);
 }
 
 #endif

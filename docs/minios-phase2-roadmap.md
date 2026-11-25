@@ -157,8 +157,8 @@
 ### Stage 14：重写冻结日常瑞士军刀套件（从玩具版升级为真生产力工具！）
 **目标**：充分利用 `MPY.BIN` 宽裕的 512 KB 代码空间（**0 消耗 `kernel.bin` 配额**），将 `c/pylib/` 下的简版脚本全面升级为顺手好用的全功能工具。
 
-- [ ] **14.1 全屏交互式文本/代码编辑器 `c/pylib/ed.py`（Nano-Lite）**
-  - 部分完成：ANSI 全屏渲染、行号/状态栏、原始单键输入、方向键、插入/删除/换行、Ctrl-S/Ctrl-W/Ctrl-Q 已跑通；Ctrl-R 目前只保存并提示，尚未直接启动脚本。
+- [x] **14.1 全屏交互式文本/代码编辑器 `c/pylib/ed.py`（Nano-Lite）**
+  - 完成：ANSI 全屏渲染、行号/状态栏、原始单键输入、方向键、插入/删除/换行、Ctrl-S/Ctrl-W/Ctrl-R/Ctrl-Q；Ctrl-R 通过延迟 `py FILE` 请求在任务退出后执行，实测 A.PY 输出 123。
   - 重写 `ed.py`：支持读取已有文件（MiniFS 文件修改后另存至同名 RAMFS 覆盖层）或新建文件；
   - 利用 ANSI 转义序列在当前 Console 窗口内渲染全屏编辑界面：顶部反色状态栏显示文件名、行列号与 `[Modified]` 状态，正文带行号翻页，方向键自由移动光标、直接打字插入、`Backspace`/`Del` 删字合行、`Enter` 换行、`Ctrl-S` 保存至 RAMFS、`Ctrl-W` 保存并调用 `os.sync()` 刷写软盘、`Ctrl-R` 保存并立即试跑当前 Python 脚本、`Ctrl-Q` 退出重绘清屏。
 - [x] **14.2 程序员多进制速算工作台 `c/pylib/calc.py`**
@@ -227,6 +227,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 

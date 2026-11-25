@@ -200,6 +200,12 @@ static mp_obj_t minios_sysinfo(void) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(minios_sysinfo_obj, minios_sysinfo);
 
+static mp_obj_t minios_run_file(mp_obj_t name_in) {
+    const char *name = mp_obj_str_get_str(name_in);
+    return mp_obj_new_int(sys_run_py(name));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(minios_run_file_obj, minios_run_file);
+
 static mp_obj_t minios_getchar(void) {
     return mp_obj_new_int(sys_getchar());
 }
@@ -350,6 +356,7 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_sysinfo), MP_ROM_PTR(&minios_sysinfo_obj) },
     { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
     { MP_ROM_QSTR(MP_QSTR_getchar), MP_ROM_PTR(&minios_getchar_obj) },
+    { MP_ROM_QSTR(MP_QSTR_run_file), MP_ROM_PTR(&minios_run_file_obj) },
     { MP_ROM_QSTR(MP_QSTR_mpy_ticks), MP_ROM_PTR(&minios_mpy_ticks_obj) },
     { MP_ROM_QSTR(MP_QSTR_beep), MP_ROM_PTR(&minios_beep_obj) },
 };
