@@ -2507,6 +2507,10 @@ static void serial_u32(u32 v) {
         serial_putc(b[--n]);
 }
 
+void serial_selftest_result(int ok) {
+    serial_puts(ok ? "[selftest] PASS\r\n" : "[selftest] FAIL\r\n");
+}
+
 void serial_metrics(void) {
     extern u32 kernel_free_frames(void);
     extern u32 kernel_total_frames(void);
@@ -2557,6 +2561,7 @@ static u32 crc32_finish(u32 crc) {
     return ~crc;
 }
 
+#if 0
 static int savefs_sync(void) {
     struct savefs_header h;
     u8 *hp = (u8 *)&h;
@@ -2676,6 +2681,197 @@ fail:
     for (int i = 0; i < made_count; i++)
         ramfile_delete(made[i]);
     return 0;
+}
+
+#endif
+
+#define SAVE3_HEADER_A 2560u
+#define SAVE3_DATA_A   2561u
+#define SAVE3_HEADER_B 2690u
+#define SAVE3_DATA_B   2691u
+#define SAVE3_SECTORS  129u
+static int savefs_active = -1;
+
+static int save3_read_header(u32 lba, struct savefs_header *h) {
+    if (!fdc_read_sector(lba, fs_sector))
+        return 0;
+    u8 *hp = (u8 *)h;
+    for (u32 i = 0; i < sizeof(*h); i++)
+        hp[i] = fs_sector[i];
+    return 1;
+}
+
+static int save3_check(struct savefs_header *h, u32 data_lba) {
+    if (h->magic[0] != 'M' || h->magic[1] != 'S' ||
+        h->magic[2] != 'V' || h->magic[3] != '3')
+        return 0;
+    u32 crc = h->header_crc;
+    h->header_crc = 0;
+    if (crc32_finish(crc32_bytes(0xFFFFFFFFu, (u8 *)h, sizeof(*h))) != crc)
+        return 0;
+    if (h->count > 16)
+        return 0;
+    for (u32 i = 0; i < h->count; i++) {
+        u32 sec = (h->entries[i].size + 511u) / 512u;
+        if (h->entries[i].size > RAMFILE_MAX_PAGES * 0x1000u)
+            return 0;
+        if (h->entries[i].start_lba < data_lba ||
+            h->entries[i].start_lba + sec > data_lba + SAVE3_SECTORS)
+            return 0;
+    }
+    return 1;
+}
+
+static int save3_load(struct savefs_header *h) {
+    int made[16], n = 0;
+    for (u32 i = 0; i < h->count; i++) {
+        int idx = ramfile_create(h->entries[i].name);
+        if (idx < 0)
+            goto fail;
+        made[n++] = idx;
+        struct ramfile *r = &ramfiles[idx];
+        u32 done = 0, crc = 0xFFFFFFFFu;
+        u32 sec = (h->entries[i].size + 511u) / 512u;
+        for (u32 s = 0; s < sec; s++) {
+            if (!fdc_read_sector(h->entries[i].start_lba + s, fs_sector))
+                goto fail;
+            u32 chunk = h->entries[i].size - done;
+            if (chunk > 512) chunk = 512;
+            if (ramfile_rw(r, done, fs_sector, chunk, 1) != (int)chunk)
+                goto fail;
+            crc = crc32_bytes(crc, fs_sector, chunk);
+            done += chunk;
+        }
+        if (crc32_finish(crc) != h->entries[i].crc)
+            goto fail;
+        r->size = h->entries[i].size;
+    }
+    return 1;
+fail:
+    for (int i = 0; i < n; i++)
+        ramfile_delete(made[i]);
+    return 0;
+}
+
+static int savefs_sync(void) {
+    struct savefs_header h;
+    u8 *hp = (u8 *)&h;
+    for (u32 i = 0; i < sizeof(h); i++)
+        hp[i] = 0;
+    h.magic[0] = 'M'; h.magic[1] = 'S'; h.magic[2] = 'V'; h.magic[3] = '3';
+
+    u32 total = 0, count = 0;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used)
+            continue;
+        if (count >= 16 || ramfiles[i].size > RAMFILE_MAX_PAGES * 0x1000u)
+            return 0;
+        total += (ramfiles[i].size + 511u) / 512u;
+        count++;
+    }
+    if (total > SAVE3_SECTORS)
+        return 0;
+
+    int target = (savefs_active == 0) ? 1 : 0;
+    u32 hdr_lba = target ? SAVE3_HEADER_B : SAVE3_HEADER_A;
+    u32 data_lba = target ? SAVE3_DATA_B : SAVE3_DATA_A;
+    u32 lba = data_lba;
+    count = 0;
+    for (int i = 0; i < MAX_RAMFILES; i++) {
+        if (!ramfiles[i].used)
+            continue;
+        struct ramfile *r = &ramfiles[i];
+        u32 sec = (r->size + 511u) / 512u;
+        u32 crc = 0xFFFFFFFFu;
+        for (u32 s = 0; s < sec; s++) {
+            for (int j = 0; j < 512; j++)
+                fs_sector[j] = 0;
+            u32 chunk = r->size - s * 512u;
+            if (chunk > 512) chunk = 512;
+            if (ramfile_rw(r, s * 512u, fs_sector, chunk, 0) != (int)chunk)
+                return 0;
+            crc = crc32_bytes(crc, fs_sector, chunk);
+            if (!fdc_write_sector(lba + s, fs_sector))
+                return 0;
+        }
+        for (int j = 0; j < 16; j++)
+            h.entries[count].name[j] = r->name[j];
+        h.entries[count].size = r->size;
+        h.entries[count].start_lba = lba;
+        h.entries[count].crc = crc32_finish(crc);
+        count++;
+        lba += sec;
+    }
+    h.count = count;
+    h.generation = ++savefs_generation;
+    h.header_crc = crc32_finish(crc32_bytes(0xFFFFFFFFu, hp, sizeof(h)));
+    for (int j = 0; j < 512; j++)
+        fs_sector[j] = 0;
+    for (u32 j = 0; j < sizeof(h); j++)
+        fs_sector[j] = hp[j];
+    if (!fdc_write_sector(hdr_lba, fs_sector))
+        return 0;
+    savefs_active = target;
+    return 1;
+}
+
+static int savefs_restore(void) {
+    struct savefs_header a, b;
+    int va = save3_read_header(SAVE3_HEADER_A, &a) && save3_check(&a, SAVE3_DATA_A);
+    int vb = save3_read_header(SAVE3_HEADER_B, &b) && save3_check(&b, SAVE3_DATA_B);
+    if (va || vb) {
+        struct savefs_header *pick = 0;
+        if (va && (!vb || a.generation >= b.generation))
+            pick = &a;
+        else
+            pick = &b;
+        u32 gen = pick->generation;
+        if (save3_load(pick)) {
+            savefs_generation = gen;
+            savefs_active = (pick == &a) ? 0 : 1;
+            return 1;
+        }
+        if (pick == &a && vb && save3_load(&b)) {
+            savefs_generation = b.generation;
+            savefs_active = 1;
+            return 1;
+        }
+        if (pick == &b && va && save3_load(&a)) {
+            savefs_generation = a.generation;
+            savefs_active = 0;
+            return 1;
+        }
+        return 0;
+    }
+
+    /* Legacy single-slot MSV1/MSV2 import. */
+    struct savefs_header h;
+    if (!save3_read_header(SAVE_HEADER_LBA, &h))
+        return 0;
+    if (h.magic[0] != 'M' || h.magic[1] != 'S' ||
+        h.magic[2] != 'V' || (h.magic[3] != '1' && h.magic[3] != '2'))
+        return 0;
+    u32 stored = h.header_crc;
+    h.header_crc = 0;
+    u32 hdr_len = (h.magic[3] == '1')
+        ? (u32)(16 + 8 * sizeof(struct savefs_entry))
+        : (u32)sizeof(h);
+    if (crc32_finish(crc32_bytes(0xFFFFFFFFu, (u8 *)&h, hdr_len)) != stored)
+        return 0;
+    u32 max_entries = h.magic[3] == '1' ? 8u : 16u;
+    if (h.count > max_entries)
+        return 0;
+    for (u32 i = 0; i < h.count; i++) {
+        if (h.entries[i].size > RAMFILE_MAX_PAGES * 0x1000u)
+            return 0;
+        u32 sec = (h.entries[i].size + 511u) / 512u;
+        if (h.entries[i].start_lba < SAVE_DATA_LBA ||
+            h.entries[i].start_lba + sec > SAVE_DATA_LBA + SAVE_DATA_SECTORS)
+            return 0;
+    }
+    savefs_generation = h.generation;
+    savefs_active = -1;
+    return save3_load(&h);
 }
 
 void sync_savefs(void) {

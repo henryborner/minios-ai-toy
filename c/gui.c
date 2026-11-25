@@ -1162,6 +1162,12 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "sysinfo about ring3 tasks progs\n");
         term_puts(c, "run NAME ls exec disktest\n");
         term_puts(c, "modtest mod NAME utest reboot halt\n");
+    } else if (streq(line, "selftest")) {
+        extern int gui_selftest(void);
+        extern void serial_selftest_result(int ok);
+        int ok = gui_selftest();
+        serial_selftest_result(ok);
+        term_puts(c, ok ? "selftest PASS\n" : "selftest FAIL\n");
     } else if (streq(line, "metrics")) {
         extern void serial_metrics(void);
         serial_metrics();
@@ -1559,6 +1565,25 @@ static void draw_icons(void) {
         fill_rect(x + 2, y + 2, 12, 12, icon_cols[i]);
         text(x + 22, y + 2, icon_names[i], i == icon_sel ? 0 : 15);
     }
+}
+
+int gui_selftest(void) {
+    for (int i = 0; i < 3; i++) {
+        gui_canvas_open("selftest");
+        if (!canvas_buf)
+            return 0;
+        struct gui_canvas_cmd cmd;
+        for (u32 j = 0; j < sizeof(cmd); j++)
+            ((u8 *)&cmd)[j] = 0;
+        cmd.op = 0;
+        cmd.color = (u32)(i + 1);
+        gui_canvas_cmd(&cmd);
+        gui_canvas_present();
+        gui_canvas_close();
+    }
+    focus_window(WIN_C0);
+    gui_dirty = 1;
+    return 1;
 }
 
 void gui_desktop_theme(int t) {

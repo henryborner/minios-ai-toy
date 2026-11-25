@@ -105,3 +105,10 @@ ways. Expect rough edges; do not deploy it anywhere real.
 - Desktop icons and Classic Teal / Midnight Dark / Warm Amber themes
 - python tools/smoke_test.py covers 640x480 and forced 320x200 boot/command/screenshot plus warmed frame-leak checks.
 
+
+## Phase 3A
+
+- SaveFS MSV3 A/B dual-slot atomic commit, with legacy MSV1/MSV2 import
+- Guest selftest command (Canvas open/draw/present/close) writes [selftest] PASS to COM1
+- 	ools/smoke_test.py covers guest selftest plus warmed frame-leak equality in 640 and forced 320 modes
+
