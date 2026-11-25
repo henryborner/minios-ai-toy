@@ -1624,7 +1624,7 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python pyn py4 py4test pybg spawn longjob jobs fg bg stop newcon clear echo console windows\n");
+        term_puts(c, "py python pyn py4 py4test pyntest pybg spawn longjob jobs fg bg stop newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
@@ -1848,6 +1848,18 @@ static void run_command(struct console *c, char *line) {
         run_python_expr(c, line + 1);
     } else if (streq(line, "pystat")) {
         py_stats(c);
+    } else if (streq(line, "pyntest")) {
+        extern int run_demo_n(int n);
+        int self = (int)(c - consoles);
+        while (console_count < 5)
+            if (!gui_new_console())
+                break;
+        c = &consoles[self];
+        term_puts(c, "Launching pyN self-test (5)...\n");
+        if (console_count < 5 || !run_demo_n(5))
+            term_puts(c, "pyntest failed\n");
+        else
+            focus_window(consoles[self].win_id);
     } else if (streq(line, "py4test")) {
         extern int run_four_demo(void);
         term_puts(c, "Launching py4 self-test...\n");
@@ -4137,6 +4149,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 

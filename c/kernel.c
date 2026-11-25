@@ -3009,13 +3009,21 @@ int prepare_long_script(void) {
     return 1;
 }
 
-int run_four_demo(void) {
-    if (!make_demo_script("PYA.PY", 'A') ||
-        !make_demo_script("PYB.PY", 'B') ||
-        !make_demo_script("PYC.PY", 'C') ||
-        !make_demo_script("PYD.PY", 'D'))
+int run_demo_n(int n) {
+    static const char *files[8] = {
+        "PYA.PY", "PYB.PY", "PYC.PY", "PYD.PY",
+        "PYE.PY", "PYF.PY", "PYG.PY", "PYH.PY"
+    };
+    if (n < 1 || n > 8)
         return 0;
-    return run_four_python("PYA.PY", "PYB.PY", "PYC.PY", "PYD.PY");
+    for (int i = 0; i < n; i++)
+        if (!make_demo_script(files[i], (char)('A' + i)))
+            return 0;
+    return run_n_python(files, n);
+}
+
+int run_four_demo(void) {
+    return run_demo_n(4);
 }
 
 int serial_upload_file(const char *name) {
