@@ -3111,7 +3111,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
                     free_frames++;
             u32 ntasks = 0;
             for (int i = 0; i < NTASKS; i++)
-                if (tasks[i].state != TASK_FREE)
+                if (tasks[i].state != TASK_FREE && tasks[i].state != TASK_DONE)
                     ntasks++;
             si->ticks = ticks;
             si->uptime_s = ticks / 100;
@@ -3237,7 +3237,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         }
     } else if (number == 32) {
         u32 out = ((u32 *)frame)[4];
-        u32 max = ((u32 *)frame)[5];
+        u32 max = ((u32 *)frame)[6];
         if (max > 16)
             max = 16;
         if (user_ptr_ok(out, max * sizeof(struct user_taskinfo))) {

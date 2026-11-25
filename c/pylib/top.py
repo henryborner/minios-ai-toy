@@ -37,7 +37,7 @@ def line(v, s, tasks):
 
 
 if mode == "-w":
-    for i in range(8):
+    while True:
         print("\x1b[2J\x1b[H", end="")
         v, s, tasks = snapshot()
         line(v, s, tasks)
@@ -48,7 +48,8 @@ if mode == "-w":
 elif mode == "-g":
     c = minios.Canvas("top -g")
     c.batch(True)
-    for i in range(8):
+    c.capture(True)
+    while True:
         v, s, tasks = snapshot()
         free, total = s[2], s[3]
         c.clear(0)
@@ -64,10 +65,11 @@ elif mode == "-g":
             c.text(8, y, "%d %s %d %s" % (t[0], state_name(t[2]), t[3], t[4]), 10)
             y += 10
         c.present()
-        k = minios.getchar_nb()
-        if k >= 0 and (k == 3 or k == ord("q") or k == ord("Q")):
+        ev = c.event()
+        if ev and ev[0] == 4 and (ev[4] == 3 or ev[4] == ord("q") or ev[4] == ord("Q")):
             break
         time.sleep_ms(300)
+    c.close()
 else:
     v, s, tasks = snapshot()
     line(v, s, tasks)

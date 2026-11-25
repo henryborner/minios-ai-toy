@@ -168,10 +168,10 @@
   - `futil` 支持完整 CLI 子命令：`ls`（彩色区分 `[RAM]`/`[DSK]` + 容量汇总）、`cat <FILE>`（带可选行号 `-n`）、`cp <SRC> <DST>`、`rm <FILE>`、`grep <PATTERN> [FILE]`（高亮匹配词）、`df`（RAMFS 与 SaveFS 剩余空间报告）、`touch` / `write`；
   - 在 `c/gui.c` 新增 Shell 快捷命令直通：`cat <F>`、`cp <A> <B>`、`rm <F>`、`grep <P> [F]`、`df`！
   - `xxd.py` 在 `640×480`（72 列终端）下自动以标准 **每行 16 字节**（`0000: xx xx .. | ................`）输出，在 `320×200` 下自动回退每行 8 字节，并支持偏移与长度参数 `xxd <FILE> [OFFSET] [LEN]`。
-- [ ] **14.4 动态刷新监控器 `c/pylib/top.py`**
-  - 部分完成：`top` 快照、`top -w`、`top -g` 已跑通；已加非阻塞 getchar/tasks API，但任务表输出仍异常，q/Ctrl-C 退出未验收。
+- [x] **14.4 动态刷新监控器 `c/pylib/top.py`**
+  - 完成：快照、`top -w`、`top -g` 持续刷新、任务表、q 退出均通过；syscall32 第二参数修正为 ECX/frame[6]。
   - 支持单次快照 `top`、持续动态刷新 `top -w`（每 500ms 原地刷新彩色内存/任务表，按 `q` 或 `Ctrl-C` 退出）以及图形仪表盘 `top -g`（在 `Canvas` 窗口实时绘制帧池与 CPU tick 心电图）。
-- [ ] **Stage 14 验收**：在 `ed HELLO.PY` 中全屏编辑保存一段多行脚本并按 `Ctrl-R` 当场运行；实测 `calc`、`cat`、`grep`、`df`、`xxd`、`top -g` 全部通过并截图。
+- [x] **Stage 14 验收**：`ed` 全屏编辑 A.PY 后 Ctrl-R 自动跑出 123；calc、cat、grep、df、xxd、top 快照、top -g 任务表全部通过并截图。
 
 ---
 
@@ -227,6 +227,7 @@
   - 编写 `tools/smoke_test.py`：自动启动 QEMU 依次覆盖 VBE `640×480` 与强制 `320×200` 回退双模式，自动执行命令测试、GUI 窗口开关缩放、MicroPython 工具集、`SaveFS` 读写重启验证，并在测试首尾比对 `minios.sysinfo()` 的 `free_frames`，断言 **0 页帧内存泄漏**！
   - 更新根目录 `README.md`（增加 MiniOS 2.0 `v2-protected-c` 高清 Python 桌面分支介绍与对比导航）及 `c/README.md` 最终空间/性能/功能全景文档。
 - [ ] **Stage 18 验收**：`python tools/smoke_test.py` 全绿通过（`0 leaks, 0 faults`），产出三套主题下的 `640×480` 终极桌面全家福截图，镜像精确保持 `1,474,560` 字节！
+
 
 
 

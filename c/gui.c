@@ -731,7 +731,6 @@ static int term_ansi_final(struct console *c, char ch) {
         }
     } else if (ch == 'J') {
         term_clear(c);
-        term_prompt(c);
     }
     return 1;
 }
