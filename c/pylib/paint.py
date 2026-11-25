@@ -6,7 +6,8 @@ name = sys.argv[1] if len(sys.argv) > 1 else "ART.PIC"
 if name in ("paint",):
     name = "ART.PIC"
 
-W, H = 300, 200
+c = minios.Canvas("Paint")
+W, H = c.size()
 pix = bytearray(W * H)
 for _i in range(W * H):
     pix[_i] = 15
@@ -19,7 +20,8 @@ base = None
 TOOLS = [("P", 2, "Pencil"), ("L", 16, "Line"), ("R", 32, "Rect"),
          ("C", 50, "Circle"), ("F", 68, "Fill"), ("S", 86, "Save"), ("Q", 104, "Quit")]
 COLORS = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15]
-PALY = 184
+PALY = H - 16
+PW = max(6, W // 16)
 
 
 def put(x, y, c):
@@ -98,13 +100,12 @@ def draw():
     for label, y, _ in TOOLS:
         c.text(3, y, label, 15)
     for i, col in enumerate(COLORS):
-        x = i * 18 + 4
-        c.rect(x, PALY, 16, 14, col)
-    c.text(22, 188, "tool", 15)
-    c.text(58, 188, tool, 14)
-    c.text(80, 188, "color", 15)
-    c.rect(120, 188, 12, 8, color)
-    c.text(140, 188, "P/L/R/C/F S Q", 10)
+        x = i * PW + 2
+        c.rect(x, PALY, PW - 2, 14, col)
+    c.text(22, PALY - 12, "tool", 15)
+    c.text(58, PALY - 12, tool, 14)
+    c.text(80, PALY - 12, "color", 15)
+    c.rect(120, PALY - 12, 12, 8, color)
     c.present()
 
 
@@ -154,7 +155,6 @@ def save():
 
 
 loaded = load()
-c = minios.Canvas("Paint")
 c.capture(True)
 draw()
 
@@ -181,7 +181,7 @@ while running:
             continue
         if typ == 1:
             if x >= 22 and y >= PALY:
-                idx = (x - 4) // 18
+                idx = (x - 2) // PW
                 if 0 <= idx < 16:
                     color = COLORS[idx]
                     draw()

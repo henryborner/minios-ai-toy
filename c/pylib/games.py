@@ -19,8 +19,8 @@ def rnd(n):
 
 UP, DOWN, LEFT, RIGHT = 0xF7, 0xF8, 0xF9, 0xFA
 CELL = 8
-COLS = 300 // CELL
-ROWS = 180 // CELL
+COLS = 20
+ROWS = 12
 
 
 def load_hs():
@@ -43,7 +43,11 @@ def save_hs(v):
 
 
 def run_snake():
+    global COLS, ROWS
     c = minios.Canvas("Snake")
+    cw, ch = c.size()
+    COLS = max(8, cw // CELL)
+    ROWS = max(6, (ch - 14) // CELL)
     c.capture(True)
     snake = [(10, 10), (9, 10), (8, 10)]
     d = RIGHT
@@ -121,7 +125,8 @@ def run_snake():
 def run_life():
     c = minios.Canvas("Life")
     c.capture(True)
-    w, h = 60, 36
+    cw, ch = c.size()
+    w, h = max(12, (cw - 4) // 4), max(8, (ch - 16) // 4)
     cells = [[0] * w for _ in range(h)]
     for y in range(h):
         for x in range(w):

@@ -55,19 +55,27 @@ msg = "Ctrl-S save  Ctrl-W sync  Ctrl-R save+run  Ctrl-Q quit"
 
 
 def render():
+    vw, vh = minios.video()
+    cols = max(20, vw // 8)
+    avail = max(4, vh // 9 - 4)
     print("\x1b[2J\x1b[H", end="")
     print("\x1b[36mED %s%s  row %d col %d\x1b[0m" %
           (name, " [Modified]" if mod else "", row + 1, col + 1))
-    print("\x1b[90m" + "-" * 70 + "\x1b[0m")
-    for i, ln in enumerate(lines):
+    print("\x1b[90m" + "-" * (cols - 2) + "\x1b[0m")
+    start = 0
+    if row >= avail:
+        start = row - avail + 1
+    end = min(len(lines), start + avail)
+    for i in range(start, end):
+        ln = lines[i]
         mark = ">" if i == row else " "
         num = "%3d " % (i + 1)
         if i == row:
             print("\x1b[1m" + mark + num + ln + "\x1b[0m")
         else:
             print(mark + num + ln)
-    print("\x1b[90m" + "-" * 70 + "\x1b[0m")
-    print(msg)
+    print("\x1b[90m" + "-" * (cols - 2) + "\x1b[0m")
+    print(msg[:cols - 1])
 
 
 render()

@@ -270,6 +270,13 @@ static void text(int x, int y, const char *s, u8 color) {
     }
 }
 
+static void text_clip(int x, int y, const char *s, u8 color, int maxx) {
+    while (*s && x + 8 <= maxx) {
+        draw_char(x, y, *s++, color, 1);
+        x += 8;
+    }
+}
+
 static void text2(int x, int y, const char *s, u8 color) {
     while (*s) {
         draw_char(x, y, *s++, color, 2);
@@ -1560,7 +1567,7 @@ static void draw_desktop(void) {
     fill_rect(0, 0, scr_w, TASKBAR_Y, bg);
     if (scr_w >= 640) {
         text(8, 5, "MiniOS 2.0 - Live MicroPython Desktop", 15);
-        text(scr_w - 232, 5, "640x480 VBE | F4 Windows", 11);
+        text(scr_w - 244, 5, "640x480 VBE | F4 Windows", 11);
     } else {
         text(8, 5, "MiniOS 2.0", 15);
         text(188, 5, "F4 windows", 11);
@@ -1611,7 +1618,7 @@ static void window_frame(int id) {
     fill_rect(w->x, w->y, w->w, w->h, 0);
     fill_rect(w->x + 1, w->y + 1, w->w - 2, w->h - 2, 7);
     fill_rect(w->x + 1, w->y + 1, w->w - 2, 10, active ? 1 : 8);
-    text(w->x + 4, w->y + 2, w->title, 15);
+    text_clip(w->x + 4, w->y + 2, w->title, 15, w->x + w->w - 46);
 
     int max_hit = HIT_MAX_BASE + id;
     if (is_pressed(max_hit))
@@ -1696,7 +1703,7 @@ static void draw_files(void) {
         if (r == files_sel)
             fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
         int c = (r == files_sel) ? 0 : ((kind == 2) ? 10 : 3);
-        text(x + 6, ry, name, c);
+        text_clip(x + 6, ry, name, c, x + w->w - 64);
         int n = 0;
         char sz[16];
         u32 v = size;
