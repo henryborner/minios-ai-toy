@@ -36,9 +36,7 @@
 #define MENU_Y (TASKBAR_Y - MENU_H - 4)
 
 #define LIST_W 188
-#define LIST_H 236
 #define LIST_X ((scr_w - LIST_W) / 2)
-#define LIST_Y ((TASKBAR_Y - LIST_H) / 2)
 
 #define HIT_NONE 0
 #define HIT_START 1
@@ -59,7 +57,7 @@
 #define HIT_MIN_BASE 800
 #define HIT_MAX_BASE 900
 #define HIT_CTX_BASE 1000
-#define HIT_RESIZE_BASE 1500
+#define HIT_RESIZE_BASE 100000
 #define HIT_SYS_TAB_BASE 1600
 #define HIT_SYS_ROW_BASE 1700
 #define HIT_SYS_KILL 1800
@@ -115,6 +113,18 @@ static struct canvas_state *canvas_active;
 static struct window *wins;
 static int *zorder;
 static int win_cap, win_live;
+
+static int list_height(void) {
+    int h = 28 + win_live * 16;
+    int max = TASKBAR_Y - 16;
+    if (h > max) h = max;
+    if (h < 44) h = 44;
+    return h;
+}
+
+static int list_y(void) {
+    return (TASKBAR_Y - list_height()) / 2;
+}
 static void win_tables_grow(void);
 static int win_add(void);
 static void canvas_tables_grow(void);
@@ -654,6 +664,7 @@ static void canvas_tables_grow(void) {
         (struct canvas_state *)kernel_alloc_pages_zero(pages);
     if (!nc)
         return;
+    int active_idx = (canvas_active && canvases) ? (int)(canvas_active - canvases) : -1;
     for (int i = 0; i < canvas_live; i++)
         nc[i] = canvases[i];
     if (canvases) {
@@ -662,6 +673,10 @@ static void canvas_tables_grow(void) {
     }
     canvases = nc;
     canvas_cap = ncap;
+    for (int i = 0; i < canvas_live; i++)
+        if (nc[i].win_id >= 0)
+            wins[nc[i].win_id].title = nc[i].title;
+    canvas_active = (active_idx >= 0) ? &canvases[active_idx] : &canvases[0];
 }
 
 static void init_windows(void) {
@@ -2119,14 +2134,16 @@ static void draw_menu(void) {
 static void draw_list(void) {
     if (!list_open)
         return;
-    fill_rect(LIST_X + 3, LIST_Y + 3, LIST_W, LIST_H, 8);
-    fill_rect(LIST_X, LIST_Y, LIST_W, LIST_H, 0);
-    fill_rect(LIST_X + 1, LIST_Y + 1, LIST_W - 2, LIST_H - 2, 7);
-    fill_rect(LIST_X + 1, LIST_Y + 1, LIST_W - 2, 10, 1);
-    text(LIST_X + 4, LIST_Y + 2, "Windows (F4)", 15);
+    clip_set(LIST_X + 1, list_y() + 1, LIST_W - 2, list_height() - 2);
+    fill_rect(LIST_X + 3, list_y() + 3, LIST_W, list_height(), 8);
+    fill_rect(LIST_X, list_y(), LIST_W, list_height(), 0);
+    fill_rect(LIST_X + 1, list_y() + 1, LIST_W - 2, list_height() - 2, 7);
+    fill_rect(LIST_X + 1, list_y() + 1, LIST_W - 2, 10, 1);
+    text(LIST_X + 4, list_y() + 2, "Windows (F4)", 15);
 
-    for (int i = 0; i < win_live; i++) {
-        int iy = LIST_Y + 14 + i * 16;
+    int list_max = (list_height() - 28) / 16;
+    for (int i = 0; i < win_live && i < list_max; i++) {
+        int iy = list_y() + 14 + i * 16;
         int hit = HIT_LIST_BASE + i;
         int selected = (list_sel == i);
         if (is_pressed(hit) || selected) {
@@ -2142,7 +2159,8 @@ static void draw_list(void) {
         else if (!wins[i].visible)
             text(LIST_X + LIST_W - 16, iy + 3, "-", 8);
     }
-    text(LIST_X + 6, LIST_Y + LIST_H - 12, "Tab/Enter/Esc", 8);
+    text(LIST_X + 6, list_y() + list_height() - 12, "Tab/Enter/Esc", 8);
+    clip_full();
 }
 
 static void cursor_capture(void) {
@@ -2796,8 +2814,9 @@ static int hit_test(int x, int y) {
         return HIT_NONE;
     }
     if (list_open) {
-        for (int i = 0; i < win_live; i++) {
-            int iy = LIST_Y + 14 + i * 16;
+        int list_max = (list_height() - 28) / 16;
+        for (int i = 0; i < win_live && i < list_max; i++) {
+            int iy = list_y() + 14 + i * 16;
             if (inside(x, y, LIST_X + 3, iy, LIST_W - 6, 14))
                 return HIT_LIST_BASE + i;
         }
@@ -3223,11 +3242,9 @@ static void activate_hit(int hit) {
         int cslot = canvas_slot_for_window(id);
         if (cslot >= 0) {
             canvas_active = &canvases[cslot];
-            canvas_open = 0;
             canvas_key_capture = 0;
             canvas_push_event(GUI_EV_CLOSE, 0, 0, 0, 0);
             canvas_queue[(u8)((canvas_qhead + 31) & 31)].closed = 1;
-            canvas_active->owner_pid = 0;
         }
         hide_window(id);
         return;
@@ -3637,18 +3654,11 @@ void gui_key(char ch) {
 }
 
 static void gui_cycle_window(int dir) {
-    int pos = -1;
-    for (int i = 0; i < win_live; i++)
-        if (zorder[i] == focus_win) {
-            pos = i;
-            break;
-        }
-    if (pos < 0)
-        pos = win_live - 1;
+    int start = focus_win;
     for (int k = 1; k <= win_live; k++) {
-        int p = (pos + dir * k) % win_live;
-        if (p < 0) p += win_live;
-        int id = zorder[p];
+        int id = start + dir * k;
+        while (id < 0) id += win_live;
+        id %= win_live;
         if (!wins[id].visible || wins[id].minimized)
             continue;
         focus_window(id);
@@ -3750,6 +3760,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 

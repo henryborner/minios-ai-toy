@@ -282,6 +282,14 @@ static void keyboard_scancode(u8 sc) {
     }
     if (extended) {
         extended = 0;
+        if (sc == 0x38) {
+            alt_down = 1;
+            return;
+        }
+        if (sc == 0xB8) {
+            alt_down = 0;
+            return;
+        }
         if (sc & 0x80)
             return;
         if (sc == 0x48) kbd_push(KEY_UP);
@@ -1607,6 +1615,21 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     if (ro_pages > code_pages)
         return -1;
     u32 data_pages = code_pages - ro_pages;
+    int use_shared = ro_pages > 0;
+    if (use_shared && shared_ro_phys &&
+        (shared_ro_pages != ro_pages || shared_ro_image != image)) {
+        if (shared_ro_refs == 0) {
+            frame_free_pages(shared_ro_phys, shared_ro_pages);
+            shared_ro_phys = 0;
+            shared_ro_pages = 0;
+            shared_ro_image = 0;
+        } else {
+            /* Another MPY image is live: fall back to a private full copy. */
+            use_shared = 0;
+            ro_pages = 0;
+            data_pages = code_pages;
+        }
+    }
 
     u32 code = data_pages ? frame_alloc_pages(data_pages) : 0;
     u32 stack = frame_alloc_pages(BIG_STACK_PAGES);
@@ -1619,7 +1642,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     }
 
     u8 *src = (u8 *)BIG_CODE_PHYS;
-    if (ro_pages) {
+    if (use_shared) {
         if (!shared_ro_phys) {
             shared_ro_phys = frame_alloc_pages(ro_pages);
             if (!shared_ro_phys) {
@@ -1633,11 +1656,6 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
             shared_ro_pages = ro_pages;
             shared_ro_image = image;
             shared_ro_refs = 0;
-        } else if (shared_ro_pages != ro_pages || shared_ro_image != image) {
-            if (code) frame_free_pages(code, data_pages);
-            frame_free_pages(stack, BIG_STACK_PAGES);
-            frame_free_pages(heap, BIG_HEAP_PAGES);
-            return -1;
         }
     }
     if (data_pages) {
@@ -2046,9 +2064,16 @@ int task_kill_pid(u32 pid) {
 
     tasks[target].kill_pending = 0;
     tasks[target].exit_code = 0xFFFFu;
+    int cid = tasks[target].console_id;
+    u32 tpid = tasks[target].pid;
+    tasks[target].state = TASK_DONE;
     wake_parent(target);
     task_free_frames(target);
-    tasks[target].state = TASK_DONE;
+    extern void gui_canvas_release_owner(u32 pid);
+    extern void gui_prompt_console(int cid);
+    gui_canvas_release_owner(tpid);
+    if (!console_has_live_task(cid))
+        gui_prompt_console(cid);
     return 1;
 }
 
