@@ -48,22 +48,23 @@
 #define HIT_TB_APP 7
 #define HIT_TB_FILES 8
 #define HIT_MENU_BASE 100
-#define HIT_CLOSE_BASE 200
 #define HIT_OK 300
-#define HIT_LIST_BASE 400
-#define HIT_TITLE_BASE 500
-#define HIT_BODY_BASE 600
-#define HIT_SCROLL_BASE 700
-#define HIT_MIN_BASE 800
-#define HIT_MAX_BASE 900
 #define HIT_CTX_BASE 1000
-#define HIT_RESIZE_BASE 100000
 #define HIT_SYS_TAB_BASE 1600
 #define HIT_SYS_ROW_BASE 1700
 #define HIT_SYS_KILL 1800
 #define HIT_FILES_ROW_BASE 1900
 #define HIT_FILES_BTN_BASE 2000
 #define HIT_ICON_BASE 2100
+/* Per-window ranges are spaced so a growable window table cannot collide. */
+#define HIT_CLOSE_BASE 10000
+#define HIT_LIST_BASE 20000
+#define HIT_TITLE_BASE 30000
+#define HIT_BODY_BASE 40000
+#define HIT_SCROLL_BASE 50000
+#define HIT_MIN_BASE 60000
+#define HIT_MAX_BASE 70000
+#define HIT_RESIZE_BASE 200000
 #define CANVAS_MAX_W 600
 #define CANVAS_MAX_H 420
 
