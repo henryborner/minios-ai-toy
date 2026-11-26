@@ -19,6 +19,7 @@ extern volatile u32 ticks;
 
 static volatile u8 fdc_irq_seen;
 static volatile u8 fdc_hold_irq;
+static volatile u8 fdc_fail_next;
 static u8 fdc_ready;
 static u8 cur_cyl;
 static u8 cur_head;
@@ -55,6 +56,22 @@ void fdc_release_hold(void) {
 
 void fdc_invalidate(void) {
     cache_valid = 0;
+}
+
+static void delay_ms(int ms);
+
+void fdc_inject_fault(void) {
+    fdc_fail_next = 1;
+}
+
+static void fdc_reset_controller(void) {
+    outb(FDC_DOR, 0x00);
+    delay_ms(20);
+    outb(FDC_DOR, 0x1C);
+    fdc_ready = 0;
+    cache_valid = 0;
+    fdc_irq_seen = 0;
+    delay_ms(200);
 }
 
 static void delay_ms(int ms) {
@@ -220,7 +237,17 @@ int fdc_read_sector(u32 lba, u8 *dst) {
     if (!kernel_fdc_lock())
         return 0;
     extern int fdc_read_sector_locked(u32 lba, u8 *dst);
-    int r = fdc_read_sector_locked(lba, dst);
+    int r;
+    if (fdc_fail_next) {
+        fdc_fail_next = 0;
+        r = 0;
+    } else {
+        r = fdc_read_sector_locked(lba, dst);
+    }
+    if (!r) {
+        fdc_reset_controller();
+        r = fdc_read_sector_locked(lba, dst);
+    }
     kernel_fdc_unlock();
     return r;
 }

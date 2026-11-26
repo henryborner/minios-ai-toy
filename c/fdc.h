@@ -3,6 +3,7 @@
 
 void fdc_on_irq(void);
 void fdc_invalidate(void);
+void fdc_inject_fault(void);
 void fdc_set_hold(int hold);
 void fdc_release_hold(void);
 int fdc_init(void);

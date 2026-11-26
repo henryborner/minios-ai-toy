@@ -1922,6 +1922,10 @@ static void run_command(struct console *c, char *line) {
             c = &consoles[self];
             focus_window(consoles[self].win_id);
         }
+    } else if (streq(line, "fdcfault")) {
+        extern void fdc_inject_fault(void);
+        fdc_inject_fault();
+        term_puts(c, "fdc: next read fault injected\n");
     } else if (streq(line, "fdchold")) {
         extern void fdc_set_hold(int);
         fdc_set_hold(1);

@@ -1003,7 +1003,10 @@ static int fs_load_file(const char *name, u8 *dst, u32 max, u32 *out_size) {
 }
 
 void list_disk_files(void) {
+    if (!kernel_fdc_lock())
+        return;
     if (!fs_load_dir()) {
+        kernel_fdc_unlock();
         gui_sys_print("[disk] MiniFS read failed.\n");
         return;
     }
@@ -1019,6 +1022,7 @@ void list_disk_files(void) {
         gui_sys_print(name);
         gui_sys_print("\x1b[0m\n");
     }
+    kernel_fdc_unlock();
 }
 
 /* -----------------------------------------------------------------------------
@@ -4643,20 +4647,24 @@ static int sys_stat(const char *name, struct user_stat *out) {
     }
 
     __asm__ __volatile__("sti");
-    int ok = fs_load_dir();
-    __asm__ __volatile__("cli");
-    if (!ok)
-        return -1;
-    struct fs_header *h = (struct fs_header *)fs_dir;
-    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
-    for (int i = 0; i < h->count; i++) {
-        if (fs_name_eq(&entries[i], name)) {
-            out->size = entries[i].size;
-            out->kind = 1;
-            return 0;
+    int r = -1;
+    if (kernel_fdc_lock()) {
+        if (fs_load_dir()) {
+            struct fs_header *h = (struct fs_header *)fs_dir;
+            struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+            for (int i = 0; i < h->count; i++) {
+                if (fs_name_eq(&entries[i], name)) {
+                    out->size = entries[i].size;
+                    out->kind = 1;
+                    r = 0;
+                    break;
+                }
+            }
         }
+        kernel_fdc_unlock();
     }
-    return -1;
+    __asm__ __volatile__("cli");
+    return r;
 }
 
 static int sys_readdir(u32 index, struct user_dirent *out) {
@@ -4675,25 +4683,29 @@ static int sys_readdir(u32 index, struct user_dirent *out) {
     }
 
     __asm__ __volatile__("sti");
-    int ok = fs_load_dir();
-    __asm__ __volatile__("cli");
-    if (!ok)
-        return 0;
-    struct fs_header *h = (struct fs_header *)fs_dir;
-    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
-    for (int i = 0; i < h->count; i++) {
-        if (ramfile_find(entries[i].name) >= 0)
-            continue;
-        if (pos == index) {
-            for (int j = 0; j < 16; j++)
-                out->name[j] = entries[i].name[j];
-            out->size = entries[i].size;
-            out->kind = 1;
-            return 1;
+    int found = 0;
+    if (kernel_fdc_lock()) {
+        if (fs_load_dir()) {
+            struct fs_header *h = (struct fs_header *)fs_dir;
+            struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+            for (int i = 0; i < h->count; i++) {
+                if (ramfile_find(entries[i].name) >= 0)
+                    continue;
+                if (pos == index) {
+                    for (int j = 0; j < 16; j++)
+                        out->name[j] = entries[i].name[j];
+                    out->size = entries[i].size;
+                    out->kind = 1;
+                    found = 1;
+                    break;
+                }
+                pos++;
+            }
         }
-        pos++;
+        kernel_fdc_unlock();
     }
-    return 0;
+    __asm__ __volatile__("cli");
+    return found;
 }
 
 static int fd_unlink(const char *name);
