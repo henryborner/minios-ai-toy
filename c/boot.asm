@@ -73,26 +73,54 @@ start:
 ; -----------------------------------------------------------------------------
 ; E820 memory map -> 0x2000, header at 0x1800 ("MEMA", count at 0x1804).
 ; E801 fallback builds two available ranges.
+MEM_MAGIC       equ 0x414D454D
+MEM_STATUS_OK   equ 1
+MEM_STATUS_TRUNC equ 2
+MEM_STATUS_ERR  equ 3
+
 detect_memory:
-        mov     dword [0x1800], 0x414D454D
-        mov     word  [0x1804], 0
+        mov     dword [0x1800], MEM_MAGIC
+        mov     word  [0x1804], 1          ; handoff version
+        mov     word  [0x1806], 0          ; status
+        mov     word  [0x1808], 0          ; record count
+        mov     word  [0x180A], 24         ; normalized stride
+        mov     dword [0x180C], 0x2300     ; buffer end
         mov     di, 0x2000
         xor     ebx, ebx
 .loop:
+        mov     dword [di + 20], 0
         mov     eax, 0xE820
         mov     edx, 0x534D4150
         mov     ecx, 24
         int     0x15
-        jc      .done
+        jc      .cf
         cmp     eax, 0x534D4150
-        jne     .done
-        inc     word [0x1804]
+        jne     .error
+        cmp     ecx, 20
+        jb      .error
+        cmp     ecx, 24
+        ja      .error
+        inc     word [0x1808]
         add     di, 24
-        cmp     word [0x1804], 32
-        jae     .done
+        mov     ax, [0x1808]
+        cmp     ax, 32
+        jae     .truncated
         test    ebx, ebx
         jnz     .loop
-.done:
+        mov     word [0x1806], MEM_STATUS_OK
+        ret
+.cf:
+        mov     ax, [0x1808]
+        test    ax, ax
+        jz      .error
+        mov     word [0x1806], MEM_STATUS_OK
+        ret
+.truncated:
+        mov     word [0x1806], MEM_STATUS_TRUNC
+        ret
+.error:
+        mov     word [0x1808], 0
+        mov     word [0x1806], MEM_STATUS_ERR
         ret
 
 ; -----------------------------------------------------------------------------

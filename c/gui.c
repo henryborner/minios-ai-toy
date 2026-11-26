@@ -2309,6 +2309,23 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "memmap")) {
+        volatile u32 *magic = (volatile u32 *)0x1800u;
+        volatile u16 *ver = (volatile u16 *)0x1804u;
+        volatile u16 *status = (volatile u16 *)0x1806u;
+        volatile u16 *count = (volatile u16 *)0x1808u;
+        volatile u16 *stride = (volatile u16 *)0x180Au;
+        term_puts(c, "E820 magic=");
+        term_u32(c, *magic);
+        term_puts(c, " ver=");
+        term_u32(c, *ver);
+        term_puts(c, " status=");
+        term_u32(c, *status);
+        term_puts(c, " count=");
+        term_u32(c, *count);
+        term_puts(c, " stride=");
+        term_u32(c, *stride);
+        term_puts(c, "\n");
     } else if (streq(line, "memtest")) {
         extern int kernel_mem_selftest(void);
         if (!kernel_mem_selftest())

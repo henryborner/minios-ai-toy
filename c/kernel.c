@@ -4,6 +4,8 @@
  * ============================================================================= */
 
 #include "gui.h"
+#include "frame_alloc_search.h"
+#include "memmap_normalize.h"
 
 /* pusha frame layout: EDI ESI EBP ESP EBX EDX ECX EAX. */
 #define SYS_ARG1(f) (((u32 *)(f))[4]) /* EBX */
@@ -1536,7 +1538,9 @@ static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
 
 /* One bitmap for all physical pages up to 512 MiB. */
 static u32 frame_bitmap[(MAX_FRAME_PAGES + 31) / 32];
+static u32 frame_alloc_bitmap[(MAX_FRAME_PAGES + 31) / 32];
 static u32 frame_total;
+static u32 frame_used;
 static u8 frames_ready;
 
 /* Never modified while active: safe kernel mapping used during task setup. */
@@ -1552,21 +1556,6 @@ static void *direct_ptr(u32 phys) {
     return (void *)(DIRECT_BASE + (phys - DIRECT_PHYS_START));
 }
 
-static void frame_mark_range(u32 first, u32 end, int used) {
-    if (first >= MAX_FRAME_PAGES)
-        return;
-    if (end > MAX_FRAME_PAGES)
-        end = MAX_FRAME_PAGES;
-    for (u32 p = first; p < end; p++) {
-        if (used)
-            frame_bitmap[p / 32] |= (1u << (p % 32));
-        else {
-            frame_bitmap[p / 32] &= ~(1u << (p % 32));
-            frame_total++;
-        }
-    }
-}
-
 static void frame_init(void) {
     if (frames_ready)
         return;
@@ -1579,43 +1568,34 @@ static void frame_init(void) {
     }
 
     for (u32 i = 0; i < (MAX_FRAME_PAGES + 31) / 32; i++)
-        frame_bitmap[i] = 0xFFFFFFFFu;
+        frame_alloc_bitmap[i] = 0;
     frame_total = 0;
+    frame_used = 0;
 
     volatile u32 *magic = (volatile u32 *)0x1800u;
-    volatile u16 *count = (volatile u16 *)0x1804u;
-    int mapped = 0;
-    if (*magic == 0x414D454Du) {
-        int n = *count;
+    volatile u16 *version = (volatile u16 *)0x1804u;
+    volatile u16 *status = (volatile u16 *)0x1806u;
+    volatile u16 *count = (volatile u16 *)0x1808u;
+    volatile u16 *stride = (volatile u16 *)0x180Au;
+    int n = 0;
+    if (*magic == 0x414D454Du && *version == 1 &&
+        (*status == 1 || *status == 2) && *stride == 24) {
+        n = *count;
         if (n > 32) n = 32;
-        for (int i = 0; i < n; i++) {
-            volatile u32 *e = (volatile u32 *)(0x2000u + (u32)i * 24u);
-            if (e[4] != 1)
-                continue;
-            if (e[1] != 0)
-                continue;
-            u32 base = e[0];
-            u32 len = e[2];
-            if (base >= MAX_PHYS || len == 0)
-                continue;
-            u32 end = base + len;
-            if (end < base || end > MAX_PHYS)
-                end = MAX_PHYS;
-            u32 start = base < FRAME_POOL_START ? FRAME_POOL_START : base;
-            if (start < end) {
-                u32 first = (start + 0xFFFu) / 0x1000u;
-                u32 last = end / 0x1000u;
-                if (first < last) {
-                    frame_mark_range(first, last, 0);
-                    mapped = 1;
-                }
-            }
-        }
     }
-    if (!mapped) {
-        /* Old-BIOS fallback: use the safe 8..16 MiB window. */
-        frame_mark_range(FRAME_POOL_START / 0x1000u, 0x01000000u / 0x1000u, 0);
+    memmap_entry entries[32];
+    for (int i = 0; i < n; i++) {
+        volatile u32 *e = (volatile u32 *)(0x2000u + (u32)i * 24u);
+        entries[i].base_lo = e[0];
+        entries[i].base_hi = e[1];
+        entries[i].len_lo = e[2];
+        entries[i].len_hi = e[3];
+        entries[i].type = e[4];
     }
+    frame_total = memmap_build(frame_bitmap, MAX_FRAME_PAGES,
+                               FRAME_POOL_START / 0x1000u, entries, n);
+    if (frame_total == 0)
+        serial_puts("[mm] no usable E820 memory\n");
     frames_ready = 1;
 }
 
@@ -1624,48 +1604,47 @@ static inline void frame_invlpg(u32 va) {
 }
 
 static u32 frame_alloc_pages(u32 pages) {
-    if (pages == 0 || pages > frame_total)
+    if (pages == 0 || pages > frame_total - frame_used)
         return 0;
-    u32 start = 0;
-    while (start + pages <= MAX_FRAME_PAGES) {
-        u32 run = 0;
-        while (run < pages) {
-            u32 bit = start + run;
-            if (frame_bitmap[bit / 32] & (1u << (bit % 32)))
-                break;
-            run++;
-        }
-        if (run == pages) {
-            for (u32 j = 0; j < pages; j++) {
-                u32 bit = start + j;
-                frame_bitmap[bit / 32] |= (1u << (bit % 32));
-                u32 phys = bit * 0x1000u;
-                if (phys >= DIRECT_PHYS_START && phys < MAX_PHYS) {
-                    u32 idx = (phys - DIRECT_PHYS_START) >> 12;
-                    u32 *pte = &direct_pt[idx / 1024u][idx % 1024u];
-                    if (!(*pte & 1)) {
-                        *pte = phys | 0x003;
-                        frame_invlpg(DIRECT_BASE + (phys - DIRECT_PHYS_START));
-                    }
-                }
+    u32 start = frame_find_run(frame_bitmap, MAX_FRAME_PAGES, pages);
+    if (start == 0xFFFFFFFFu)
+        return 0;
+    for (u32 j = 0; j < pages; j++) {
+        u32 bit = start + j;
+        frame_bitmap[bit / 32] |= (1u << (bit % 32));
+        frame_alloc_bitmap[bit / 32] |= (1u << (bit % 32));
+        u32 phys = bit * 0x1000u;
+        if (phys >= DIRECT_PHYS_START && phys < MAX_PHYS) {
+            u32 idx = (phys - DIRECT_PHYS_START) >> 12;
+            u32 *pte = &direct_pt[idx / 1024u][idx % 1024u];
+            if (!(*pte & 1)) {
+                *pte = phys | 0x003;
+                frame_invlpg(DIRECT_BASE + (phys - DIRECT_PHYS_START));
             }
-            return start * 0x1000u;
         }
-        start += run + 1;
     }
-    return 0;
+    frame_used += pages;
+    return start * 0x1000u;
 }
 
 static void frame_free_pages(u32 base, u32 pages) {
-    if (pages == 0 || base >= MAX_PHYS)
+    if (pages == 0 || (base & 0xFFFu) || base >= MAX_PHYS)
         return;
     u32 start = base / 0x1000u;
     if (start + pages > MAX_FRAME_PAGES)
-        pages = MAX_FRAME_PAGES - start;
+        return;
+    for (u32 j = 0; j < pages; j++) {
+        u32 bit = start + j;
+        if (!(frame_bitmap[bit / 32] & (1u << (bit % 32))) ||
+            !(frame_alloc_bitmap[bit / 32] & (1u << (bit % 32))))
+            return;
+    }
     for (u32 j = 0; j < pages; j++) {
         u32 bit = start + j;
         frame_bitmap[bit / 32] &= ~(1u << (bit % 32));
+        frame_alloc_bitmap[bit / 32] &= ~(1u << (bit % 32));
     }
+    frame_used -= pages;
 }
 
 static void frame_zero(u32 phys, u32 pages) {
@@ -1675,11 +1654,7 @@ static void frame_zero(u32 phys, u32 pages) {
 }
 
 u32 kernel_free_frames(void) {
-    u32 n = 0;
-    for (u32 i = 0; i < MAX_FRAME_PAGES; i++)
-        if (!(frame_bitmap[i / 32] & (1u << (i % 32))))
-            n++;
-    return n;
+    return frame_total - frame_used;
 }
 
 u32 kernel_total_frames(void) {
@@ -1712,12 +1687,30 @@ int kernel_mem_selftest(void) {
     }
     for (u32 i = 0; i < allocated; i++)
         frame_free_pages(pages[i], 1);
+    u32 after_first_free = kernel_free_frames();
+    if (allocated)
+        frame_free_pages(pages[0], 1); /* must be rejected */
+    if (kernel_free_frames() != after_first_free)
+        data_ok = 0;
+
+    u32 high_ok = 0;
+    u32 high = frame_alloc_pages(2049);
+    if (high) {
+        u32 last = high + 2048u * 0x1000u;
+        if (last >= 0x01000000u) {
+            u8 *v = (u8 *)direct_ptr(last);
+            *(u32 *)v = 0xC001D00Du;
+            high_ok = *(u32 *)v == 0xC001D00Du;
+        }
+        frame_free_pages(high, 2049);
+    }
     u32 restored = kernel_free_frames();
     char buf[96];
     char *p = buf;
     const char *s = "initial=";
     while (*s) *p++ = *s++;
-    u32 vals[4] = { initial, allocated, restored, unique_ok && data_ok };
+    u32 vals[4] = { initial, allocated, restored,
+                    (unique_ok && data_ok && high_ok) };
     for (int k = 0; k < 4; k++) {
         char tmp[12];
         int n = 0;
@@ -1970,9 +1963,8 @@ static int task_guard_pte(u8 *base, int present) {
         return 0;
     direct_pt[idx / 1024u][idx % 1024u] =
         present ? (DIRECT_PHYS_START + idx * 0x1000u) | 0x003 : 0;
-    u32 cr3;
-    __asm__ __volatile__("mov %%cr3, %0; mov %0, %%cr3"
-                         : "=&r"(cr3) : : "memory");
+    u32 va = DIRECT_BASE + idx * 0x1000u;
+    __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
     return 1;
 }
 
