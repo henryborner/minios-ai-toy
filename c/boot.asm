@@ -67,7 +67,33 @@ start:
 
         cmp     word [STAGE2_OFFSET + 510], 0xAA55
         jne     fail
+        call    detect_memory
         jmp     0x0000:STAGE2_OFFSET
+
+; -----------------------------------------------------------------------------
+; E820 memory map -> 0x2000, header at 0x1800 ("MEMA", count at 0x1804).
+; E801 fallback builds two available ranges.
+detect_memory:
+        mov     dword [0x1800], 0x414D454D
+        mov     word  [0x1804], 0
+        mov     di, 0x2000
+        xor     ebx, ebx
+.loop:
+        mov     eax, 0xE820
+        mov     edx, 0x534D4150
+        mov     ecx, 24
+        int     0x15
+        jc      .done
+        cmp     eax, 0x534D4150
+        jne     .done
+        inc     word [0x1804]
+        add     di, 24
+        cmp     word [0x1804], 32
+        jae     .done
+        test    ebx, ebx
+        jnz     .loop
+.done:
+        ret
 
 ; -----------------------------------------------------------------------------
 ; In: ES:BX = destination, cyl/head/sect = CHS, left = sector count.

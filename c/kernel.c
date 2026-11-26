@@ -770,11 +770,20 @@ static void gdt_install(void) {
 
 /* -----------------------------------------------------------------------------
  * Paging: identity-map the first 8 MB, mark the 4 MB user pages U/S.
+ * Physical memory frames are discovered from the boot E820 map.  The
+ * supervisor direct map covers 4..512 MiB at 16 MiB.
  * ----------------------------------------------------------------------------- */
+#define FRAME_POOL_START  0x00800000u
+#define MAX_PHYS          0x20000000u
+#define MAX_FRAME_PAGES   (MAX_PHYS / 0x1000u)
+#define DIRECT_PHYS_START 0x00400000u
+#define DIRECT_BASE       0x01000000u
+#define DIRECT_PT_COUNT   ((MAX_PHYS - DIRECT_PHYS_START) / 0x400000u)
+
 static u32 page_directory[1024] __attribute__((aligned(4096)));
 static u32 page_table0[1024] __attribute__((aligned(4096)));
 static u32 page_table1[1024] __attribute__((aligned(4096)));
-static u32 direct_pt[3][1024] __attribute__((aligned(4096)));
+static u32 direct_pt[DIRECT_PT_COUNT][1024] __attribute__((aligned(4096)));
 
 static void paging_install(void) {
     for (int i = 0; i < 1024; i++) {
@@ -785,7 +794,7 @@ static void paging_install(void) {
 
     page_directory[0] = (u32)page_table0 | 0x003;   /* supervisor 0-4 MB */
     page_directory[1] = (u32)page_table1 | 0x007;   /* user-capable 4-8 MB */
-    for (int i = 0; i < 3; i++)
+    for (u32 i = 0; i < DIRECT_PT_COUNT; i++)
         page_directory[4 + i] = (u32)direct_pt[i] | 0x003;
     if (vbe_active)
         page_directory[VBE_PDE_INDEX] = vbe_pde_entry;
@@ -1233,12 +1242,6 @@ int run_module(const char *name) {
 #define BIG_STACK_SIZE   (BIG_STACK_PAGES * 0x1000u)
 #define BIG_HEAP_SIZE    (BIG_HEAP_PAGES * 0x1000u)
 
-/* Dynamic physical frames are allocated above the single-Ring3 4 MB page. */
-#define FRAME_POOL_START 0x00500000u
-#define FRAME_POOL_END   0x01000000u
-#define FRAME_COUNT      ((FRAME_POOL_END - FRAME_POOL_START) / 0x1000)
-#define DIRECT_PHYS_START 0x00400000u
-#define DIRECT_BASE       0x01000000u
 
 struct task {
     u32 esp;
@@ -1531,8 +1534,9 @@ static int fs_sync_owner = -1;
 
 static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
 
-/* Direct-map the 4-16 MB physical window at 16-28 MB (declared above). */
-static u32 frame_bitmap[(FRAME_COUNT + 31) / 32];
+/* One bitmap for all physical pages up to 512 MiB. */
+static u32 frame_bitmap[(MAX_FRAME_PAGES + 31) / 32];
+static u32 frame_total;
 static u8 frames_ready;
 
 /* Never modified while active: safe kernel mapping used during task setup. */
@@ -1548,29 +1552,83 @@ static void *direct_ptr(u32 phys) {
     return (void *)(DIRECT_BASE + (phys - DIRECT_PHYS_START));
 }
 
+static void frame_mark_range(u32 first, u32 end, int used) {
+    if (first >= MAX_FRAME_PAGES)
+        return;
+    if (end > MAX_FRAME_PAGES)
+        end = MAX_FRAME_PAGES;
+    for (u32 p = first; p < end; p++) {
+        if (used)
+            frame_bitmap[p / 32] |= (1u << (p % 32));
+        else {
+            frame_bitmap[p / 32] &= ~(1u << (p % 32));
+            frame_total++;
+        }
+    }
+}
+
 static void frame_init(void) {
     if (frames_ready)
         return;
-    for (int t = 0; t < 3; t++) {
+
+    for (u32 t = 0; t < DIRECT_PT_COUNT; t++) {
         for (int i = 0; i < 1024; i++) {
             u32 phys = DIRECT_PHYS_START + (u32)t * 0x400000u + (u32)i * 0x1000u;
             direct_pt[t][i] = phys | 0x003;
         }
     }
-    for (u32 i = 0; i < (FRAME_COUNT + 31) / 32; i++)
-        frame_bitmap[i] = 0;
+
+    for (u32 i = 0; i < (MAX_FRAME_PAGES + 31) / 32; i++)
+        frame_bitmap[i] = 0xFFFFFFFFu;
+    frame_total = 0;
+
+    volatile u32 *magic = (volatile u32 *)0x1800u;
+    volatile u16 *count = (volatile u16 *)0x1804u;
+    int mapped = 0;
+    if (*magic == 0x414D454Du) {
+        int n = *count;
+        if (n > 32) n = 32;
+        for (int i = 0; i < n; i++) {
+            volatile u32 *e = (volatile u32 *)(0x2000u + (u32)i * 24u);
+            if (e[4] != 1)
+                continue;
+            if (e[1] != 0)
+                continue;
+            u32 base = e[0];
+            u32 len = e[2];
+            if (base >= MAX_PHYS || len == 0)
+                continue;
+            u32 end = base + len;
+            if (end < base || end > MAX_PHYS)
+                end = MAX_PHYS;
+            u32 start = base < FRAME_POOL_START ? FRAME_POOL_START : base;
+            if (start < end) {
+                u32 first = (start + 0xFFFu) / 0x1000u;
+                u32 last = end / 0x1000u;
+                if (first < last) {
+                    frame_mark_range(first, last, 0);
+                    mapped = 1;
+                }
+            }
+        }
+    }
+    if (!mapped) {
+        /* Old-BIOS fallback: use the safe 8..16 MiB window. */
+        frame_mark_range(FRAME_POOL_START / 0x1000u, 0x01000000u / 0x1000u, 0);
+    }
     frames_ready = 1;
 }
 
 static u32 frame_alloc_pages(u32 pages) {
-    if (pages == 0 || pages > FRAME_COUNT)
+    if (pages == 0 || pages > frame_total)
         return 0;
-    for (u32 start = 0; start + pages <= FRAME_COUNT; start++) {
+    for (u32 start = 0; start + pages <= MAX_FRAME_PAGES; start++) {
         u32 ok = 1;
         for (u32 j = 0; j < pages; j++) {
             u32 bit = start + j;
             if (frame_bitmap[bit / 32] & (1u << (bit % 32))) {
                 ok = 0;
+                start = (bit / 32) * 32 + 31;
                 break;
             }
         }
@@ -1579,18 +1637,27 @@ static u32 frame_alloc_pages(u32 pages) {
         for (u32 j = 0; j < pages; j++) {
             u32 bit = start + j;
             frame_bitmap[bit / 32] |= (1u << (bit % 32));
+            u32 phys = bit * 0x1000u;
+            if (phys >= DIRECT_PHYS_START && phys < MAX_PHYS) {
+                u32 idx = (phys - DIRECT_PHYS_START) >> 12;
+                u32 *pte = &direct_pt[idx / 1024u][idx % 1024u];
+                if (!(*pte & 1)) {
+                    *pte = phys | 0x003;
+                    set_cr3((u32)sched_safe_pd);
+                }
+            }
         }
-        return FRAME_POOL_START + start * 0x1000u;
+        return start * 0x1000u;
     }
     return 0;
 }
 
 static void frame_free_pages(u32 base, u32 pages) {
-    if (base < FRAME_POOL_START || base >= FRAME_POOL_END || pages == 0)
+    if (pages == 0 || base >= MAX_PHYS)
         return;
-    u32 start = (base - FRAME_POOL_START) / 0x1000;
-    if (start + pages > FRAME_COUNT)
-        pages = FRAME_COUNT - start;
+    u32 start = base / 0x1000u;
+    if (start + pages > MAX_FRAME_PAGES)
+        pages = MAX_FRAME_PAGES - start;
     for (u32 j = 0; j < pages; j++) {
         u32 bit = start + j;
         frame_bitmap[bit / 32] &= ~(1u << (bit % 32));
@@ -1605,14 +1672,14 @@ static void frame_zero(u32 phys, u32 pages) {
 
 u32 kernel_free_frames(void) {
     u32 n = 0;
-    for (u32 i = 0; i < FRAME_COUNT; i++)
+    for (u32 i = 0; i < MAX_FRAME_PAGES; i++)
         if (!(frame_bitmap[i / 32] & (1u << (i % 32))))
             n++;
     return n;
 }
 
 u32 kernel_total_frames(void) {
-    return FRAME_COUNT;
+    return frame_total;
 }
 
 /* Used by the GUI for large optional buffers after paging/direct-map init. */
@@ -1638,7 +1705,7 @@ static void task_system_init(void) {
             sched_safe_pd[i] = 0;
         }
         sched_safe_pd[0] = (u32)sched_safe_pt | 0x003;
-        for (int i = 0; i < 3; i++)
+        for (u32 i = 0; i < DIRECT_PT_COUNT; i++)
             sched_safe_pd[4 + i] = (u32)direct_pt[i] | 0x003;
         sched_safe_ready = 1;
     }
@@ -1767,7 +1834,7 @@ static int task_fill_pd(int slot) {
     tasks[slot].upt_phys = upt_phys;
     tasks[slot].pd[0] = (u32)task_kernel_pt | 0x003;
     tasks[slot].pd[1] = upt_phys | 0x007;
-    for (int i = 0; i < 3; i++)
+    for (u32 i = 0; i < DIRECT_PT_COUNT; i++)
         tasks[slot].pd[4 + i] = (u32)direct_pt[i] | 0x003;
     if (vbe_active)
         tasks[slot].pd[VBE_PDE_INDEX] = vbe_pde_entry;
@@ -1842,7 +1909,7 @@ static int task_guard_pte(u8 *base, int present) {
     if (v < DIRECT_BASE)
         return 0;
     u32 idx = (v - DIRECT_BASE) >> 12;
-    if (idx >= 3u * 1024u)
+    if (idx >= (u32)DIRECT_PT_COUNT * 1024u)
         return 0;
     direct_pt[idx / 1024u][idx % 1024u] =
         present ? (DIRECT_PHYS_START + idx * 0x1000u) | 0x003 : 0;
@@ -3028,10 +3095,13 @@ static int task_wait_block(u32 want_pid, int nohang, u32 frame) {
         return -1;
     if (tasks[child].state == TASK_DONE) {
         u32 status = tasks[child].exit_code;
+        if (!tasks[child].frames_freed) {
+            task_free_frames(child);
+            tasks[child].frames_freed = 1;
+        }
         tasks[child].state = TASK_FREE;
         tasks[child].reap_pending = 0;
         tasks[child].frames_freed = 0;
-        task_free_frames(child);
         SYS_RET(frame) = status;
         return 0;
     }
@@ -5225,10 +5295,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 out = SYS_ARG1(frame);
         if (user_ptr_writable(out, sizeof(struct user_sysinfo))) {
             struct user_sysinfo *si = (struct user_sysinfo *)out;
-            u32 free_frames = 0;
-            for (u32 i = 0; i < FRAME_COUNT; i++)
-                if (!(frame_bitmap[i / 32] & (1u << (i % 32))))
-                    free_frames++;
+            u32 free_frames = kernel_free_frames();
             u32 ntasks = 0;
             for (int i = 0; i < task_cap; i++)
                 if (tasks[i].state != TASK_FREE && tasks[i].state != TASK_DONE)
@@ -5236,7 +5303,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             si->ticks = ticks;
             si->uptime_s = ticks / 100;
             si->free_frames = free_frames;
-            si->total_frames = FRAME_COUNT;
+            si->total_frames = kernel_total_frames();
             si->heap_used = heap_used;
             si->tasks = ntasks;
             si->last_module_ticks = user_module_last_ticks;
@@ -5652,6 +5719,9 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
+
 
 
 
