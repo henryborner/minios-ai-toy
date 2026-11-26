@@ -2309,6 +2309,12 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "memtest")) {
+        extern int kernel_mem_selftest(void);
+        if (!kernel_mem_selftest())
+            term_puts(c, "memtest: FAIL\n");
+        else
+            term_puts(c, "memtest: PASS\n");
     } else if (streq(line, "sysinfo")) {
         focus_window(WIN_SYS);
         term_puts(c, "System window opened.\n");

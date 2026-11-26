@@ -1619,35 +1619,39 @@ static void frame_init(void) {
     frames_ready = 1;
 }
 
+static inline void frame_invlpg(u32 va) {
+    __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
+}
+
 static u32 frame_alloc_pages(u32 pages) {
     if (pages == 0 || pages > frame_total)
         return 0;
-    for (u32 start = 0; start + pages <= MAX_FRAME_PAGES; start++) {
-        u32 ok = 1;
-        for (u32 j = 0; j < pages; j++) {
-            u32 bit = start + j;
-            if (frame_bitmap[bit / 32] & (1u << (bit % 32))) {
-                ok = 0;
-                start = (bit / 32) * 32 + 31;
+    u32 start = 0;
+    while (start + pages <= MAX_FRAME_PAGES) {
+        u32 run = 0;
+        while (run < pages) {
+            u32 bit = start + run;
+            if (frame_bitmap[bit / 32] & (1u << (bit % 32)))
                 break;
-            }
+            run++;
         }
-        if (!ok)
-            continue;
-        for (u32 j = 0; j < pages; j++) {
-            u32 bit = start + j;
-            frame_bitmap[bit / 32] |= (1u << (bit % 32));
-            u32 phys = bit * 0x1000u;
-            if (phys >= DIRECT_PHYS_START && phys < MAX_PHYS) {
-                u32 idx = (phys - DIRECT_PHYS_START) >> 12;
-                u32 *pte = &direct_pt[idx / 1024u][idx % 1024u];
-                if (!(*pte & 1)) {
-                    *pte = phys | 0x003;
-                    set_cr3((u32)sched_safe_pd);
+        if (run == pages) {
+            for (u32 j = 0; j < pages; j++) {
+                u32 bit = start + j;
+                frame_bitmap[bit / 32] |= (1u << (bit % 32));
+                u32 phys = bit * 0x1000u;
+                if (phys >= DIRECT_PHYS_START && phys < MAX_PHYS) {
+                    u32 idx = (phys - DIRECT_PHYS_START) >> 12;
+                    u32 *pte = &direct_pt[idx / 1024u][idx % 1024u];
+                    if (!(*pte & 1)) {
+                        *pte = phys | 0x003;
+                        frame_invlpg(DIRECT_BASE + (phys - DIRECT_PHYS_START));
+                    }
                 }
             }
+            return start * 0x1000u;
         }
-        return start * 0x1000u;
+        start += run + 1;
     }
     return 0;
 }
@@ -1680,6 +1684,59 @@ u32 kernel_free_frames(void) {
 
 u32 kernel_total_frames(void) {
     return frame_total;
+}
+
+int kernel_mem_selftest(void) {
+    u32 initial = kernel_free_frames();
+    u32 pages[64];
+    u32 allocated = 0;
+    int unique_ok = 1;
+    for (u32 i = 0; i < 64; i++) {
+        u32 p = frame_alloc_pages(1);
+        if (!p)
+            break;
+        for (u32 j = 0; j < allocated; j++)
+            if (pages[j] == p)
+                unique_ok = 0;
+        pages[allocated++] = p;
+        u8 *v = (u8 *)direct_ptr(p);
+        *(u32 *)v = 0xA5A50000u | i;
+        *(u32 *)(v + 4092) = 0x5A5A0000u | i;
+    }
+    int data_ok = 1;
+    for (u32 i = 0; i < allocated; i++) {
+        u8 *v = (u8 *)direct_ptr(pages[i]);
+        if (*(u32 *)v != (0xA5A50000u | i) ||
+            *(u32 *)(v + 4092) != (0x5A5A0000u | i))
+            data_ok = 0;
+    }
+    for (u32 i = 0; i < allocated; i++)
+        frame_free_pages(pages[i], 1);
+    u32 restored = kernel_free_frames();
+    char buf[96];
+    char *p = buf;
+    const char *s = "initial=";
+    while (*s) *p++ = *s++;
+    u32 vals[4] = { initial, allocated, restored, unique_ok && data_ok };
+    for (int k = 0; k < 4; k++) {
+        char tmp[12];
+        int n = 0;
+        u32 v = vals[k];
+        if (!v) tmp[n++] = '0';
+        while (v) { tmp[n++] = (char)('0' + v % 10); v /= 10; }
+        while (n) *p++ = tmp[--n];
+        if (k == 0) { *p++=' '; *p++='a'; *p++='l'; *p++='l'; *p++='o'; *p++='c'; *p++='='; }
+        if (k == 1) { *p++=' '; *p++='r'; *p++='e'; *p++='s'; *p++='t'; *p++='='; }
+        if (k == 2) { *p++=' '; *p++='o'; *p++='k'; *p++='='; }
+    }
+    *p = 0;
+    gui_sys_print("MEMTEST ");
+    gui_sys_print(buf);
+    gui_sys_print("\n");
+    serial_puts("MEMTEST ");
+    serial_puts(buf);
+    serial_puts("\r\n");
+    return allocated == 64 && unique_ok && data_ok && restored == initial;
 }
 
 /* Used by the GUI for large optional buffers after paging/direct-map init. */
