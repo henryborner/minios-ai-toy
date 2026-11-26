@@ -311,6 +311,27 @@ static void mark_console_rect(struct console *c) {
     mark_rect(w->x, w->y, w->w, w->h);
 }
 
+static void mark_console_output(struct console *c, int start_row, int start_scroll) {
+    if (!c)
+        return;
+    if (c->scroll != start_scroll || start_row >= TERM_ROWS - 1 ||
+        (c->n == 1 && start_row > 0)) {
+        mark_console_rect(c);
+        return;
+    }
+    int r0 = start_row - c->scroll;
+    int r1 = c->cur - c->scroll;
+    if (r0 > r1) {
+        int t = r0; r0 = r1; r1 = t;
+    }
+    if (r0 < 0) r0 = 0;
+    if (r1 >= c->rows) r1 = c->rows - 1;
+    if (r1 < r0)
+        return;
+    mark_rect(c->x + 4, c->y + 14 + r0 * 9,
+              c->cols * 8, (r1 - r0 + 1) * 9);
+}
+
 static void mark_cursor_rect(void) {
     if (cursor_bg_valid)
         mark_rect(cursor_px, cursor_py, 12, 18);
@@ -377,10 +398,14 @@ static void fill_rect(int x, int y, int w, int h, u8 color) {
     if (y + h > clip_y1) h = clip_y1 - y;
     if (w <= 0 || h <= 0)
         return;
+    u32 pattern = (u32)color * 0x01010101u;
     for (int yy = 0; yy < h; yy++) {
         u8 *p = &fb[(y + yy) * scr_w + x];
-        for (int xx = 0; xx < w; xx++)
-            p[xx] = color;
+        int xx = 0;
+        for (; xx + 4 <= w; xx += 4)
+            *(u32 *)(p + xx) = pattern;
+        while (xx < w)
+            p[xx++] = color;
     }
 }
 
@@ -474,15 +499,27 @@ static void blit_rect(int x, int y, int w, int h) {
         for (int yy = 0; yy < h; yy++) {
             volatile u8 *dst = vbe_lfb + (u32)(y + yy) * vbe_pitch + (u32)x;
             const u8 *src = fb + (u32)(y + yy) * (u32)scr_w + (u32)x;
-            for (int xx = 0; xx < w; xx++)
+            int xx = 0;
+            for (; xx + 4 <= w; xx += 4)
+                *(volatile u32 *)(dst + xx) = *(const u32 *)(src + xx);
+            while (xx < w) {
                 dst[xx] = src[xx];
+                xx++;
+            }
         }
         return;
     }
     u8 *dst = (u8 *)0x000A0000;
     for (int yy = 0; yy < h; yy++) {
-        for (int xx = 0; xx < w; xx++)
-            dst[(y + yy) * scr_w + x + xx] = fb[(y + yy) * scr_w + x + xx];
+        u8 *d = dst + (y + yy) * scr_w + x;
+        const u8 *s = fb + (y + yy) * scr_w + x;
+        int xx = 0;
+        for (; xx + 4 <= w; xx += 4)
+            *(u32 *)(d + xx) = *(const u32 *)(s + xx);
+        while (xx < w) {
+            d[xx] = s[xx];
+            xx++;
+        }
     }
 }
 
@@ -2406,11 +2443,13 @@ static void draw_console(int ci) {
         int idx = start + r;
         if (idx < 0 || idx >= c->n)
             continue;
+        int cy = c->y + 14 + r * 9;
+        if (cy + 9 < clip_y0 || cy >= clip_y1)
+            continue;
         for (int col = 0; col < c->cols; col++) {
             u8 attr = c->attrs ? c->attrs[idx * TERM_COLS + col] : term_default_attr;
             char ch = c->term[idx][col];
             int cx = c->x + 4 + col * 8;
-            int cy = c->y + 14 + r * 9;
             int inv = sel_active && sel_id == c->win_id && idx >= slo && idx <= shi &&
                       col >= clo && col <= chi;
             fill_rect(cx, cy, 8, 9, inv ? (attr & 15) : (attr >> 4));
@@ -2579,8 +2618,13 @@ static void draw_canvas(int id) {
             int py = cy + y;
             u8 *dst = fb + py * scr_w + cx + sx0;
             const u8 *src = canvas_buf + y * CANVAS_MAX_W + sx0;
-            for (int i = 0; i < span; i++)
+            int i = 0;
+            for (; i + 4 <= span; i += 4)
+                *(u32 *)(dst + i) = *(const u32 *)(src + i);
+            while (i < span) {
                 dst[i] = src[i];
+                i++;
+            }
         }
     }
 }
@@ -4254,9 +4298,10 @@ void gui_special(int key) {
 
 void gui_sys_write(const char *s, u32 len) {
     struct console *c = active_console();
+    int r0 = c->cur, sc = c->scroll;
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    mark_console_rect(c);
+    mark_console_output(c, r0, sc);
 }
 
 void gui_prompt_console(int cid) {
@@ -4269,27 +4314,30 @@ void gui_prompt_console(int cid) {
 
 void gui_sys_print(const char *s) {
     struct console *c = active_console();
+    int r0 = c->cur, sc = c->scroll;
     while (*s)
         term_putc(c, *s++);
-    mark_console_rect(c);
+    mark_console_output(c, r0, sc);
 }
 
 void gui_sys_write_console(int console, const char *s, u32 len) {
     if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
+    int r0 = c->cur, sc = c->scroll;
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    mark_console_rect(c);
+    mark_console_output(c, r0, sc);
 }
 
 void gui_sys_print_console(int console, const char *s) {
     if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
+    int r0 = c->cur, sc = c->scroll;
     while (*s)
         term_putc(c, *s++);
-    mark_console_rect(c);
+    mark_console_output(c, r0, sc);
 }
 
 void gui_init(void) {
