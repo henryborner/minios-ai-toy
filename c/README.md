@@ -39,8 +39,8 @@ The build enforces:
 Current build:
 
 ```text
-kernel:  63,408 B / 131,072 B
-BSS end: 0x323414
+kernel:  86,592 B / 131,072 B
+BSS end: 0x32944e
 MPY:     208,912 B
 image:   1,474,560 B
 ```
@@ -213,6 +213,8 @@ It is a regression test, not a cold-start absolute leak proof.
 - No networking, sound, USB or real-hardware target.
 - SaveFS legacy migration has a one-time window.
 - Not a secure or production OS.
+
+
 
 
 

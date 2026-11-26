@@ -1,0 +1,5 @@
+LOCK ACQ pid 3
+T0 CONTEND owner 3
+LOCK REL pid 3
+T0 ACQUIRED
+LOCK REL pid 0

@@ -29,6 +29,7 @@ volatile int mouse_y = 100;
 volatile int mouse_buttons = 0;
 static u32 irq_save_flags(void);
 static void irq_restore_flags(u32 flags);
+void serial_u32(u32 v);
 int kernel_fdc_lock(void);
 void kernel_fdc_unlock(void);
 #define SIGINT       1u
@@ -1308,6 +1309,21 @@ void kernel_fdc_wake(void) {
 
 static int fdc_lock_owner = -1;
 static int fdc_lock_depth;
+static u8 fdc_trace;
+static u32 fdc_lock_contends;
+static u32 fdc_lock_acquires;
+
+void kernel_fdc_trace(int on) {
+    fdc_trace = on ? 1 : 0;
+}
+
+u32 kernel_fdc_owner(void) {
+    return fdc_lock_owner > 0 ? tasks[fdc_lock_owner].pid : 0;
+}
+
+u32 kernel_fdc_contends(void) {
+    return fdc_lock_contends;
+}
 
 static void wake_fdc_lock_waiter(void) {
     for (int t = 0; t < task_cap; t++) {
@@ -1327,8 +1343,24 @@ int kernel_fdc_lock(void) {
         if (fdc_lock_owner < 0 || fdc_lock_owner == current_task) {
             fdc_lock_owner = current_task;
             fdc_lock_depth++;
+            fdc_lock_acquires++;
+            if (fdc_trace) {
+                serial_puts(current_task == 0 ? "T0 ACQUIRED\r\n" :
+                            "LOCK ACQ pid ");
+                if (current_task != 0)
+                    serial_u32(tasks[current_task].pid);
+                serial_puts("\r\n");
+            }
             irq_restore_flags(flags);
             return 1;
+        }
+        if (current_task == 0) {
+            fdc_lock_contends++;
+            if (fdc_trace) {
+                serial_puts("T0 CONTEND owner ");
+                serial_u32(tasks[fdc_lock_owner].pid);
+                serial_puts("\r\n");
+            }
         }
         tasks[current_task].wait_fdc_lock = 1;
         tasks[current_task].state = TASK_BLOCKED;
@@ -1352,6 +1384,11 @@ void kernel_fdc_unlock(void) {
         if (fdc_lock_depth > 0)
             fdc_lock_depth--;
         if (fdc_lock_depth == 0) {
+            if (fdc_trace) {
+                serial_puts("LOCK REL pid ");
+                serial_u32(tasks[current_task].pid);
+                serial_puts("\r\n");
+            }
             fdc_lock_owner = -1;
             wake_fdc_lock_waiter();
         }
@@ -2126,6 +2163,8 @@ static void module_wait_key(int cid) {
     __asm__ __volatile__("sti");
 }
 
+static u32 task0_fdc_blocks;
+
 static int sched_block_current(void) {
     int me = current_task;
     if (me < 0 || me >= task_cap)
@@ -2136,8 +2175,14 @@ static int sched_block_current(void) {
         tasks[me].state = TASK_READY;
         return 0;
     }
+    if (me == 0)
+        task0_fdc_blocks++;
     sched_switch(next);
     return 1;
+}
+
+u32 kernel_task0_fdc_blocks(void) {
+    return task0_fdc_blocks;
 }
 
 static void sched_yield(void) {
@@ -3854,6 +3899,22 @@ int prepare_pipe_scripts(void) {
            make_pipe_script("PCONS.PY", cons);
 }
 
+int prepare_lockhold_script(void) {
+    return make_pipe_script("LOCKHOLD.PY",
+        "from minios import fdc_lock_test\n"
+        "print('holder start')\n"
+        "r = fdc_lock_test(3000)\n"
+        "print('holder done', r)\n");
+}
+
+int prepare_locktest_script(void) {
+    return make_pipe_script("LOCKTEST.PY",
+        "from minios import fdc_lock_test\n"
+        "print('lock test start')\n"
+        "r = fdc_lock_test(10000)\n"
+        "print('lock test done', r)\n");
+}
+
 int prepare_fdctest_script(void) {
     return make_pipe_script("FDCTEST.PY",
         "from minios import fdc_test\n"
@@ -4395,15 +4456,26 @@ int kernel_pipe_ls(int id) {
         pipe_write(id, (const u8 *)"\n", 1);
         any = 1;
     }
-    if (fs_load_dir()) {
-        struct fs_header *h = (struct fs_header *)fs_dir;
-        struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
-        for (u32 i = 0; i < h->count; i++) {
-            for (int j = 0; j < 16 && entries[i].name[j]; j++)
-                pipe_write(id, (const u8 *)&entries[i].name[j], 1);
-            pipe_write(id, (const u8 *)"\n", 1);
-            any = 1;
+    char names[FS_MAX_ENTRIES][17];
+    int count = 0;
+    if (kernel_fdc_lock()) {
+        if (fs_load_dir()) {
+            struct fs_header *h = (struct fs_header *)fs_dir;
+            struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
+            for (u32 i = 0; i < h->count && count < FS_MAX_ENTRIES; i++) {
+                for (int j = 0; j < 16; j++)
+                    names[count][j] = entries[i].name[j];
+                names[count][16] = 0;
+                count++;
+            }
         }
+        kernel_fdc_unlock();
+    }
+    for (int i = 0; i < count; i++) {
+        for (int j = 0; j < 16 && names[i][j]; j++)
+            pipe_write(id, (const u8 *)&names[i][j], 1);
+        pipe_write(id, (const u8 *)"\n", 1);
+        any = 1;
     }
     __asm__ __volatile__("sti");
     return any;
@@ -5210,6 +5282,16 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         } else {
             SYS_RET(frame) = 0;
         }
+    } else if (number == 36) {
+        __asm__ __volatile__("sti");
+        int locked = kernel_fdc_lock();
+        int waited = 0;
+        if (locked) {
+            waited = kernel_fdc_wait((int)SYS_ARG1(frame));
+            kernel_fdc_unlock();
+        }
+        __asm__ __volatile__("cli");
+        SYS_RET(frame) = (u32)(locked ? waited : 0);
     } else if (number == 35) {
         __asm__ __volatile__("sti");
         int r = kernel_fdc_wait((int)SYS_ARG1(frame));

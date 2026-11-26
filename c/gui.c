@@ -1905,6 +1905,95 @@ static void run_command(struct console *c, char *line) {
             c = &consoles[self];
             focus_window(consoles[self].win_id);
         }
+    } else if (streq(line, "lockrace")) {
+        extern int prepare_cpu_scripts(void);
+        extern int prepare_lockhold_script(void);
+        extern void kernel_fdc_trace(int);
+        extern u32 kernel_fdc_owner(void);
+        extern u32 kernel_fdc_contends(void);
+        extern u32 kernel_task0_fdc_blocks(void);
+        int self = (int)(c - consoles);
+        if (!prepare_cpu_scripts()) {
+            term_puts(c, "lockrace: cpu scripts failed\n");
+            return;
+        }
+        for (int i = 0; i < 2; i++) {
+            if (!gui_new_console()) {
+                c = &consoles[self];
+                term_puts(c, "lockrace: console failed\n");
+                return;
+            }
+            int nc = console_count - 1;
+            launch_python(&consoles[nc], i == 0 ? "CPUA.PY" : "CPUB.PY");
+            c = &consoles[self];
+            focus_window(consoles[self].win_id);
+        }
+        if (!prepare_lockhold_script()) {
+            term_puts(c, "lockrace: holder script failed\n");
+            return;
+        }
+        if (!gui_new_console()) {
+            c = &consoles[self];
+            term_puts(c, "lockrace: holder console failed\n");
+            return;
+        }
+        int hc = console_count - 1;
+        kernel_fdc_trace(1);
+        if (!launch_python(&consoles[hc], "LOCKHOLD.PY")) {
+            c = &consoles[self];
+            kernel_fdc_trace(0);
+            term_puts(c, "lockrace: holder launch failed\n");
+            return;
+        }
+        c = &consoles[self];
+        focus_window(consoles[self].win_id);
+        extern int kernel_fdc_wait(int ms);
+        u32 start = ticks;
+        while (!kernel_fdc_owner() && (u32)(ticks - start) < 500u) {
+            (void)kernel_fdc_wait(1);
+        }
+        if (!kernel_fdc_owner()) {
+            kernel_fdc_trace(0);
+            term_puts(c, "lockrace: holder did not take lock\n");
+            return;
+        }
+        term_puts(c, "lockrace: contending\n");
+        extern int kernel_fdc_lock(void);
+        extern void kernel_fdc_unlock(void);
+        if (!kernel_fdc_lock()) {
+            kernel_fdc_trace(0);
+            term_puts(c, "lockrace: lock failed\n");
+            return;
+        }
+        kernel_fdc_unlock();
+        kernel_fdc_trace(0);
+        term_puts(c, "lockrace: done contends=");
+        term_u32(c, kernel_fdc_contends());
+        term_puts(c, " t0blocks=");
+        term_u32(c, kernel_task0_fdc_blocks());
+        term_puts(c, "\n");
+    } else if (streq(line, "locktestbg")) {
+        extern int prepare_locktest_script(void);
+        int self = (int)(c - consoles);
+        if (!prepare_locktest_script()) {
+            term_puts(c, "locktestbg: script failed\n");
+        } else if (!gui_new_console()) {
+            c = &consoles[self];
+            term_puts(c, "locktestbg: console failed\n");
+        } else {
+            int nc = console_count - 1;
+            if (!launch_python(&consoles[nc], "LOCKTEST.PY"))
+                term_puts(c, "locktestbg: launch failed\n");
+            else
+                term_puts(c, "locktestbg: started\n");
+            c = &consoles[self];
+            focus_window(consoles[self].win_id);
+        }
+    } else if (streq(line, "fdcyield")) {
+        extern u32 kernel_task0_fdc_blocks(void);
+        term_puts(c, "task0 fdc yields: ");
+        term_u32(c, kernel_task0_fdc_blocks());
+        term_puts(c, "\n");
     } else if (streq(line, "fdctestbg")) {
         extern int prepare_fdctest_script(void);
         int self = (int)(c - consoles);
@@ -4735,6 +4824,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
