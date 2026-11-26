@@ -2867,7 +2867,7 @@ static void open_context(int x, int y) {
         int id = zorder[i];
         if (wins[id].visible &&
             inside(x, y, wins[id].x, wins[id].y, wins[id].w, wins[id].h)) {
-            ctx_target = id;
+            ctx_target = console_index_for_window(id);
             break;
         }
     }
@@ -2887,13 +2887,14 @@ static void open_context(int x, int y) {
 static void activate_context(int idx) {
     int target = ctx_target;
     ctx_open = 0;
-    if (target >= 0) {
+    if (target >= 0 && target < console_count) {
         struct console *c = &consoles[target];
+        int win_id = c->win_id;
         if (idx == 0) term_scroll_by(c, TERM_ROWS);
         else if (idx == 1) term_scroll_by(c, -TERM_ROWS);
         else if (idx == 2) { term_clear(c); term_prompt(c); }
-        else if (idx == 3) minimize_window(target);
-        else if (idx == 4) hide_window(target);
+        else if (idx == 3) minimize_window(win_id);
+        else if (idx == 4) hide_window(win_id);
         else if (idx == 5) {
             clipboard_len = c->cmd_len;
             if (clipboard_len > 255) clipboard_len = 255;
