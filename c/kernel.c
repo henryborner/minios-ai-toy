@@ -510,10 +510,7 @@ extern void irq6_stub(void);
 extern void irq12_stub(void);
 extern void syscall_stub(void);
 extern void isr_default(void);
-extern void exc0_stub(void);
-extern void exc6_stub(void);
-extern void exc13_stub(void);
-extern void exc14_stub(void);
+extern u32 exc_stubs[32];
 extern void run_user(u32 entry, u32 user_stack);
 extern void user_exit_to_kernel(void);
 extern void scheduler_start(u32 first_task_esp);
@@ -534,6 +531,14 @@ static void idt_set_flags(int n, u32 handler, u8 flags) {
 
 static void idt_set(int n, u32 handler) {
     idt_set_flags(n, handler, 0x8E);
+}
+
+static void idt_set_task_gate(int n, u16 selector, u8 flags) {
+    idt[n].base_lo = 0;
+    idt[n].selector = selector;
+    idt[n].zero = 0;
+    idt[n].flags = flags;
+    idt[n].base_hi = 0;
 }
 
 static void sched_timer_tick(u32 *frame);
@@ -613,10 +618,9 @@ static void interrupts_setup(void) {
 
     for (int i = 0; i < 256; i++)
         idt_set(i, (u32)isr_default);
-    idt_set(0, (u32)exc0_stub);
-    idt_set(6, (u32)exc6_stub);
-    idt_set(13, (u32)exc13_stub);
-    idt_set(14, (u32)exc14_stub);
+    for (int i = 0; i < 32; i++)
+        idt_set(i, exc_stubs[i]);
+    idt_set_task_gate(8, 0x30, 0x85);
     idt_set(0x20, (u32)irq0_stub);
     idt_set(0x21, (u32)irq1_stub);
     idt_set(0x26, (u32)irq6_stub);
@@ -665,9 +669,11 @@ struct tss_entry {
     u16 iomap_base;
 } __attribute__((packed));
 
-static struct gdt_entry gdt[6];
+static struct gdt_entry gdt[7];
 static struct gdt_ptr_t gdtp;
 static struct tss_entry tss;
+static struct tss_entry df_tss;
+static u8 df_stack[4096] __attribute__((aligned(16)));
 static u8 tss_loaded;
 static u8 gdt_ready;
 
@@ -697,7 +703,7 @@ static void gdt_set(int n, u32 base, u32 limit, u8 access, u8 gran) {
 static void gdt_install(void) {
     if (gdt_ready)
         return;
-    for (int i = 0; i < 6; i++) {
+    for (int i = 0; i < 7; i++) {
         gdt[i].limit_lo = 0;
         gdt[i].base_lo = 0;
         gdt[i].base_mid = 0;
@@ -717,6 +723,7 @@ static void gdt_install(void) {
     tss.esp0 = 0x00080000;                  /* separate ring0 stack */
     tss.iomap_base = (u16)sizeof(tss);
     gdt_set(5, (u32)&tss, (u32)(sizeof(tss) - 1), 0x89, 0x00);
+    gdt_set(6, (u32)&df_tss, (u32)(sizeof(df_tss) - 1), 0x89, 0x00);
 
     gdtp.limit = (u16)(sizeof(gdt) - 1);
     gdtp.base = (u32)&gdt;
@@ -2144,33 +2151,114 @@ static void task_exit(u32 status) {
     }
 }
 
-static void fault_hex(const char *label, u32 v) {
-    static const char digits[] = "0123456789ABCDEF";
-    char out[2 + 8 + 2];
-    out[0] = '0';
-    out[1] = 'x';
-    for (int i = 0; i < 8; i++)
-        out[2 + i] = digits[(v >> ((7 - i) * 4)) & 15];
-    out[10] = '\n';
-    out[11] = 0;
-    gui_sys_print(label);
-    gui_sys_print(out);
+static void bsod_putc(int *x, int *y, char ch) {
+    volatile u8 *base;
+    u32 pitch;
+    int width, height;
+    if (vbe_active && vbe_lfb) {
+        base = vbe_lfb;
+        pitch = vbe_pitch;
+        width = scr_w;
+        height = scr_h;
+    } else {
+        base = (volatile u8 *)0x000A0000;
+        pitch = 320;
+        width = 320;
+        height = 200;
+    }
+    if (ch == '\n' || *x + 8 > width) {
+        *x = 8;
+        *y += 10;
+    }
+    if (ch == '\n' || *y + 8 > height)
+        return;
+    if (ch < 32 || ch > 126)
+        ch = '?';
+    const u8 *glyph = (const u8 *)0x000FFA6E + (u8)ch * 8;
+    for (int r = 0; r < 8; r++)
+        for (int c = 0; c < 8; c++)
+            if (glyph[r] & (0x80u >> c))
+                base[(*y + r) * pitch + *x + c] = 15;
+    *x += 8;
+}
+
+static void bsod_puts(int *x, int *y, const char *s) {
+    while (*s)
+        bsod_putc(x, y, *s++);
+}
+
+static void bsod_hex(int *x, int *y, const char *label, u32 v) {
+    static const char h[] = "0123456789ABCDEF";
+    bsod_puts(x, y, label);
+    bsod_puts(x, y, "0x");
+    for (int i = 28; i >= 0; i -= 4)
+        bsod_putc(x, y, h[(v >> i) & 15]);
+    bsod_putc(x, y, '\n');
+}
+
+static void bsod_show(u32 vector, u32 *frame) {
+    __asm__ __volatile__("cli");
+    __asm__ __volatile__(
+        "movw $0x10, %%ax; movw %%ax, %%ds; movw %%ax, %%es;"
+        "movw %%ax, %%fs; movw %%ax, %%gs; movw %%ax, %%ss"
+        : : : "eax");
+    volatile u8 *base;
+    u32 pitch;
+    int width, height;
+    if (vbe_active && vbe_lfb) {
+        base = vbe_lfb; pitch = vbe_pitch;
+        width = scr_w; height = scr_h;
+    } else {
+        base = (volatile u8 *)0x000A0000; pitch = 320;
+        width = 320; height = 200;
+    }
+    for (int yy = 0; yy < height; yy++)
+        for (int xx = 0; xx < width; xx++)
+            base[(u32)yy * pitch + (u32)xx] = 1;
+    int x = 8, y = 8;
+    bsod_puts(&x, &y, "MiniOS KERNEL PANIC\n\n");
+    bsod_hex(&x, &y, "vector: ", vector);
+    u32 cr2 = 0;
+    __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
+    bsod_hex(&x, &y, "cr2:    ", cr2);
+    if (frame) {
+        bsod_hex(&x, &y, "error:  ", frame[9]);
+        bsod_hex(&x, &y, "eip:    ", frame[10]);
+        bsod_hex(&x, &y, "cs:     ", frame[11]);
+        bsod_hex(&x, &y, "esp:    ", (u32)&frame[12]);
+        bsod_hex(&x, &y, "edi:    ", frame[0]);
+        bsod_hex(&x, &y, "esi:    ", frame[1]);
+        bsod_hex(&x, &y, "ebp:    ", frame[2]);
+        bsod_hex(&x, &y, "ebx:    ", frame[4]);
+        bsod_hex(&x, &y, "edx:    ", frame[5]);
+        bsod_hex(&x, &y, "ecx:    ", frame[6]);
+        bsod_hex(&x, &y, "eax:    ", frame[7]);
+    } else {
+        bsod_puts(&x, &y, "double fault task gate\n");
+        bsod_hex(&x, &y, "old eip: ", tss.eip);
+        bsod_hex(&x, &y, "old esp: ", tss.esp);
+        bsod_hex(&x, &y, "old cr3: ", tss.cr3);
+    }
+    bsod_puts(&x, &y, "\nSystem halted. Reboot required.\n");
+    serial_puts("BSOD vector=");
+    serial_puts("0x");
+    const char *h = "0123456789ABCDEF";
+    for (int i = 28; i >= 0; i -= 4)
+        serial_putc((char)h[(vector >> i) & 15]);
+    serial_puts("\r\n");
+    for (;;) {
+        __asm__ __volatile__("cli");
+        __asm__ __volatile__("hlt");
+    }
+}
+
+void bsod_entry(void) {
+    bsod_show(8, 0);
 }
 
 void exception_handler(u32 *frame) {
     u32 vector = frame[8];
-    u32 err = frame[9];
-    u32 eip = frame[10];
     u32 cs = frame[11];
-    u32 cr2;
-    __asm__ __volatile__("mov %%cr2, %0" : "=r"(cr2));
-
-    gui_sys_print("[fault] CPU exception\n");
-    fault_hex(" vector=", vector);
-    fault_hex(" err=", err);
-    fault_hex(" cr2=", cr2);
-    fault_hex(" eip=", eip);
-    fault_hex(" cs=", cs);
 
     if (scheduler_active && (cs & 3) == 3) {
         gui_sys_print("[fault] Ring3 task killed; returning to shell.\n");
@@ -2179,12 +2267,7 @@ void exception_handler(u32 *frame) {
         task_exit(0xDEADu);
     }
 
-    gui_sys_print("[fault] kernel exception; CPU halted.\n");
-    (void)vector;
-    for (;;) {
-        __asm__ __volatile__("cli");
-        __asm__ __volatile__("hlt");
-    }
+    bsod_show(vector, frame);
 }
 
 static char *ps_u32(char *p, u32 v) {
@@ -4537,6 +4620,38 @@ static void cpu_vendor(void) {
 /* -----------------------------------------------------------------------------
  * Entry
  * ----------------------------------------------------------------------------- */
+void bsod_entry(void);
+
+static void kernel_protections_on(void) {
+    page_table0[0] = 0;
+    sched_safe_pt[0] = 0;
+    task_kernel_pt[0] = 0;
+    set_cr3((u32)sched_safe_pd);
+    u32 cr0;
+    __asm__ __volatile__("mov %%cr0, %0" : "=r"(cr0));
+    cr0 |= 0x00010000u;
+    __asm__ __volatile__("mov %0, %%cr0" : : "r"(cr0) : "memory");
+}
+
+static void df_tss_init(void) {
+    u8 *p = (u8 *)&df_tss;
+    for (unsigned i = 0; i < sizeof(df_tss); i++)
+        p[i] = 0;
+    df_tss.cr3 = (u32)sched_safe_pd;
+    df_tss.eip = (u32)bsod_entry;
+    df_tss.eflags = 0x2;
+    df_tss.esp = (u32)df_stack + sizeof(df_stack);
+    df_tss.esp0 = df_tss.esp;
+    df_tss.ss0 = 0x10;
+    df_tss.cs = 0x08;
+    df_tss.ss = 0x10;
+    df_tss.ds = 0x10;
+    df_tss.es = 0x10;
+    df_tss.fs = 0x10;
+    df_tss.gs = 0x10;
+    df_tss.iomap_base = (u16)sizeof(df_tss);
+}
+
 void kmain(void) {
     gdt_install();
     cpu_vendor();
@@ -4546,12 +4661,14 @@ void kmain(void) {
     vbe_init();
     gui_alloc_fb();
     gui_init();
+    df_tss_init();
     interrupts_setup();
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
     mouse_init();
 
     interrupts_on();
     sched_init_task0();
+    kernel_protections_on();
     savefs_restore();
     int autoexec_pending = ramfile_find("AUTOEXEC.PY") >= 0;
     u32 autoexec_at = ticks + 300;

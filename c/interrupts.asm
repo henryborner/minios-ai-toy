@@ -6,6 +6,7 @@
         global irq12_stub
         global syscall_stub
         global isr_default
+        global exc_stubs
         global exc0_stub
         global exc6_stub
         global exc13_stub
@@ -101,21 +102,67 @@ syscall_stub:
         popa
         iretd
 
-exc0_stub:
+%macro EXC_NOERR 1
+        global exc%1_stub
+exc%1_stub:
         push    dword 0             ; dummy error code
-        push    dword 0             ; vector
+        push    dword %1            ; vector
         jmp     exc_common
-exc6_stub:
-        push    dword 0
-        push    dword 6
-        jmp     exc_common
-exc13_stub:
-        push    dword 13            ; CPU already pushed #GP error code
-        jmp     exc_common
-exc14_stub:
-        push    dword 14            ; CPU already pushed #PF error code
-        jmp     exc_common
+%endmacro
 
+%macro EXC_ERR 1
+        global exc%1_stub
+exc%1_stub:
+        push    dword %1            ; CPU already pushed error code
+        jmp     exc_common
+%endmacro
+
+        EXC_NOERR 0
+        EXC_NOERR 1
+        EXC_NOERR 2
+        EXC_NOERR 3
+        EXC_NOERR 4
+        EXC_NOERR 5
+        EXC_NOERR 6
+        EXC_NOERR 7
+        EXC_ERR   8
+        EXC_NOERR 9
+        EXC_ERR   10
+        EXC_ERR   11
+        EXC_ERR   12
+        EXC_ERR   13
+        EXC_ERR   14
+        EXC_NOERR 15
+        EXC_NOERR 16
+        EXC_ERR   17
+        EXC_NOERR 18
+        EXC_NOERR 19
+        EXC_NOERR 20
+        EXC_NOERR 21
+        EXC_NOERR 22
+        EXC_NOERR 23
+        EXC_NOERR 24
+        EXC_NOERR 25
+        EXC_NOERR 26
+        EXC_NOERR 27
+        EXC_NOERR 28
+        EXC_NOERR 29
+        EXC_ERR   30
+        EXC_NOERR 31
+
+        section .data
+        align 4
+exc_stubs:
+        dd exc0_stub,  exc1_stub,  exc2_stub,  exc3_stub
+        dd exc4_stub,  exc5_stub,  exc6_stub,  exc7_stub
+        dd exc8_stub,  exc9_stub,  exc10_stub, exc11_stub
+        dd exc12_stub, exc13_stub, exc14_stub, exc15_stub
+        dd exc16_stub, exc17_stub, exc18_stub, exc19_stub
+        dd exc20_stub, exc21_stub, exc22_stub, exc23_stub
+        dd exc24_stub, exc25_stub, exc26_stub, exc27_stub
+        dd exc28_stub, exc29_stub, exc30_stub, exc31_stub
+
+        section .text
 exc_common:
         pusha
         cld
