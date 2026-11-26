@@ -2463,6 +2463,8 @@ int task_signal_pid(u32 pid, u8 sig) {
     int t = find_pid(pid);
     if (t <= 0 || t >= task_cap)
         return 0;
+    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+        return 0;
     if (sig & SIGKILL)
         return task_kill_pid(pid) ? 1 : 0;
     if (sig & SIGTERM) {
@@ -2481,19 +2483,7 @@ int task_signal_pid(u32 pid, u8 sig) {
         irq_restore_flags(flags);
         return 0;
     }
-    if (sig & SIGKILL) {
-        tasks[t].sleep_until = 0;
-        tasks[t].wait_kbd = 0;
-        tasks[t].waiting_pid = WAIT_NONE;
-        tasks[t].wait_pipe = 0;
-        tasks[t].wait_pipe_write = 0;
-        tasks[t].sig_pending |= SIGKILL;
-        tasks[t].kill_pending = 1;
-        tasks[t].state = TASK_READY;
-        irq_restore_flags(flags);
-        return 1;
-    }
-    if ((sig & (SIGINT | SIGTERM | SIGCHLD)) &&
+    if ((sig & (SIGINT | SIGCHLD)) &&
         (tasks[t].sig_ignored & sig)) {
         irq_restore_flags(flags);
         return 1;
