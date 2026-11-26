@@ -2377,6 +2377,13 @@ static void run_command(struct console *c, char *line) {
             c = &consoles[self];
             focus_window(consoles[self].win_id);
         }
+    } else if (starts_with(line, "memfail ")) {
+        extern void kernel_mem_fail_after(u32 n);
+        u32 n = 0;
+        for (const char *p = line + 8; *p >= '0' && *p <= '9'; p++)
+            n = n * 10 + (u32)(*p - '0');
+        kernel_mem_fail_after(n);
+        term_puts(c, "memfail armed\n");
     } else if (streq(line, "memmap")) {
         volatile u32 *magic = (volatile u32 *)0x1800u;
         volatile u16 *ver = (volatile u16 *)0x1804u;

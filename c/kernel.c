@@ -1242,6 +1242,7 @@ struct task {
     u32 kstack_top;
     u32 code_phys;
     u32 stack_phys;
+    u32 stack_va;
     u32 heap_phys;
     u16 code_pages;
     u16 stack_pages;
@@ -1587,7 +1588,17 @@ static inline void frame_invlpg(u32 va) {
     __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
 }
 
+static u32 frame_fail_after;
+void kernel_mem_fail_after(u32 n) { frame_fail_after = n; }
+
 static u32 frame_alloc_from(u32 pages, u32 first_page, u32 last_page) {
+    if (frame_fail_after) {
+        if (frame_fail_after == 1) {
+            frame_fail_after = 0;
+            return 0;
+        }
+        frame_fail_after--;
+    }
     if (pages == 0 || pages > frame_total - frame_used)
         return 0;
     if (first_page >= last_page)
@@ -1933,6 +1944,13 @@ static u32 user_pte_get(int slot, u32 va) {
     return pte ? *pte : 0;
 }
 
+static u8 *user_va_ptr(int slot, u32 va) {
+    u32 pte = user_pte_get(slot, va);
+    if (!(pte & 1))
+        return 0;
+    return (u8 *)direct_ptr(pte & 0xFFFFF000u) + (va & 0xFFFu);
+}
+
 static int user_ensure_table(int slot, u32 va) {
     u32 pde = va >> 22;
     if (pde < 1 || pde > USER_PT_COUNT)
@@ -1994,6 +2012,15 @@ static void user_maybe_free_table(int slot, u32 va) {
         brk_invlpg(va & 0xFFC00000u);
     if (phys)
         frame_free_pages(phys, 1);
+}
+
+static void free_user_range(int slot, u32 va, u32 pages) {
+    for (u32 i = 0; i < pages; i++) {
+        u32 p = user_unmap_page(slot, va + i * 0x1000u);
+        if (p)
+            frame_free_pages(p, 1);
+        user_maybe_free_table(slot, va + i * 0x1000u);
+    }
 }
 
 static void user_free_tables(int slot) {
@@ -2146,6 +2173,8 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     for (u32 i = 0; i < len; i++)
         codev[i] = src[i];
 
+    tasks[slot].stack_va = 0x00402000u;
+    tasks[slot].stack_pages = 1;
     if (!user_map_page(slot, 0x00400000u, code, 0x007) ||
         !user_map_page(slot, 0x00402000u, stack, 0x007)) {
         frame_free_pages(code, 1);
@@ -2169,7 +2198,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].kstack_top = top;
     tasks[slot].cr3 = tasks[slot].pd_phys;
     tasks[slot].code_phys = code;
-    tasks[slot].stack_phys = stack;
+    tasks[slot].stack_phys = 0;
     tasks[slot].heap_phys = 0;
     tasks[slot].code_pages = 1;
     tasks[slot].stack_pages = 1;
@@ -2243,15 +2272,16 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     }
 
     u32 code = data_pages ? frame_alloc_pages(data_pages) : 0;
-    u32 stack = frame_alloc_pages(BIG_STACK_PAGES);
-    if ((data_pages && !code) || !stack || !task_alloc_runtime(slot, 2)) {
+    if ((data_pages && !code) || !task_alloc_runtime(slot, 2)) {
         if (code) frame_free_pages(code, data_pages);
-        if (stack) frame_free_pages(stack, BIG_STACK_PAGES);
         task_free_frames(slot);
         tasks[slot].state = TASK_FREE;
         return -1;
     }
     tasks[slot].heap_pages = 0;
+    tasks[slot].stack_va = BIG_USER_STACK;
+    tasks[slot].stack_pages = 0;
+    tasks[slot].stack_phys = 0;
 
     u8 *src = (u8 *)BIG_CODE_PHYS;
     if (use_shared) {
@@ -2259,7 +2289,6 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
             shared_ro_phys = frame_alloc_pages(ro_pages);
             if (!shared_ro_phys) {
                 if (code) frame_free_pages(code, data_pages);
-                frame_free_pages(stack, BIG_STACK_PAGES);
                 task_free_frames(slot);
                 tasks[slot].state = TASK_FREE;
                 return -1;
@@ -2281,8 +2310,6 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
                 codev[i] = src[off + i];
         }
     }
-    frame_zero(stack, BIG_STACK_PAGES);
-
     for (u32 i = 0; i < ro_pages; i++) {
         if (!user_map_page(slot, BIG_USER_CODE + i * 0x1000u,
                            shared_ro_phys + i * 0x1000u, 0x005))
@@ -2294,9 +2321,16 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
             goto map_fail;
     }
     for (u32 i = 0; i < BIG_STACK_PAGES; i++) {
-        if (!user_map_page(slot, BIG_USER_STACK + i * 0x1000u,
-                           stack + i * 0x1000u, 0x007))
+        u32 sp = frame_alloc_pages(1);
+        if (!sp)
             goto map_fail;
+        frame_zero(sp, 1);
+        tasks[slot].stack_pages = i + 1;
+        if (!user_map_page(slot, BIG_USER_STACK + i * 0x1000u, sp, 0x007)) {
+            frame_free_pages(sp, 1);
+            tasks[slot].stack_pages = i;
+            goto map_fail;
+        }
     }
     for (u32 i = 0; i < BIG_HEAP_PAGES; i++) {
         u32 hp = frame_alloc_pages(1);
@@ -2325,7 +2359,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].kstack_top = top;
     tasks[slot].cr3 = tasks[slot].pd_phys;
     tasks[slot].code_phys = code;
-    tasks[slot].stack_phys = stack;
+    tasks[slot].stack_phys = 0;
     tasks[slot].heap_phys = 0;
     tasks[slot].code_pages = (u16)data_pages;
     tasks[slot].stack_pages = BIG_STACK_PAGES;
@@ -2364,7 +2398,6 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
 
 map_fail:
     if (code) frame_free_pages(code, data_pages);
-    frame_free_pages(stack, BIG_STACK_PAGES);
     task_free_frames(slot);
     tasks[slot].state = TASK_FREE;
     return -1;
@@ -2521,8 +2554,8 @@ static void task_free_frames(int slot) {
     }
     if (tasks[slot].code_phys)
         frame_free_pages(tasks[slot].code_phys, tasks[slot].code_pages);
-    if (tasks[slot].stack_phys)
-        frame_free_pages(tasks[slot].stack_phys, tasks[slot].stack_pages);
+    if (tasks[slot].stack_va)
+        free_user_range(slot, tasks[slot].stack_va, tasks[slot].stack_pages);
     task_free_heap(slot);
     if (slot > 0) {
         user_free_tables(slot);
@@ -3257,9 +3290,8 @@ static int user_str_ok(u32 ptr, u32 max);
 /* Copy a user-space argv array onto a child's user stack. */
 static int build_user_args_on_stack(int slot, u32 argc, u32 uargv,
                                     u32 stack_base, u32 stack_top) {
-    if (argc > 32 || tasks[slot].stack_phys == 0)
+    if (argc > 32 || tasks[slot].stack_va == 0)
         return 0;
-    u8 *stackv = (u8 *)direct_ptr(tasks[slot].stack_phys);
     u32 sp = stack_top;
     u32 ptrs[32];
 
@@ -3275,22 +3307,34 @@ static int build_user_args_on_stack(int slot, u32 argc, u32 uargv,
         sp -= (u32)len + 1;
         if (sp < stack_base + 64)
             return 0;
-        u8 *dst = stackv + (sp - stack_base);
-        for (int j = 0; j <= len; j++)
-            dst[j] = *(volatile u8 *)(up + (u32)j);
+        for (int j = 0; j <= len; j++) {
+            u8 *dst = user_va_ptr(slot, sp + (u32)j);
+            if (!dst)
+                return 0;
+            *dst = *(volatile u8 *)(up + (u32)j);
+        }
         ptrs[i] = sp;
     }
     sp &= ~3u;
     sp -= 4;
-    *(u32 *)(stackv + (sp - stack_base)) = 0;
+    u32 *zero = (u32 *)user_va_ptr(slot, sp);
+    if (!zero)
+        return 0;
+    *zero = 0;
     for (int i = (int)argc - 1; i >= 0; i--) {
         sp -= 4;
-        *(u32 *)(stackv + (sp - stack_base)) = ptrs[i];
+        u32 *slotp = (u32 *)user_va_ptr(slot, sp);
+        if (!slotp)
+            return 0;
+        *slotp = ptrs[i];
     }
     sp -= 4;
     if (sp < stack_base + 64)
         return 0;
-    *(u32 *)(stackv + (sp - stack_base)) = argc;
+    u32 *argcp = (u32 *)user_va_ptr(slot, sp);
+    if (!argcp)
+        return 0;
+    *argcp = argc;
     ((u32 *)tasks[slot].esp)[11] = sp;
     return 1;
 }
@@ -3452,9 +3496,8 @@ void run_task_demo(void) {
 
 static int build_args_on_stack(int slot, u32 argc, const char *const *argv,
                                u32 stack_base, u32 stack_top) {
-    if (argc > 32 || tasks[slot].stack_phys == 0)
+    if (argc > 32 || tasks[slot].stack_va == 0)
         return 0;
-    u8 *stackv = (u8 *)direct_ptr(tasks[slot].stack_phys);
     u32 sp = stack_top;
     u32 ptrs[32];
 
@@ -3470,22 +3513,34 @@ static int build_args_on_stack(int slot, u32 argc, const char *const *argv,
         sp -= (u32)len + 1;
         if (sp < stack_base + 64)
             return 0;
-        u8 *dst = stackv + (sp - stack_base);
-        for (int j = 0; j <= len; j++)
-            dst[j] = (u8)s[j];
+        for (int j = 0; j <= len; j++) {
+            u8 *dst = user_va_ptr(slot, sp + (u32)j);
+            if (!dst)
+                return 0;
+            *dst = (u8)s[j];
+        }
         ptrs[i] = sp;
     }
     sp &= ~3u;
     sp -= 4;
-    *(u32 *)(stackv + (sp - stack_base)) = 0;
+    u32 *zero = (u32 *)user_va_ptr(slot, sp);
+    if (!zero)
+        return 0;
+    *zero = 0;
     for (int i = (int)argc - 1; i >= 0; i--) {
         sp -= 4;
-        *(u32 *)(stackv + (sp - stack_base)) = ptrs[i];
+        u32 *slotp = (u32 *)user_va_ptr(slot, sp);
+        if (!slotp)
+            return 0;
+        *slotp = ptrs[i];
     }
     sp -= 4;
     if (sp < stack_base + 64)
         return 0;
-    *(u32 *)(stackv + (sp - stack_base)) = argc;
+    u32 *argcp = (u32 *)user_va_ptr(slot, sp);
+    if (!argcp)
+        return 0;
+    *argcp = argc;
     ((u32 *)tasks[slot].esp)[11] = sp;
     return 1;
 }
@@ -6082,6 +6137,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

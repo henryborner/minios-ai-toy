@@ -13,9 +13,10 @@
 ## C2 非连续物理
 
 - 大任务初始 1 MiB heap 改为逐页分配、逐页映射
+- 64 KiB 用户栈也改为逐页分配、逐页映射
 - brk 增长逐页分配，不再要求连续物理
 - 任务回收按 VA 解映射并释放页框
-- 仍保留：code 区、64 KiB 用户栈是连续物理；这是当前边界
+- 仍保留：私有 code 区是连续物理；这是当前边界
 
 ## C3 跨页表 brk
 
@@ -51,21 +52,22 @@ gc ok 8388608 65 66
 - BRK64 退出后 free 精确回到 30571
 - 20 轮同 Console `calc 2**10`：首次 MPY 缓存占 52 页，30571→30519；
   再 5 轮仍为 30519，无逐轮泄漏
+- 5 次 `memfail 100` + `exec BRK.BIN`：均 `BRK64 FAIL`，
+  free 30571→30571，brk 中途失败回滚有效
 - host tests PASS
 - smoke PASS（640×480 + 320×200 + REGRESS）
 
 ## 未完成/边界
 
 - 用户上限仍是 84 MiB，不是 1 GiB。
-- code 区与用户栈仍连续物理；heap 已非连续。
+- 私有 code 区仍连续物理；heap/stack 已非连续。
 - 未实现 MPY split-heap；8 MiB 活对象依赖 10 MiB 单 region。
-- 尚未做 brk 在内存不足时的专门回滚/失败注入回归。
-- C5 未做失败路径的 20 轮压力。
+- 失败回滚已用 5 次注入验证，但还未做连续 20 轮失败压力。
 
 ## 当前构建
 
 ```text
-kernel:  94,500 / 131,072 B
+kernel:  94,776 / 131,072 B
 BSS:     0x34b44e
 image:   1,474,560 bytes
 smoke:   PASS
