@@ -1872,10 +1872,10 @@ static void run_command(struct console *c, char *line) {
         int self = (int)(c - consoles);
         if (!prepare_pipe_scripts()) {
             term_puts(c, "multipipe: scripts failed\n");
-        } else if (!launch_pipe_pair(c, "PPROD.PY", "PCONS.PY")) {
+        } else if (!launch_pipe_pair(&consoles[self], "PPROD.PY", "PCONS.PY")) {
             c = &consoles[self];
             term_puts(c, "multipipe: first pipeline failed\n");
-        } else if (!launch_pipe_pair(c, "PPROD.PY", "PCONS.PY")) {
+        } else if (!launch_pipe_pair(&consoles[self], "PPROD.PY", "PCONS.PY")) {
             c = &consoles[self];
             term_puts(c, "multipipe: second pipeline failed\n");
         }
@@ -3694,7 +3694,7 @@ static int hit_test(int x, int y) {
                     return HIT_FILES_BTN_BASE + b;
                 bx += bw + 4;
             }
-            int rows = (w->h - 36) / 9;
+            int rows = (w->h - 41) / 9;
             for (int r = 0; r < rows; r++)
                 if (inside(x, y, w->x + 2, w->y + 34 + r * 9, w->w - 4, 9))
                     return HIT_FILES_ROW_BASE + r;
@@ -4313,19 +4313,21 @@ void gui_mouse_event(int x, int y, int buttons) {
     }
 
     if ((buttons & 1) && sel_id >= 0) {
-        struct console *c = &consoles[sel_id];
-        int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
-        int rr = (y - (c->y + TEXT_DY)) / 9;
-        int cc = (x - (c->x + 4)) / 8;
-        if (rr < 0) rr = 0;
-        if (rr >= c->rows) rr = c->rows - 1;
-        if (cc < 0) cc = 0;
-        if (cc >= c->cols) cc = c->cols - 1;
-        sel_r1 = start + rr;
-        sel_c1 = cc;
-        if (sel_r1 != sel_r0 || sel_c1 != sel_c0)
-            sel_active = 1;
-        gui_dirty = 1;
+        struct console *c = console_for_window(sel_id);
+        if (c) {
+            int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
+            int rr = (y - (c->y + TEXT_DY)) / 9;
+            int cc = (x - (c->x + 4)) / 8;
+            if (rr < 0) rr = 0;
+            if (rr >= c->rows) rr = c->rows - 1;
+            if (cc < 0) cc = 0;
+            if (cc >= c->cols) cc = c->cols - 1;
+            sel_r1 = start + rr;
+            sel_c1 = cc;
+            if (sel_r1 != sel_r0 || sel_c1 != sel_c0)
+                sel_active = 1;
+            gui_dirty = 1;
+        }
     }
     if ((buttons & 1) && resize_win >= 0) {
         resize_move(x, y);
