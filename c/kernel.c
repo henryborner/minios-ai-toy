@@ -1661,6 +1661,8 @@ u32 kernel_total_frames(void) {
     return frame_total;
 }
 
+static int task_guard_pte(u8 *base, int present);
+
 int kernel_mem_selftest(void) {
     u32 initial = kernel_free_frames();
     u32 pages[64];
@@ -1704,13 +1706,31 @@ int kernel_mem_selftest(void) {
         }
         frame_free_pages(high, 2049);
     }
+
+    u32 guard_ok = 0, cr3_before = 0, cr3_after = 0;
+    u32 gp = frame_alloc_pages(1);
+    if (gp) {
+        __asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3_before));
+        u8 *gv = (u8 *)direct_ptr(gp);
+        if (task_guard_pte(gv, 0)) {
+            u32 idx = (gp - DIRECT_PHYS_START) >> 12;
+            u32 cleared = !(direct_pt[idx / 1024u][idx % 1024u] & 1);
+            if (task_guard_pte(gv, 1)) {
+                u32 restored_pte = direct_pt[idx / 1024u][idx % 1024u] & 1;
+                guard_ok = cleared && restored_pte;
+            }
+        }
+        __asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3_after));
+        cr3_before = cr3_before == cr3_after;
+        frame_free_pages(gp, 1);
+    }
     u32 restored = kernel_free_frames();
     char buf[96];
     char *p = buf;
     const char *s = "initial=";
     while (*s) *p++ = *s++;
     u32 vals[4] = { initial, allocated, restored,
-                    (unique_ok && data_ok && high_ok) };
+                    (unique_ok && data_ok && high_ok && guard_ok && cr3_before) };
     for (int k = 0; k < 4; k++) {
         char tmp[12];
         int n = 0;
