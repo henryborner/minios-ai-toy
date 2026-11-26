@@ -1203,10 +1203,11 @@ void gui_theme(int dark) {
     term_dark = dark;
     term_default_attr = now;
     if (term_attrs) {
-        for (int i = 0; i < NCONS * TERM_ROWS * TERM_COLS; i++)
+        int nattrs = term_attrs_cap * TERM_ROWS * TERM_COLS;
+        for (int i = 0; i < nattrs; i++)
             if (term_attrs[i] == old || term_attrs[i] == 0xF0 || term_attrs[i] == 0x0F)
                 term_attrs[i] = now;
-        for (int i = 0; i < NCONS; i++) {
+        for (int i = 0; i < console_count; i++) {
             if (consoles[i].cur_attr == old || consoles[i].cur_attr == 0xF0 ||
                 consoles[i].cur_attr == 0x0F)
                 consoles[i].cur_attr = now;
@@ -3253,6 +3254,8 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
             p += 20;
         }
     } else if (cmd->op == 7) {
+        if (cmd->w > CANVAS_MAX_W || cmd->h > CANVAS_MAX_H)
+            return -1;
         if (!cmd->text || cmd->len < cmd->w * cmd->h)
             return -1;
         for (u32 yy = 0; yy < cmd->h; yy++)
@@ -3622,9 +3625,10 @@ static void drag_move(int x, int y) {
         snap_mode = 2;
     w->x = nx;
     w->y = ny;
-    if (drag_win >= WIN_C0 && drag_win <= WIN_C7) {
-        consoles[drag_win].x = nx;
-        consoles[drag_win].y = ny;
+    int ci = console_index_for_window(drag_win);
+    if (ci >= 0) {
+        consoles[ci].x = nx;
+        consoles[ci].y = ny;
     }
 }
 

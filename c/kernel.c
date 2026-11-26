@@ -4098,6 +4098,17 @@ static int user_page_present(u32 addr) {
     return (tasks[current_task].upt[idx] & 5) == 5;
 }
 
+static int user_page_writable(u32 addr) {
+    if (addr < USER_BASE || addr >= USER_END)
+        return 0;
+    u32 idx = (addr - USER_BASE) >> 12;
+    if (!scheduler_active)
+        return (page_table1[idx] & 7) == 7;
+    if (current_task < 0 || current_task >= task_cap)
+        return 0;
+    return (tasks[current_task].upt[idx] & 7) == 7;
+}
+
 static int user_ptr_ok(u32 ptr, u32 size) {
     if (ptr < USER_BASE || ptr >= USER_END || size > USER_END - ptr)
         return 0;
@@ -4106,6 +4117,18 @@ static int user_ptr_ok(u32 ptr, u32 size) {
     u32 last = ptr + size - 1;
     for (u32 p = ptr & ~0xFFFu; p <= last; p += 0x1000)
         if (!user_page_present(p))
+            return 0;
+    return 1;
+}
+
+static int user_ptr_writable(u32 ptr, u32 size) {
+    if (ptr < USER_BASE || ptr >= USER_END || size > USER_END - ptr)
+        return 0;
+    if (size == 0)
+        return 1;
+    u32 last = ptr + size - 1;
+    for (u32 p = ptr & ~0xFFFu; p <= last; p += 0x1000)
+        if (!user_page_writable(p))
             return 0;
     return 1;
 }
@@ -4147,7 +4170,8 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else if (number == 3) {
         if (scheduler_active)
             task_yield(frame);
-        gui_sys_print("[ring3] yield ignored.\n");
+        else
+            gui_sys_print("[ring3] yield ignored.\n");
     } else if (number == 4) {
         u32 ptr = SYS_ARG1(frame);
         u32 len = SYS_ARG2(frame);
@@ -4165,7 +4189,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 max = SYS_ARG3(frame);
         u32 size = 0;
         if (user_str_ok(name, 256) && max <= BIG_HEAP_SIZE &&
-            user_ptr_ok(dst, max)) {
+            user_ptr_writable(dst, max)) {
             __asm__ __volatile__("sti");
             int ok = fs_load_file_to((const char *)name, (u8 *)dst, max, &size);
             __asm__ __volatile__("cli");
@@ -4200,7 +4224,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 buf = SYS_ARG2(frame);
         u32 len = SYS_ARG3(frame);
         int r = -1;
-        if (len <= 0x10000 && user_ptr_ok(buf, len))
+        if (len <= 0x10000 && user_ptr_writable(buf, len))
             r = fd_read((int)fd, (u8 *)buf, len);
         SYS_RET(frame) = (u32)r;
     } else if (number == 14) {
@@ -4246,14 +4270,14 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 out = SYS_ARG2(frame);
         int r = -1;
         if (user_str_ok(name, 256) &&
-            user_ptr_ok(out, sizeof(struct user_stat)))
+            user_ptr_writable(out, sizeof(struct user_stat)))
             r = sys_stat((const char *)name, (struct user_stat *)out);
         SYS_RET(frame) = (u32)r;
     } else if (number == 22) {
         u32 index = SYS_ARG1(frame);
         u32 out = SYS_ARG2(frame);
         int r = 0;
-        if (user_ptr_ok(out, sizeof(struct user_dirent)))
+        if (user_ptr_writable(out, sizeof(struct user_dirent)))
             r = sys_readdir(index, (struct user_dirent *)out);
         SYS_RET(frame) = (u32)r;
     } else if (number == 23) {
@@ -4263,7 +4287,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         SYS_RET(frame) = r ? 0 : 0xFFFFFFFFu;
     } else if (number == 24) {
         u32 out = SYS_ARG1(frame);
-        if (user_ptr_ok(out, sizeof(struct user_sysinfo))) {
+        if (user_ptr_writable(out, sizeof(struct user_sysinfo))) {
             struct user_sysinfo *si = (struct user_sysinfo *)out;
             u32 free_frames = 0;
             for (u32 i = 0; i < FRAME_COUNT; i++)
@@ -4338,7 +4362,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
     } else if (number == 27) {
         u32 out = SYS_ARG1(frame);
         int r = 0;
-        if (user_ptr_ok(out, sizeof(struct user_canvas_event))) {
+        if (user_ptr_writable(out, sizeof(struct user_canvas_event))) {
             struct gui_canvas_event ev;
             if (gui_canvas_event(&ev)) {
                 struct user_canvas_event *ue = (struct user_canvas_event *)out;
@@ -4371,7 +4395,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
                 SYS_RET(frame) = 0;
             }
         } else if (op == 2) {
-            if (b <= 65536 && user_ptr_ok(a, b)) {
+            if (b <= 65536 && user_ptr_writable(a, b)) {
                 u32 n = 0;
                 while (n < b && (inb(COM1 + 5) & 1))
                     ((u8 *)a)[n++] = inb(COM1);
@@ -4421,7 +4445,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 max = SYS_ARG2(frame);
         if (max > 16)
             max = 16;
-        if (user_ptr_ok(out, max * sizeof(struct user_taskinfo))) {
+        if (user_ptr_writable(out, max * sizeof(struct user_taskinfo))) {
             int n = 0;
             for (u32 i = 0; i < max; i++) {
                 u32 pid, state, pages;
@@ -4456,7 +4480,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             if (a3 <= 4096 && user_ptr_ok(a2, a3))
                 r = pipe_write(id, (const u8 *)a2, a3);
         } else if (op == 2) {
-            if (a3 <= 4096 && user_ptr_ok(a2, a3))
+            if (a3 <= 4096 && user_ptr_writable(a2, a3))
                 r = pipe_read(id, (u8 *)a2, a3);
         } else if (op == 3) {
             if (id >= 0 && id < NPIPES)
