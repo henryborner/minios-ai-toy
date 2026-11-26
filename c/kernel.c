@@ -44,6 +44,7 @@ int task_kill_pid(u32 pid);
 static void task_signal_console(int cid, u8 sig);
 static void wake_fdc_tasks(void);
 static void sched_yield(void);
+static int sched_block_current(void);
 static volatile u8 scheduler_active;
 u32 heap_used;
 
@@ -1288,7 +1289,7 @@ static u8 task0_kstack[8192] __attribute__((aligned(16)));
 static u32 shared_ro_phys, shared_ro_pages, shared_ro_image, shared_ro_refs;
 
 static void wake_fdc_tasks(void) {
-    for (int t = 1; t < task_cap; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].wait_fdc) {
             tasks[t].wait_fdc = 0;
             tasks[t].sleep_until = 0;
@@ -1305,7 +1306,7 @@ static int fdc_lock_owner = -1;
 static int fdc_lock_depth;
 
 static void wake_fdc_lock_waiter(void) {
-    for (int t = 1; t < task_cap; t++) {
+    for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].wait_fdc_lock) {
             tasks[t].wait_fdc_lock = 0;
             tasks[t].state = TASK_READY;
@@ -1325,16 +1326,19 @@ int kernel_fdc_lock(void) {
             irq_restore_flags(flags);
             return 1;
         }
-        if (current_task == 0) {
-            irq_restore_flags(flags);
-            __asm__ __volatile__("sti");
-            __asm__ __volatile__("pause");
-            continue;
-        }
         tasks[current_task].wait_fdc_lock = 1;
         tasks[current_task].state = TASK_BLOCKED;
         irq_restore_flags(flags);
-        sched_yield();
+        if (!sched_block_current()) {
+            tasks[current_task].wait_fdc_lock = 0;
+            tasks[current_task].state = TASK_READY;
+            if (current_task == 0) {
+                __asm__ __volatile__("sti");
+                __asm__ __volatile__("pause");
+                continue;
+            }
+            return 0;
+        }
     }
 }
 
@@ -1362,7 +1366,7 @@ void kernel_fdc_release_owner(int slot) {
 }
 
 int kernel_fdc_wait(int ms) {
-    if (!scheduler_active || current_task <= 0 || current_task >= task_cap)
+    if (!scheduler_active || current_task < 0 || current_task >= task_cap)
         return 0;
     u32 flags = irq_save_flags();
     if (!(flags & 0x200u)) {
@@ -1373,7 +1377,12 @@ int kernel_fdc_wait(int ms) {
     tasks[current_task].sleep_until = ticks + (u32)(ms / 10 + 1);
     tasks[current_task].state = TASK_BLOCKED;
     irq_restore_flags(flags);
-    sched_yield();
+    if (!sched_block_current()) {
+        tasks[current_task].wait_fdc = 0;
+        tasks[current_task].sleep_until = 0;
+        tasks[current_task].state = TASK_READY;
+        return 0;
+    }
     tasks[current_task].wait_fdc = 0;
     tasks[current_task].sleep_until = 0;
     return 1;
@@ -2111,6 +2120,20 @@ static void module_wait_key(int cid) {
     tasks[current_task].state = TASK_BLOCKED;
     sched_yield();
     __asm__ __volatile__("sti");
+}
+
+static int sched_block_current(void) {
+    int me = current_task;
+    if (me < 0 || me >= task_cap)
+        return 0;
+    tasks[me].state = TASK_BLOCKED;
+    int next = next_ready();
+    if (next < 0 || next == me) {
+        tasks[me].state = TASK_READY;
+        return 0;
+    }
+    sched_switch(next);
+    return 1;
 }
 
 static void sched_yield(void) {
