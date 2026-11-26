@@ -2086,8 +2086,11 @@ static void sched_timer_tick(u32 *frame) {
         task_exit(0xFFFFu);
     }
 
+    int slice = TIME_SLICE_TICKS;
+    if (tasks[current_task].console_id == (u8)gui_focused_console())
+        slice *= 2;
     quantum_ticks++;
-    if (quantum_ticks < TIME_SLICE_TICKS)
+    if (quantum_ticks < (u32)slice)
         return;
     quantum_ticks = 0;
 
@@ -2331,15 +2334,39 @@ int task_bg_pid(u32 pid) {
     tasks[t].stop_prev_state = 0;
     if (prev == TASK_BLOCKED) {
         if (tasks[t].waiting_pid != WAIT_NONE) {
-            int child = find_pid(tasks[t].waiting_pid);
-            if (child >= 0 && tasks[child].state != TASK_DONE &&
-                tasks[child].state != TASK_FREE) {
-                tasks[t].state = TASK_BLOCKED;
+            if (tasks[t].waiting_pid == 0) {
+                int live = 0;
+                int exited = -1;
+                for (int c = 1; c < task_cap; c++) {
+                    if (tasks[c].parent_pid != tasks[t].pid)
+                        continue;
+                    if (tasks[c].state != TASK_FREE &&
+                        tasks[c].state != TASK_DONE) {
+                        live = 1;
+                        break;
+                    }
+                    if (tasks[c].state == TASK_DONE && exited < 0)
+                        exited = c;
+                }
+                if (live) {
+                    tasks[t].state = TASK_BLOCKED;
+                } else {
+                    if (exited >= 0)
+                        tasks[t].wait_status = tasks[exited].exit_code;
+                    tasks[t].waiting_pid = WAIT_NONE;
+                    tasks[t].state = TASK_READY;
+                }
             } else {
-                if (child >= 0)
-                    tasks[t].wait_status = tasks[child].exit_code;
-                tasks[t].waiting_pid = WAIT_NONE;
-                tasks[t].state = TASK_READY;
+                int child = find_pid(tasks[t].waiting_pid);
+                if (child >= 0 && tasks[child].state != TASK_DONE &&
+                    tasks[child].state != TASK_FREE) {
+                    tasks[t].state = TASK_BLOCKED;
+                } else {
+                    if (child >= 0)
+                        tasks[t].wait_status = tasks[child].exit_code;
+                    tasks[t].waiting_pid = WAIT_NONE;
+                    tasks[t].state = TASK_READY;
+                }
             }
         } else if (tasks[t].wait_kbd != 0) {
             int cid = (int)tasks[t].wait_kbd - 1;
