@@ -2520,29 +2520,30 @@ static int taskbar_label(int id, char *buf) {
 }
 
 static void title_icon(int kind, int bx, int by, int maximized) {
-    int x = bx + 3;
-    int y = by + 5;
+    int x = bx + 2;
+    int y = by + 2;
     if (kind == 0) {
         if (!maximized) {
-            fill_rect(x, y, 6, 1, 0);
-            fill_rect(x, y + 5, 6, 1, 0);
-            fill_rect(x, y + 1, 1, 4, 0);
-            fill_rect(x + 5, y + 1, 1, 4, 0);
+            fill_rect(x, y, 8, 1, 0);
+            fill_rect(x, y + 7, 8, 1, 0);
+            fill_rect(x, y + 1, 1, 6, 0);
+            fill_rect(x + 7, y + 1, 1, 6, 0);
         } else {
-            fill_rect(x + 2, y, 4, 1, 0);
-            fill_rect(x + 2, y + 1, 1, 3, 0);
-            fill_rect(x + 5, y + 1, 1, 3, 0);
-            fill_rect(x, y + 3, 4, 1, 0);
-            fill_rect(x, y + 4, 1, 2, 0);
-            fill_rect(x + 3, y + 4, 1, 2, 0);
-            fill_rect(x, y + 5, 4, 1, 0);
+            fill_rect(x + 3, y, 5, 1, 0);
+            fill_rect(x + 3, y + 1, 1, 4, 0);
+            fill_rect(x + 7, y + 1, 1, 4, 0);
+            fill_rect(x + 3, y + 4, 5, 1, 0);
+            fill_rect(x, y + 3, 5, 1, 0);
+            fill_rect(x, y + 4, 1, 4, 0);
+            fill_rect(x + 4, y + 4, 1, 4, 0);
+            fill_rect(x, y + 7, 5, 1, 0);
         }
     } else if (kind == 1) {
-        fill_rect(x, y + 4, 6, 1, 0);
+        fill_rect(x, y + 4, 8, 1, 0);
     } else {
-        for (int i = 0; i < 6; i++) {
+        for (int i = 0; i < 8; i++) {
             fill_rect(x + i, y + i, 1, 1, 0);
-            fill_rect(x + 5 - i, y + i, 1, 1, 0);
+            fill_rect(x + 7 - i, y + i, 1, 1, 0);
         }
     }
 }
