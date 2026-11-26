@@ -34,7 +34,10 @@ static void irq_restore_flags(u32 flags);
 #define SIGSTOP      4u
 #define SIGCONT      8u
 #define SIGCHLD      16u
+#define SIGKILL      32u
 #define SIG_TERM_MASK SIGTERM
+int task_stop_pid(u32 pid);
+int task_bg_pid(u32 pid);
 static void task_signal_console(int cid, u8 sig);
 static volatile u8 scheduler_active;
 u32 heap_used;
@@ -2086,6 +2089,8 @@ static void wake_parent(int child_slot) {
     int parent = find_pid(parent_pid);
     if (parent < 0)
         return;
+    if (!(tasks[parent].sig_ignored & SIGCHLD))
+        tasks[parent].sig_pending |= SIGCHLD;
     u32 wait_pid = tasks[parent].waiting_pid;
     if ((tasks[parent].state == TASK_BLOCKED ||
          tasks[parent].state == TASK_STOPPED) &&
@@ -2093,7 +2098,6 @@ static void wake_parent(int child_slot) {
         (wait_pid == 0 || wait_pid == tasks[child_slot].pid)) {
         tasks[parent].wait_status = tasks[child_slot].exit_code;
         tasks[parent].waiting_pid = WAIT_NONE;
-        tasks[parent].sig_pending |= SIGCHLD;
         if (tasks[parent].state == TASK_STOPPED)
             tasks[parent].stop_prev_state = TASK_READY;
         else
@@ -2458,10 +2462,28 @@ int task_signal_pid(u32 pid, u8 sig) {
     int t = find_pid(pid);
     if (t <= 0 || t >= task_cap)
         return 0;
+    if (sig & SIGSTOP)
+        return task_stop_pid(pid) ? 1 : 0;
+    if (sig & SIGCONT) {
+        int r = task_bg_pid(pid);
+        return r == 0 ? 0 : 1;
+    }
     u32 flags = irq_save_flags();
     if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
         irq_restore_flags(flags);
         return 0;
+    }
+    if (sig & SIGKILL) {
+        tasks[t].sleep_until = 0;
+        tasks[t].wait_kbd = 0;
+        tasks[t].waiting_pid = WAIT_NONE;
+        tasks[t].wait_pipe = 0;
+        tasks[t].wait_pipe_write = 0;
+        tasks[t].sig_pending |= SIGKILL;
+        tasks[t].kill_pending = 1;
+        tasks[t].state = TASK_READY;
+        irq_restore_flags(flags);
+        return 1;
     }
     if ((sig & (SIGINT | SIGTERM | SIGCHLD)) &&
         (tasks[t].sig_ignored & sig)) {
@@ -2479,19 +2501,6 @@ int task_signal_pid(u32 pid, u8 sig) {
     }
     if (sig & SIGTERM)
         tasks[t].kill_pending = 1;
-    else if (sig & SIGSTOP) {
-        if (tasks[t].state != TASK_STOPPED) {
-            tasks[t].stop_prev_state = tasks[t].state;
-            tasks[t].state = TASK_STOPPED;
-        }
-    } else if (sig & SIGCONT) {
-        if (tasks[t].state == TASK_STOPPED) {
-            u8 prev = tasks[t].stop_prev_state;
-            tasks[t].stop_prev_state = 0;
-            tasks[t].state = prev == TASK_BLOCKED ? TASK_BLOCKED : TASK_READY;
-        }
-        tasks[t].sig_pending &= (u8)~SIGSTOP;
-    }
     irq_restore_flags(flags);
     return 1;
 }
@@ -2680,7 +2689,9 @@ static int task_spawn_user(const char *name) {
         return 0;
     if (name_is_py(name)) {
         const char *argv[2] = { "py", name };
-        if (!run_user_module_ex("MPY.BIN", 2, argv))
+        int ok = run_user_module_ex("MPY.BIN", 2, argv);
+        __asm__ __volatile__("cli");
+        if (!ok)
             return 0;
         int child = last_created_slot;
         if (child <= 0 || child >= task_cap)
@@ -2782,12 +2793,13 @@ static int task_wait_block(u32 want_pid, int nohang, u32 frame) {
     if (tasks[child].state == TASK_DONE) {
         u32 status = tasks[child].exit_code;
         tasks[child].state = TASK_FREE;
+        tasks[child].reap_pending = 0;
         task_free_frames(child);
         SYS_RET(frame) = status;
         return 0;
     }
     if (nohang) {
-        SYS_RET(frame) = 0;
+        SYS_RET(frame) = 0xFFFFFFFEu;
         return 0;
     }
 

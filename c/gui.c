@@ -2061,8 +2061,11 @@ static void run_command(struct console *c, char *line) {
             else if (starts_with(p, "CONT")) { sig = 8; p += 4; }
             else if (starts_with(p, "INT")) { sig = 1; p += 3; }
             else if (starts_with(p, "TERM")) { sig = 2; p += 4; }
-            else {
-                term_puts(c, "usage: kill [-STOP|-CONT|-INT|-TERM] PID\n");
+            else if (starts_with(p, "KILL") || *p == '9') {
+                sig = 32;
+                p += (*p == '9') ? 1 : 4;
+            } else {
+                term_puts(c, "usage: kill [-STOP|-CONT|-INT|-TERM|-KILL] PID\n");
                 return;
             }
             while (*p == ' ')
