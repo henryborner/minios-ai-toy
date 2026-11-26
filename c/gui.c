@@ -2360,6 +2360,23 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "gctest")) {
+        extern int prepare_gc_script(void);
+        int self = (int)(c - consoles);
+        if (!prepare_gc_script()) {
+            term_puts(c, "gctest: script failed\n");
+        } else if (!gui_new_console()) {
+            c = &consoles[self];
+            term_puts(c, "gctest: console failed\n");
+        } else {
+            int nc = console_count - 1;
+            if (!launch_python(&consoles[nc], "GCTEST.PY"))
+                term_puts(c, "gctest: launch failed\n");
+            else
+                term_puts(c, "gctest: started\n");
+            c = &consoles[self];
+            focus_window(consoles[self].win_id);
+        }
     } else if (streq(line, "memmap")) {
         volatile u32 *magic = (volatile u32 *)0x1800u;
         volatile u16 *ver = (volatile u16 *)0x1804u;

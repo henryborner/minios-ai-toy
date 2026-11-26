@@ -781,7 +781,8 @@ static void gdt_install(void) {
 #define MAX_PHYS          0x80000000u
 #define MAX_FRAME_PAGES   (MAX_PHYS / 0x1000u)
 #define DIRECT_PHYS_START 0x00400000u
-#define DIRECT_BASE       0x01000000u
+#define DIRECT_BASE       0xF0000000u
+#define LOW_DIRECT_PDE    (DIRECT_BASE >> 22)
 #define HIGH_BASE         0x40000000u
 #define LOW_DIRECT_PT_COUNT 3u
 #define HIGH_PSE_COUNT    (MAX_PHYS / 0x400000u)
@@ -813,7 +814,7 @@ static void paging_install(void) {
     page_directory[0] = (u32)page_table0 | 0x003;   /* supervisor 0-4 MB */
     page_directory[1] = (u32)page_table1 | 0x007;   /* user-capable 4-8 MB */
     for (u32 i = 0; i < LOW_DIRECT_PT_COUNT; i++)
-        page_directory[4 + i] = (u32)direct_pt[i] | 0x003;
+        page_directory[LOW_DIRECT_PDE + i] = (u32)direct_pt[i] | 0x003;
     install_high_pse(page_directory);
     enable_pse();
     if (vbe_active)
@@ -1217,8 +1218,9 @@ int run_module(const char *name) {
 #define BIG_USER_STACK   0x00480000u
 #define BIG_USER_HEAP    0x00500000u
 #define HEAP_VIRT_BASE   0x00500000u
-#define HEAP_VIRT_MAX    0x00700000u
-#define HEAP_PAGE_INDEX  ((HEAP_VIRT_BASE - BIG_USER_CODE) / 0x1000)
+#define USER_PT_COUNT    20
+#define USER_END         (BIG_USER_CODE + USER_PT_COUNT * 0x400000u)
+#define HEAP_VIRT_MAX    USER_END
 #define BIG_STACK_PAGES  16
 #define BIG_HEAP_PAGES   256
 #define BIG_STACK_SIZE   (BIG_STACK_PAGES * 0x1000u)
@@ -1231,9 +1233,9 @@ struct task {
     u32 *tf;
     u32 cr3;
     u32 *pd;
-    u32 *upt;
+    u32 *upt[USER_PT_COUNT];
+    u32 upt_phys[USER_PT_COUNT];
     u32 pd_phys;
-    u32 upt_phys;
     u8 *kstack;
     u16 kstack_pages;
     struct fd_entry *fds;
@@ -1243,7 +1245,7 @@ struct task {
     u32 heap_phys;
     u16 code_pages;
     u16 stack_pages;
-    u16 heap_pages;
+    u32 heap_pages;
     u8 shared_ro;
     u8  state;
     char name[16];
@@ -1770,14 +1772,14 @@ void *kernel_alloc_pages_zero(u32 pages) {
 }
 
 void kernel_free_pages_ptr(void *p, u32 pages) {
-    if (!p || (u32)p < DIRECT_BASE)
+    if (!p || (u32)p < HIGH_BASE)
         return;
     u32 v = (u32)p;
     u32 phys;
-    if (v >= HIGH_BASE)
-        phys = v - HIGH_BASE;
-    else
+    if (v >= DIRECT_BASE)
         phys = DIRECT_PHYS_START + (v - DIRECT_BASE);
+    else
+        phys = v - HIGH_BASE;
     frame_free_pages(phys, pages);
 }
 
@@ -1798,7 +1800,7 @@ static void task_system_init(void) {
         }
         sched_safe_pd[0] = (u32)sched_safe_pt | 0x003;
         for (u32 i = 0; i < LOW_DIRECT_PT_COUNT; i++)
-            sched_safe_pd[4 + i] = (u32)direct_pt[i] | 0x003;
+            sched_safe_pd[LOW_DIRECT_PDE + i] = (u32)direct_pt[i] | 0x003;
         install_high_pse(sched_safe_pd);
         enable_pse();
         sched_safe_ready = 1;
@@ -1818,14 +1820,16 @@ static void task_system_init(void) {
     }
 }
 
+static u32 user_unmap_page(int slot, u32 va);
+static void user_maybe_free_table(int slot, u32 va);
+
 static void task_free_heap(int slot) {
-    if (!tasks[slot].upt)
-        return;
-    for (int i = 0; i < tasks[slot].heap_pages; i++) {
-        u32 pte = tasks[slot].upt[HEAP_PAGE_INDEX + i];
-        if (pte & 1)
-            frame_free_pages(pte & 0xFFFFF000u, 1);
-        tasks[slot].upt[HEAP_PAGE_INDEX + i] = 0;
+    for (u32 i = 0; i < tasks[slot].heap_pages; i++) {
+        u32 va = HEAP_VIRT_BASE + i * 0x1000u;
+        u32 phys = user_unmap_page(slot, va);
+        if (phys)
+            frame_free_pages(phys, 1);
+        user_maybe_free_table(slot, va);
     }
     tasks[slot].heap_pages = 0;
     tasks[slot].heap_phys = 0;
@@ -1912,24 +1916,112 @@ static int task_alloc_slot(void) {
     return task_cap > old ? old : -1;
 }
 
+static inline void brk_invlpg(u32 va);
+
+static u32 *user_pte_ptr(int slot, u32 va) {
+    u32 pde = va >> 22;
+    if (slot < 0 || slot >= task_cap || pde < 1 || pde > USER_PT_COUNT)
+        return 0;
+    u32 idx = pde - 1;
+    if (!tasks[slot].upt[idx])
+        return 0;
+    return &tasks[slot].upt[idx][(va >> 12) & 1023u];
+}
+
+static u32 user_pte_get(int slot, u32 va) {
+    u32 *pte = user_pte_ptr(slot, va);
+    return pte ? *pte : 0;
+}
+
+static int user_ensure_table(int slot, u32 va) {
+    u32 pde = va >> 22;
+    if (pde < 1 || pde > USER_PT_COUNT)
+        return 0;
+    u32 idx = pde - 1;
+    if (tasks[slot].upt[idx])
+        return 1;
+    u32 phys = frame_alloc_low_pages(1);
+    if (!phys)
+        return 0;
+    frame_zero(phys, 1);
+    tasks[slot].upt_phys[idx] = phys;
+    tasks[slot].upt[idx] = (u32 *)direct_ptr(phys);
+    tasks[slot].pd[pde] = phys | 0x007;
+    return 1;
+}
+
+static int user_map_page(int slot, u32 va, u32 phys, u32 flags) {
+    if (va < BIG_USER_CODE || va >= USER_END ||
+        !user_ensure_table(slot, va))
+        return 0;
+    u32 *pte = user_pte_ptr(slot, va);
+    if (!pte)
+        return 0;
+    *pte = phys | flags;
+    if (slot == current_task)
+        brk_invlpg(va);
+    return 1;
+}
+
+static u32 user_unmap_page(int slot, u32 va) {
+    u32 *pte = user_pte_ptr(slot, va);
+    if (!pte)
+        return 0;
+    u32 phys = *pte & 0xFFFFF000u;
+    if (!(*pte & 1))
+        return 0;
+    *pte = 0;
+    if (slot == current_task)
+        brk_invlpg(va);
+    return phys;
+}
+
+static void user_maybe_free_table(int slot, u32 va) {
+    u32 pde = va >> 22;
+    if (slot < 0 || slot >= task_cap || pde < 1 || pde > USER_PT_COUNT)
+        return;
+    u32 idx = pde - 1;
+    if (!tasks[slot].upt[idx])
+        return;
+    for (int i = 0; i < 1024; i++)
+        if (tasks[slot].upt[idx][i] & 1)
+            return;
+    u32 phys = tasks[slot].upt_phys[idx];
+    tasks[slot].pd[pde] = 0;
+    tasks[slot].upt[idx] = 0;
+    tasks[slot].upt_phys[idx] = 0;
+    if (slot == current_task)
+        brk_invlpg(va & 0xFFC00000u);
+    if (phys)
+        frame_free_pages(phys, 1);
+}
+
+static void user_free_tables(int slot) {
+    for (u32 idx = 0; idx < USER_PT_COUNT; idx++) {
+        if (tasks[slot].upt_phys[idx]) {
+            if (slot == current_task)
+                brk_invlpg(BIG_USER_CODE + (idx + 1) * 0x400000u);
+            frame_free_pages(tasks[slot].upt_phys[idx], 1);
+        }
+        tasks[slot].upt[idx] = 0;
+        tasks[slot].upt_phys[idx] = 0;
+    }
+}
+
 static int task_fill_pd(int slot) {
     u32 pd_phys = frame_alloc_low_pages(1);
-    u32 upt_phys = frame_alloc_low_pages(1);
-    if (!pd_phys || !upt_phys) {
-        if (pd_phys) frame_free_pages(pd_phys, 1);
-        if (upt_phys) frame_free_pages(upt_phys, 1);
+    if (!pd_phys)
         return 0;
-    }
     frame_zero(pd_phys, 1);
-    frame_zero(upt_phys, 1);
     tasks[slot].pd = (u32 *)direct_ptr(pd_phys);
-    tasks[slot].upt = (u32 *)direct_ptr(upt_phys);
     tasks[slot].pd_phys = pd_phys;
-    tasks[slot].upt_phys = upt_phys;
+    for (u32 i = 0; i < USER_PT_COUNT; i++) {
+        tasks[slot].upt[i] = 0;
+        tasks[slot].upt_phys[i] = 0;
+    }
     tasks[slot].pd[0] = (u32)task_kernel_pt | 0x003;
-    tasks[slot].pd[1] = upt_phys | 0x007;
     for (u32 i = 0; i < LOW_DIRECT_PT_COUNT; i++)
-        tasks[slot].pd[4 + i] = (u32)direct_pt[i] | 0x003;
+        tasks[slot].pd[LOW_DIRECT_PDE + i] = (u32)direct_pt[i] | 0x003;
     install_high_pse(tasks[slot].pd);
     if (vbe_active)
         tasks[slot].pd[VBE_PDE_INDEX] = vbe_pde_entry;
@@ -2054,8 +2146,14 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     for (u32 i = 0; i < len; i++)
         codev[i] = src[i];
 
-    tasks[slot].upt[0] = code | 0x007;
-    tasks[slot].upt[1] = stack | 0x007;
+    if (!user_map_page(slot, 0x00400000u, code, 0x007) ||
+        !user_map_page(slot, 0x00402000u, stack, 0x007)) {
+        frame_free_pages(code, 1);
+        frame_free_pages(stack, 1);
+        task_free_frames(slot);
+        tasks[slot].state = TASK_FREE;
+        return -1;
+    }
 
     u32 top = (u32)(tasks[slot].kstack + tasks[slot].kstack_pages * 4096);
     u32 *frame = (u32 *)(top - 52);
@@ -2146,16 +2244,14 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
 
     u32 code = data_pages ? frame_alloc_pages(data_pages) : 0;
     u32 stack = frame_alloc_pages(BIG_STACK_PAGES);
-    u32 heap = frame_alloc_pages(BIG_HEAP_PAGES);
-    if ((data_pages && !code) || !stack || !heap ||
-        !task_alloc_runtime(slot, 2)) {
+    if ((data_pages && !code) || !stack || !task_alloc_runtime(slot, 2)) {
         if (code) frame_free_pages(code, data_pages);
         if (stack) frame_free_pages(stack, BIG_STACK_PAGES);
-        if (heap) frame_free_pages(heap, BIG_HEAP_PAGES);
         task_free_frames(slot);
         tasks[slot].state = TASK_FREE;
         return -1;
     }
+    tasks[slot].heap_pages = 0;
 
     u8 *src = (u8 *)BIG_CODE_PHYS;
     if (use_shared) {
@@ -2164,7 +2260,6 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
             if (!shared_ro_phys) {
                 if (code) frame_free_pages(code, data_pages);
                 frame_free_pages(stack, BIG_STACK_PAGES);
-                frame_free_pages(heap, BIG_HEAP_PAGES);
                 task_free_frames(slot);
                 tasks[slot].state = TASK_FREE;
                 return -1;
@@ -2187,20 +2282,34 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
         }
     }
     frame_zero(stack, BIG_STACK_PAGES);
-    frame_zero(heap, BIG_HEAP_PAGES);
 
-    for (u32 i = 0; i < ro_pages; i++)
-        tasks[slot].upt[i] = (shared_ro_phys + i * 0x1000) | 0x005;
-    for (u32 i = 0; i < data_pages; i++)
-        tasks[slot].upt[ro_pages + i] = (code + i * 0x1000) | 0x007;
-
-    u32 stack_page = (BIG_USER_STACK - BIG_USER_CODE) / 0x1000;
-    for (u32 i = 0; i < BIG_STACK_PAGES; i++)
-        tasks[slot].upt[stack_page + i] = (stack + i * 0x1000) | 0x007;
-
-    u32 heap_page = (BIG_USER_HEAP - BIG_USER_CODE) / 0x1000;
-    for (u32 i = 0; i < BIG_HEAP_PAGES; i++)
-        tasks[slot].upt[heap_page + i] = (heap + i * 0x1000) | 0x007;
+    for (u32 i = 0; i < ro_pages; i++) {
+        if (!user_map_page(slot, BIG_USER_CODE + i * 0x1000u,
+                           shared_ro_phys + i * 0x1000u, 0x005))
+            goto map_fail;
+    }
+    for (u32 i = 0; i < data_pages; i++) {
+        if (!user_map_page(slot, BIG_USER_CODE + (ro_pages + i) * 0x1000u,
+                           code + i * 0x1000u, 0x007))
+            goto map_fail;
+    }
+    for (u32 i = 0; i < BIG_STACK_PAGES; i++) {
+        if (!user_map_page(slot, BIG_USER_STACK + i * 0x1000u,
+                           stack + i * 0x1000u, 0x007))
+            goto map_fail;
+    }
+    for (u32 i = 0; i < BIG_HEAP_PAGES; i++) {
+        u32 hp = frame_alloc_pages(1);
+        if (!hp)
+            goto map_fail;
+        frame_zero(hp, 1);
+        tasks[slot].heap_pages = i + 1;
+        if (!user_map_page(slot, BIG_USER_HEAP + i * 0x1000u, hp, 0x007)) {
+            frame_free_pages(hp, 1);
+            tasks[slot].heap_pages = i;
+            goto map_fail;
+        }
+    }
 
     u32 top = (u32)(tasks[slot].kstack + tasks[slot].kstack_pages * 4096);
     u32 *frame = (u32 *)(top - 52);
@@ -2217,7 +2326,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].cr3 = tasks[slot].pd_phys;
     tasks[slot].code_phys = code;
     tasks[slot].stack_phys = stack;
-    tasks[slot].heap_phys = heap;
+    tasks[slot].heap_phys = 0;
     tasks[slot].code_pages = (u16)data_pages;
     tasks[slot].stack_pages = BIG_STACK_PAGES;
     tasks[slot].heap_pages = BIG_HEAP_PAGES;
@@ -2252,6 +2361,13 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     task_set_name(slot, name);
     last_created_slot = slot;
     return slot;
+
+map_fail:
+    if (code) frame_free_pages(code, data_pages);
+    frame_free_pages(stack, BIG_STACK_PAGES);
+    task_free_frames(slot);
+    tasks[slot].state = TASK_FREE;
+    return -1;
 }
 
 static void start_tasks(int first) {
@@ -2409,10 +2525,9 @@ static void task_free_frames(int slot) {
         frame_free_pages(tasks[slot].stack_phys, tasks[slot].stack_pages);
     task_free_heap(slot);
     if (slot > 0) {
+        user_free_tables(slot);
         if (tasks[slot].pd)
             kernel_free_pages_ptr(tasks[slot].pd, 1);
-        if (tasks[slot].upt)
-            kernel_free_pages_ptr(tasks[slot].upt, 1);
         if (tasks[slot].kstack) {
             task_guard_pte(tasks[slot].kstack, 1);
             kernel_free_pages_ptr(tasks[slot].kstack, tasks[slot].kstack_pages);
@@ -2420,12 +2535,10 @@ static void task_free_frames(int slot) {
         if (tasks[slot].fds)
             kernel_free_pages_ptr(tasks[slot].fds, 1);
         tasks[slot].pd = 0;
-        tasks[slot].upt = 0;
         tasks[slot].kstack = 0;
         tasks[slot].fds = 0;
         tasks[slot].kstack_pages = 0;
         tasks[slot].pd_phys = 0;
-        tasks[slot].upt_phys = 0;
     }
     tasks[slot].code_phys = 0;
     tasks[slot].stack_phys = 0;
@@ -4216,6 +4329,15 @@ int prepare_pipe_scripts(void) {
            make_pipe_script("PCONS.PY", cons);
 }
 
+int prepare_gc_script(void) {
+    return make_pipe_script("GCTEST.PY",
+        "print('gc start')\n"
+        "a = bytearray(8 * 1024 * 1024)\n"
+        "a[0] = 65\n"
+        "a[-1] = 66\n"
+        "print('gc ok', len(a), a[0], a[-1])\n");
+}
+
 int prepare_regress_scripts(void) {
     const char *child =
         "from minios import exit_status\n"
@@ -5238,8 +5360,8 @@ static inline void brk_invlpg(u32 va) {
 static u32 task_brk(u32 addr) {
     if (current_task < 0 || current_task >= task_cap)
         return 0xFFFFFFFFu;
-    u16 old_pages = tasks[current_task].heap_pages;
-    u32 cur = HEAP_VIRT_BASE + (u32)old_pages * 0x1000u;
+    u32 old_pages = tasks[current_task].heap_pages;
+    u32 cur = HEAP_VIRT_BASE + old_pages * 0x1000u;
     if (addr == 0)
         return cur;
     if (addr < HEAP_VIRT_BASE || addr > HEAP_VIRT_MAX)
@@ -5248,36 +5370,37 @@ static u32 task_brk(u32 addr) {
 
     if (pages < old_pages) {
         for (u32 i = pages; i < old_pages; i++) {
-            u32 pte = tasks[current_task].upt[HEAP_PAGE_INDEX + i];
-            tasks[current_task].upt[HEAP_PAGE_INDEX + i] = 0;
-            brk_invlpg(HEAP_VIRT_BASE + i * 0x1000u);
-            if (pte & 1)
-                frame_free_pages(pte & 0xFFFFF000u, 1);
+            u32 va = HEAP_VIRT_BASE + i * 0x1000u;
+            u32 phys = user_unmap_page(current_task, va);
+            if (phys)
+                frame_free_pages(phys, 1);
+            user_maybe_free_table(current_task, va);
         }
-        tasks[current_task].heap_pages = (u16)pages;
+        tasks[current_task].heap_pages = pages;
         tasks[current_task].heap_phys = 0;
         return HEAP_VIRT_BASE + pages * 0x1000u;
     }
 
     for (u32 i = old_pages; i < pages; i++) {
         u32 phys = frame_alloc_pages(1);
-        if (!phys) {
+        if (!phys || !user_map_page(current_task, HEAP_VIRT_BASE + i * 0x1000u,
+                                    phys, 0x007)) {
+            if (phys)
+                frame_free_pages(phys, 1);
             for (u32 j = old_pages; j < i; j++) {
-                u32 pte = tasks[current_task].upt[HEAP_PAGE_INDEX + j];
-                tasks[current_task].upt[HEAP_PAGE_INDEX + j] = 0;
-                brk_invlpg(HEAP_VIRT_BASE + j * 0x1000u);
-                if (pte & 1)
-                    frame_free_pages(pte & 0xFFFFF000u, 1);
+                u32 va = HEAP_VIRT_BASE + j * 0x1000u;
+                u32 p = user_unmap_page(current_task, va);
+                if (p)
+                    frame_free_pages(p, 1);
+                user_maybe_free_table(current_task, va);
             }
             tasks[current_task].heap_pages = old_pages;
             return 0xFFFFFFFFu;
         }
         frame_zero(phys, 1);
-        if (i == old_pages)
-            tasks[current_task].heap_phys = phys;
-        tasks[current_task].upt[HEAP_PAGE_INDEX + i] = phys | 0x007;
     }
-    tasks[current_task].heap_pages = (u16)pages;
+    tasks[current_task].heap_pages = pages;
+    tasks[current_task].heap_phys = 0;
     return HEAP_VIRT_BASE + pages * 0x1000u;
 }
 
@@ -5326,28 +5449,33 @@ static int fd_close(int fd) {
 }
 
 #define USER_BASE 0x400000u
-#define USER_END  0x800000u
 
 static int user_page_present(u32 addr) {
     if (addr < USER_BASE || addr >= USER_END)
         return 0;
-    u32 idx = (addr - USER_BASE) >> 12;
-    if (!scheduler_active)
+    if (!scheduler_active) {
+        if (addr >= 0x800000u)
+            return 0;
+        u32 idx = (addr - USER_BASE) >> 12;
         return (page_table1[idx] & 5) == 5;
+    }
     if (current_task < 0 || current_task >= task_cap)
         return 0;
-    return (tasks[current_task].upt[idx] & 5) == 5;
+    return (user_pte_get(current_task, addr) & 5) == 5;
 }
 
 static int user_page_writable(u32 addr) {
     if (addr < USER_BASE || addr >= USER_END)
         return 0;
-    u32 idx = (addr - USER_BASE) >> 12;
-    if (!scheduler_active)
+    if (!scheduler_active) {
+        if (addr >= 0x800000u)
+            return 0;
+        u32 idx = (addr - USER_BASE) >> 12;
         return (page_table1[idx] & 7) == 7;
+    }
     if (current_task < 0 || current_task >= task_cap)
         return 0;
-    return (tasks[current_task].upt[idx] & 7) == 7;
+    return (user_pte_get(current_task, addr) & 7) == 7;
 }
 
 static int user_ptr_ok(u32 ptr, u32 size) {
@@ -5954,6 +6082,8 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
 
 
 

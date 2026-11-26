@@ -18,7 +18,7 @@
 
 #define USER_HEAP_START 0x00500000u
 #define USER_HEAP_INIT  0x00600000u /* Default 1 MB mapped by task_create_big */
-#define USER_HEAP_GOAL  0x00680000u /* Grow to 1.5 MB via brk (syscall 20) */
+#define USER_HEAP_GOAL  0x00F00000u /* 10 MiB MPY GC region via brk (syscall 20) */
 
 extern void nlr_jump_asm(nlr_buf_t *top) __attribute__((noreturn));
 extern void minios_gc_collect_regs(uintptr_t stack_top);
