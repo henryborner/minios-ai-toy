@@ -29,6 +29,12 @@ volatile int mouse_y = 100;
 volatile int mouse_buttons = 0;
 static u32 irq_save_flags(void);
 static void irq_restore_flags(u32 flags);
+#define SIGINT       1u
+#define SIGTERM      2u
+#define SIGSTOP      4u
+#define SIGCONT      8u
+#define SIG_TERM_MASK (SIGINT | SIGTERM)
+static void task_signal_console(int cid, u8 sig);
 static volatile u8 scheduler_active;
 u32 heap_used;
 
@@ -289,6 +295,8 @@ static void wake_kbd_tasks(int c);
 
 static void kbd_push(u8 ch) {
     int c = gui_focused_console();
+    if (ch == 3)
+        task_signal_console(c, SIGINT);
     if (c < 0 || c >= kbd_console_count)
         c = 0;
     u8 next = (u8)((kbd_head[c] + 1) & 63);
@@ -1177,7 +1185,6 @@ int run_module(const char *name) {
 #define TASK_BLOCKED 4
 #define TASK_STOPPED 5
 #define WAIT_NONE    0xFFFFFFFFu
-
 #define TIME_SLICE_TICKS 1
 
 /* One large Ring 3 task for the MicroPython-class layout. */
@@ -1235,6 +1242,7 @@ struct task {
     u8 reap_pending;
     u8 stop_prev_state;
     u8 kill_pending;
+    u8 sig_pending;
     u8 wait_kbd;
     u8 wait_pipe_write;
     u8 pipe_w_id;
@@ -1512,6 +1520,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].cpu_ticks = 0;
         tasks[t].console_id = 0;
         tasks[t].kill_pending = 0;
+        tasks[t].sig_pending = 0;
         tasks[t].wait_kbd = 0;
         tasks[t].kesp = 0;
         tasks[t].tf = 0;
@@ -1741,6 +1750,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].pipe_r_id = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
+    tasks[slot].sig_pending = 0;
     tasks[slot].wait_kbd = 0;
     fpu_task_default(tasks[slot].fpu);
     task_set_name(slot, name);
@@ -1883,6 +1893,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].pipe_r_id = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
+    tasks[slot].sig_pending = 0;
     tasks[slot].wait_kbd = 0;
     fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
@@ -2083,6 +2094,7 @@ static void wake_parent(int child_slot) {
 }
 
 static void task_exit(u32 status);
+static void adopt_children(int slot);
 
 static u32 irq_save_flags(void) {
     u32 flags;
@@ -2123,6 +2135,11 @@ static void sched_timer_tick(u32 *frame) {
         return;
 
     if (tasks[current_task].kill_pending) {
+        tasks[current_task].kill_pending = 0;
+        task_exit(0xFFFFu);
+    }
+    if (tasks[current_task].sig_pending & SIG_TERM_MASK) {
+        tasks[current_task].sig_pending &= (u8)~SIG_TERM_MASK;
         tasks[current_task].kill_pending = 0;
         task_exit(0xFFFFu);
     }
@@ -2167,6 +2184,7 @@ static void task_yield(u32 frame) {
 static void task_exit(u32 status) {
     int me = current_task;
     int cid = tasks[me].console_id;
+    adopt_children(me);
     pipe_release_task(me);
     tasks[me].exit_code = status;
     tasks[me].state = TASK_DONE;
@@ -2370,14 +2388,16 @@ static char *ps_str(char *p, const char *s) {
 }
 
 void task_ps(void) {
-    gui_sys_print("PID CON STATE PAGES CPU NAME\n");
-    serial_puts("PS\r\nPID CON STATE PAGES CPU NAME\r\n");
+    gui_sys_print("PID PPID CON STATE PAGES CPU NAME\n");
+    serial_puts("PS\r\nPID PPID CON STATE PAGES CPU NAME\r\n");
     for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
             continue;
         char line[96];
         char *p = line;
         p = ps_u32(p, tasks[t].pid);
+        *p++ = ' ';
+        p = ps_u32(p, tasks[t].parent_pid);
         *p++ = ' ';
         p = ps_u32(p, (u32)tasks[t].console_id + 1);
         *p++ = ' ';
@@ -2426,6 +2446,51 @@ u32 kernel_task_cpu(u32 pid) {
     return t >= 0 ? tasks[t].cpu_ticks : 0;
 }
 
+int task_signal_pid(u32 pid, u8 sig) {
+    int t = find_pid(pid);
+    if (t <= 0 || t >= task_cap)
+        return 0;
+    u32 flags = irq_save_flags();
+    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
+        irq_restore_flags(flags);
+        return 0;
+    }
+    tasks[t].sig_pending |= sig;
+    if (sig & SIG_TERM_MASK) {
+        tasks[t].sleep_until = 0;
+        tasks[t].wait_kbd = 0;
+        tasks[t].waiting_pid = WAIT_NONE;
+        tasks[t].wait_pipe = 0;
+        tasks[t].wait_pipe_write = 0;
+        tasks[t].kill_pending = 1;
+        tasks[t].state = TASK_READY;
+    } else if (sig & SIGSTOP) {
+        if (tasks[t].state != TASK_STOPPED) {
+            tasks[t].stop_prev_state = tasks[t].state;
+            tasks[t].state = TASK_STOPPED;
+        }
+    } else if (sig & SIGCONT) {
+        if (tasks[t].state == TASK_STOPPED) {
+            tasks[t].stop_prev_state = 0;
+            tasks[t].state = TASK_READY;
+        }
+        tasks[t].sig_pending &= (u8)~SIGSTOP;
+    }
+    irq_restore_flags(flags);
+    return 1;
+}
+
+void task_signal_console(int cid, u8 sig) {
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+            continue;
+        if ((int)tasks[t].console_id == cid) {
+            task_signal_pid(tasks[t].pid, sig);
+            return;
+        }
+    }
+}
+
 int task_kill_pid(u32 pid) {
     int target = -1;
     if (pid == 0)
@@ -2449,6 +2514,7 @@ int task_kill_pid(u32 pid) {
     tasks[target].exit_code = 0xFFFFu;
     int cid = tasks[target].console_id;
     u32 tpid = tasks[target].pid;
+    adopt_children(target);
     tasks[target].state = TASK_DONE;
     tasks[target].reap_pending = 0;
     wake_parent(target);
@@ -2486,6 +2552,7 @@ int task_stop_pid(u32 pid) {
         return 2;
     }
     tasks[t].stop_prev_state = tasks[t].state;
+    tasks[t].sig_pending |= SIGSTOP;
     tasks[t].state = TASK_STOPPED;
     irq_restore_flags(flags);
     return 1;
@@ -2509,6 +2576,7 @@ int task_bg_pid(u32 pid) {
     }
     u8 prev = tasks[t].stop_prev_state;
     tasks[t].stop_prev_state = 0;
+    tasks[t].sig_pending = (u8)((tasks[t].sig_pending & ~SIGSTOP) | SIGCONT);
     if (prev == TASK_BLOCKED) {
         if (tasks[t].waiting_pid != WAIT_NONE) {
             if (tasks[t].waiting_pid == 0) {
@@ -2659,7 +2727,7 @@ static int task_spawn_args(const char *name, u32 argv, u32 argc) {
     return (int)tasks[child].pid;
 }
 
-static int task_wait_block(u32 want_pid, u32 frame) {
+static int task_wait_block(u32 want_pid, int nohang, u32 frame) {
     u32 my_pid = tasks[current_task].pid;
     int child = -1;
     for (int t = 0; t < task_cap; t++) {
@@ -2679,6 +2747,10 @@ static int task_wait_block(u32 want_pid, u32 frame) {
         SYS_RET(frame) = status;
         return 0;
     }
+    if (nohang) {
+        SYS_RET(frame) = 0;
+        return 0;
+    }
 
     tasks[current_task].waiting_pid = want_pid;
     tasks[current_task].state = TASK_BLOCKED;
@@ -2686,6 +2758,14 @@ static int task_wait_block(u32 want_pid, u32 frame) {
     SYS_RET(frame) = tasks[current_task].wait_status;
     tasks[current_task].wait_status = 0;
     return 0;
+}
+
+static void adopt_children(int slot) {
+    u32 pid = tasks[slot].pid;
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state != TASK_FREE && tasks[t].parent_pid == pid)
+            tasks[t].parent_pid = 0;
+    }
 }
 
 static void task_sleep_block(u32 ms, u32 frame) {
@@ -4586,7 +4666,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             pid = task_spawn_user((const char *)name);
         SYS_RET(frame) = (u32)pid;
     } else if (number == 9) {
-        int r = task_wait_block(SYS_ARG1(frame), frame);
+        int r = task_wait_block(SYS_ARG1(frame), SYS_ARG2(frame) != 0, frame);
         if (r < 0)
             SYS_RET(frame) = 0xFFFFFFFFu;
     } else if (number == 10) {
@@ -5060,6 +5140,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

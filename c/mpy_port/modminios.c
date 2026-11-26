@@ -291,6 +291,12 @@ static mp_obj_t minios_pipe_close_read(mp_obj_t id_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(minios_pipe_close_read_obj, minios_pipe_close_read);
 
+static mp_obj_t minios_wait(mp_obj_t pid_in, mp_obj_t nohang_in) {
+    return mp_obj_new_int(sys_wait(mp_obj_get_int(pid_in),
+                                   mp_obj_get_int(nohang_in)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_2(minios_wait_obj, minios_wait);
+
 static mp_obj_t minios_getchar(void) {
     return mp_obj_new_int(sys_getchar());
 }
@@ -440,6 +446,7 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&minios_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_sysinfo), MP_ROM_PTR(&minios_sysinfo_obj) },
     { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
+    { MP_ROM_QSTR(MP_QSTR_wait), MP_ROM_PTR(&minios_wait_obj) },
     { MP_ROM_QSTR(MP_QSTR_getchar), MP_ROM_PTR(&minios_getchar_obj) },
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&minios_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_serial_write), MP_ROM_PTR(&minios_serial_write_obj) },

@@ -2035,16 +2035,15 @@ static void run_command(struct console *c, char *line) {
         extern void task_ps(void);
         task_ps();
     } else if (starts_with(line, "kill ")) {
-        extern int task_kill_pid(u32 pid);
+        extern int task_signal_pid(u32 pid, u8 sig);
         u32 pid = 0;
         const char *p = line + 5;
         while (*p >= '0' && *p <= '9') {
             pid = pid * 10 + (u32)(*p - '0');
             p++;
         }
-        int r = task_kill_pid(pid);
-        if (r == 1) term_puts(c, "killed.\n");
-        else if (r == 2) term_puts(c, "kill pending; scheduler will reap it.\n");
+        int r = task_signal_pid(pid, 2);
+        if (r == 1) term_puts(c, "terminated.\n");
         else term_puts(c, "no such task.\n");
     } else if (streq(line, "big512")) {
         extern int run_user_module(const char *name);

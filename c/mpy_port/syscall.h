@@ -123,6 +123,11 @@ static inline uint32_t sys_ticks_ms(void) {
     return minios_syscall0(SYS_TICKS_MS);
 }
 
+static inline int sys_wait(int pid, int nohang) {
+    return (int)(int32_t)minios_syscall2(SYS_WAIT, (uint32_t)pid,
+                                         nohang ? 1u : 0u);
+}
+
 static inline void sys_sleep_ms(uint32_t ms) {
     (void)minios_syscall1(SYS_SLEEP_MS, ms);
 }
