@@ -2610,19 +2610,19 @@ static void window_frame(int id) {
     fill_rect(w->x + 1, w->y + 1, w->w - 2, TITLE_H - 1, active ? 1 : 8);
     text_clip(w->x + 4, w->y + 4, w->title, 15, w->x + w->w - 46);
 
-    int max_hit = HIT_MAX_BASE + id;
-    if (is_pressed(max_hit))
+    int min_hit = HIT_MIN_BASE + id;
+    if (is_pressed(min_hit))
         sunken_box(w->x + w->w - 42, w->y + 2, 12, 12);
     else
         raise_box_col(w->x + w->w - 42, w->y + 2, 12, 12, 7);
-    title_icon(0, w->x + w->w - 42, w->y + 2, w->maximized);
+    title_icon(1, w->x + w->w - 42, w->y + 2, 0);
 
-    int min_hit = HIT_MIN_BASE + id;
-    if (is_pressed(min_hit))
+    int max_hit = HIT_MAX_BASE + id;
+    if (is_pressed(max_hit))
         sunken_box(w->x + w->w - 28, w->y + 2, 12, 12);
     else
         raise_box_col(w->x + w->w - 28, w->y + 2, 12, 12, 7);
-    title_icon(1, w->x + w->w - 28, w->y + 2, 0);
+    title_icon(0, w->x + w->w - 28, w->y + 2, w->maximized);
 
     int close_hit = HIT_CLOSE_BASE + id;
     if (is_pressed(close_hit))
@@ -3678,9 +3678,9 @@ static int hit_test(int x, int y) {
         int iy = 34;
         (void)iy;
         if (inside(x, y, w->x + w->w - 42, w->y + 2, 12, 12))
-            return HIT_MAX_BASE + id;
-        if (inside(x, y, w->x + w->w - 28, w->y + 2, 12, 12))
             return HIT_MIN_BASE + id;
+        if (inside(x, y, w->x + w->w - 28, w->y + 2, 12, 12))
+            return HIT_MAX_BASE + id;
         if (inside(x, y, w->x + w->w - 14, w->y + 2, 12, 12))
             return HIT_CLOSE_BASE + id;
         if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 82, 48, 20))
