@@ -27,6 +27,8 @@ u32 vbe_phys_base = 0x000A0000u;
 volatile int mouse_x = 160;
 volatile int mouse_y = 100;
 volatile int mouse_buttons = 0;
+static u32 irq_save_flags(void);
+static void irq_restore_flags(u32 flags);
 static volatile u8 scheduler_active;
 u32 heap_used;
 
@@ -80,7 +82,7 @@ int kernel_kbd_resize(int n) {
         kernel_free_pages_ptr((void *)oh, ((u32)old + 4095u) / 4096u);
         kernel_free_pages_ptr((void *)ot, ((u32)old + 4095u) / 4096u);
     }
-    __asm__ __volatile__("push %0; popf" : : "r"(flags));
+    irq_restore_flags(flags);
     return 1;
 }
 static volatile u8 gui_special_pending;
@@ -1220,6 +1222,7 @@ struct task {
     u32 wait_status;
     u32 sleep_until;
     u32 exit_code;
+    u32 cpu_ticks;
     u8 console_id;
     u8 reap_pending;
     u8 stop_prev_state;
@@ -1494,6 +1497,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].wait_status = 0;
         tasks[t].sleep_until = 0;
         tasks[t].exit_code = 0;
+        tasks[t].cpu_ticks = 0;
         tasks[t].console_id = 0;
         tasks[t].kill_pending = 0;
         tasks[t].wait_kbd = 0;
@@ -1524,7 +1528,7 @@ static void task_tables_grow(void) {
     if (old)
         kernel_free_pages_ptr(old,
             ((u32)(old_cap * sizeof(struct task)) + 4095u) / 4096u);
-    __asm__ __volatile__("push %0; popf" : : "r"(flags));
+    irq_restore_flags(flags);
 }
 
 static void task_tables_init(void) {
@@ -1700,6 +1704,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].wait_status = 0;
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
+    tasks[slot].cpu_ticks = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
     tasks[slot].wait_kbd = 0;
@@ -1837,6 +1842,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].wait_status = 0;
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
+    tasks[slot].cpu_ticks = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
     tasks[slot].wait_kbd = 0;
@@ -2037,9 +2043,32 @@ static void wake_parent(int child_slot) {
 
 static void task_exit(u32 status);
 
+static u32 irq_save_flags(void) {
+    u32 flags;
+    __asm__ __volatile__("pushfl; popl %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static void irq_restore_flags(u32 flags) {
+    __asm__ __volatile__("pushl %0; popfl" : : "r"(flags) : "memory");
+}
+
+static int task0_wanted(void) {
+    extern int gui_dirty_pending(void);
+    if (mouse_event || gui_special_pending || gui_dirty_pending())
+        return 1;
+    for (int t = 1; t < task_cap; t++)
+        if (tasks[t].state == TASK_DONE && tasks[t].reap_pending)
+            return 1;
+    return (ticks & 3) == 0;
+}
+
 static void sched_timer_tick(u32 *frame) {
     if (!scheduler_active)
         return;
+
+    if (current_task >= 0 && current_task < task_cap)
+        tasks[current_task].cpu_ticks++;
 
     for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].sleep_until != 0 &&
@@ -2063,7 +2092,26 @@ static void sched_timer_tick(u32 *frame) {
     quantum_ticks = 0;
 
     tasks[current_task].state = TASK_READY;
-    sched_switch(0);
+    int next = -1;
+    if (task0_wanted() && tasks[0].state == TASK_READY)
+        next = 0;
+    if (next < 0) {
+        for (int k = 1; k < task_cap; k++) {
+            int t = (current_task + k) % task_cap;
+            if (t == 0)
+                continue;
+            if (tasks[t].state == TASK_READY) {
+                next = t;
+                break;
+            }
+        }
+    }
+    if (next < 0 && tasks[0].state == TASK_READY)
+        next = 0;
+    if (next >= 0 && next != current_task)
+        sched_switch(next);
+    else
+        tasks[current_task].state = TASK_RUNNING;
 }
 
 static void task_yield(u32 frame) {
@@ -2157,11 +2205,11 @@ static char *ps_str(char *p, const char *s) {
 }
 
 void task_ps(void) {
-    gui_sys_print("PID CON STATE PAGES NAME\n");
+    gui_sys_print("PID CON STATE PAGES CPU NAME\n");
     for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
             continue;
-        char line[80];
+        char line[96];
         char *p = line;
         p = ps_u32(p, tasks[t].pid);
         *p++ = ' ';
@@ -2176,6 +2224,8 @@ void task_ps(void) {
         *p++ = ' ';
         p = ps_u32(p, (u32)tasks[t].code_pages + tasks[t].stack_pages +
                          tasks[t].heap_pages);
+        *p++ = ' ';
+        p = ps_u32(p, tasks[t].cpu_ticks);
         *p++ = ' ';
         p = ps_str(p, tasks[t].name);
         *p = 0;
@@ -2201,6 +2251,11 @@ int kernel_task_snapshot(int index, u32 *pid, int *console, u32 *state,
         return 1;
     }
     return 0;
+}
+
+u32 kernel_task_cpu(u32 pid) {
+    int t = find_pid(pid);
+    return t >= 0 ? tasks[t].cpu_ticks : 0;
 }
 
 int task_kill_pid(u32 pid) {
@@ -2239,35 +2294,37 @@ int task_kill_pid(u32 pid) {
 }
 
 int task_stop_pid(u32 pid) {
-    u32 flags;
-    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags));
     int t = find_pid(pid);
     if (t <= 0 || pid == 0 || tasks[t].state == TASK_FREE ||
-        tasks[t].state == TASK_DONE) {
-        __asm__ __volatile__("push %0; popf" : : "r"(flags));
+        tasks[t].state == TASK_DONE)
+        return 0;
+    u32 flags = irq_save_flags();
+    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
+        irq_restore_flags(flags);
         return 0;
     }
     if (tasks[t].state == TASK_STOPPED) {
-        __asm__ __volatile__("push %0; popf" : : "r"(flags));
+        irq_restore_flags(flags);
         return 2;
     }
     tasks[t].stop_prev_state = tasks[t].state;
     tasks[t].state = TASK_STOPPED;
-    __asm__ __volatile__("push %0; popf" : : "r"(flags));
+    irq_restore_flags(flags);
     return 1;
 }
 
 int task_bg_pid(u32 pid) {
-    u32 flags;
-    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags));
     int t = find_pid(pid);
     if (t <= 0 || pid == 0 || tasks[t].state == TASK_FREE ||
-        tasks[t].state == TASK_DONE) {
-        __asm__ __volatile__("push %0; popf" : : "r"(flags));
+        tasks[t].state == TASK_DONE)
+        return 0;
+    u32 flags = irq_save_flags();
+    if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE) {
+        irq_restore_flags(flags);
         return 0;
     }
     if (tasks[t].state != TASK_STOPPED) {
-        __asm__ __volatile__("push %0; popf" : : "r"(flags));
+        irq_restore_flags(flags);
         return 2;
     }
     u8 prev = tasks[t].stop_prev_state;
@@ -2306,7 +2363,7 @@ int task_bg_pid(u32 pid) {
     } else {
         tasks[t].state = TASK_READY;
     }
-    __asm__ __volatile__("push %0; popf" : : "r"(flags));
+    irq_restore_flags(flags);
     return 1;
 }
 
@@ -3082,6 +3139,29 @@ int run_demo_n(int n) {
         if (!make_demo_script(files[i], (char)('A' + i)))
             return 0;
     return run_n_python(files, n);
+}
+
+static int make_cpu_script(const char *name) {
+    int old = ramfile_find(name);
+    if (old >= 0)
+        ramfile_delete(old);
+    int idx = ramfile_create(name);
+    if (idx < 0)
+        return 0;
+    const char *body = "i = 0\nwhile True:\n    i += 1\n";
+    int n = 0;
+    while (body[n]) n++;
+    struct ramfile *r = &ramfiles[idx];
+    if (ramfile_rw(r, 0, (u8 *)body, (u32)n, 1) != n) {
+        ramfile_delete(idx);
+        return 0;
+    }
+    r->size = (u32)n;
+    return 1;
+}
+
+int prepare_cpu_scripts(void) {
+    return make_cpu_script("CPUA.PY") && make_cpu_script("CPUB.PY");
 }
 
 int run_four_demo(void) {
@@ -4474,6 +4554,8 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
 
 
 

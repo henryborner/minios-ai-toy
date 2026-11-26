@@ -1494,10 +1494,11 @@ static void run_command(struct console *c, char *line) {
 
     if (streq(line, "jobs")) {
         extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
+        extern u32 kernel_task_cpu(u32 pid);
         u32 pid, state, pages;
         int con;
         char name[16];
-        term_puts(c, "PID CON STATE PAGES NAME\n");
+        term_puts(c, "PID CON STATE PAGES CPU NAME\n");
         for (int i = 0; ; i++) {
             if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
                 break;
@@ -1509,6 +1510,8 @@ static void run_command(struct console *c, char *line) {
                               (state == 5 ? "T" : "S")));
             term_puts(c, "     ");
             term_u32(c, pages);
+            term_puts(c, "  ");
+            term_u32(c, kernel_task_cpu(pid));
             term_puts(c, "  ");
             term_puts(c, name);
             term_puts(c, "\n");
@@ -1589,6 +1592,26 @@ static void run_command(struct console *c, char *line) {
                     term_puts(c, "pyn failed\n");
             }
         }
+    } else if (streq(line, "cputest")) {
+        extern int prepare_cpu_scripts(void);
+        int self = (int)(c - consoles);
+        if (!prepare_cpu_scripts()) {
+            term_puts(c, "cputest: scripts failed\n");
+        } else {
+            const char *names[2] = { "CPUA.PY", "CPUB.PY" };
+            for (int i = 0; i < 2; i++) {
+                if (!gui_new_console()) {
+                    c = &consoles[self];
+                    term_puts(c, "cputest: no free console\n");
+                    return;
+                }
+                int nc = console_count - 1;
+                launch_python(&consoles[nc], names[i]);
+                c = &consoles[self];
+                focus_window(consoles[self].win_id);
+            }
+            term_puts(c, "cputest: two CPU tasks started\n");
+        }
     } else if (streq(line, "longjob")) {
         extern int prepare_long_script(void);
         int oldc = (int)(c - consoles);
@@ -1633,7 +1656,7 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python pyn py4 py4test pyntest pybg spawn longjob jobs fg bg stop newcon clear echo console windows\n");
+        term_puts(c, "py python pyn py4 py4test pyntest cputest pybg spawn longjob jobs fg bg stop newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
@@ -4167,6 +4190,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
