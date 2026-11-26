@@ -1605,24 +1605,34 @@ static int gui_new_console(void) {
 
 static int launch_pipe_pair(struct console *c, const char *producer,
                             const char *consumer) {
-    extern int kernel_pipe_reset(int id);
+    extern int kernel_pipe_alloc(void);
     extern int kernel_pipe_abort(int id);
     extern int kernel_pipe_bind_console(int console, int id, int write);
     int self = (int)(c - consoles);
-    if (kernel_pipe_reset(0) < 0)
+    int id = kernel_pipe_alloc();
+    if (id < 0)
         return 0;
     const char *names[2] = { producer, consumer };
     int cons[2] = { -1, -1 };
     for (int i = 0; i < 2; i++) {
         if (!gui_new_console()) {
             c = &consoles[self];
-            kernel_pipe_abort(0);
+            kernel_pipe_abort(id);
             return 0;
         }
         int nc = console_count - 1;
-        if (!launch_python(&consoles[nc], names[i])) {
+        char linebuf[64];
+        int n = 0;
+        while (names[i][n] && n < 56) {
+            linebuf[n] = names[i][n];
+            n++;
+        }
+        linebuf[n++] = ' ';
+        linebuf[n++] = (char)('0' + id);
+        linebuf[n] = 0;
+        if (!launch_python(&consoles[nc], linebuf)) {
             c = &consoles[self];
-            kernel_pipe_abort(0);
+            kernel_pipe_abort(id);
             return 0;
         }
         cons[i] = nc;
@@ -1630,12 +1640,14 @@ static int launch_pipe_pair(struct console *c, const char *producer,
         focus_window(consoles[self].win_id);
     }
     c = &consoles[self];
-    if (!kernel_pipe_bind_console(cons[0], 0, 1) ||
-        !kernel_pipe_bind_console(cons[1], 0, 0)) {
-        kernel_pipe_abort(0);
+    if (!kernel_pipe_bind_console(cons[0], id, 1) ||
+        !kernel_pipe_bind_console(cons[1], id, 0)) {
+        kernel_pipe_abort(id);
         return 0;
     }
-    term_puts(c, "pipeline: started on pipe 0\n");
+    term_puts(c, "pipeline: started on pipe ");
+    term_u32(c, (u32)id);
+    term_puts(c, "\n");
     return 1;
 }
 

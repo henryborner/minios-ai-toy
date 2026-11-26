@@ -1331,6 +1331,7 @@ struct kpipe {
     u32 phys;
     u16 head, tail, count;
     u8 open_w, open_r;
+    u8 used;
 };
 static struct kpipe pipes[NPIPES];
 #define RAMFILE_MAX_PAGES 16
@@ -3157,22 +3158,59 @@ static void wake_pipe_tasks(int id) {
 
 static int pipe_wait_ready(int id, int write);
 
-static int pipe_reset(int id) {
+static void pipe_free(int id) {
     if (id < 0 || id >= NPIPES)
-        return -1;
+        return;
     if (pipes[id].phys) {
         frame_free_pages(pipes[id].phys, 1);
         pipes[id].phys = 0;
     }
     pipes[id].head = pipes[id].tail = pipes[id].count = 0;
+    pipes[id].open_w = pipes[id].open_r = 0;
+    pipes[id].used = 0;
+    wake_pipe_tasks(id);
+}
+
+static void pipe_close_write(int id) {
+    if (id < 0 || id >= NPIPES)
+        return;
+    pipes[id].open_w = 0;
+    if (!pipes[id].open_r)
+        pipe_free(id);
+    else
+        wake_pipe_tasks(id);
+}
+
+static void pipe_close_read(int id) {
+    if (id < 0 || id >= NPIPES)
+        return;
+    pipes[id].open_r = 0;
+    if (!pipes[id].open_w)
+        pipe_free(id);
+    else
+        wake_pipe_tasks(id);
+}
+
+static int pipe_reset(int id) {
+    if (id < 0 || id >= NPIPES)
+        return -1;
+    pipe_free(id);
+    pipes[id].used = 1;
     pipes[id].open_w = 1;
     pipes[id].open_r = 1;
-    wake_pipe_tasks(id);
     return 0;
 }
 
+int kernel_pipe_alloc(void) {
+    for (int id = 0; id < NPIPES; id++)
+        if (!pipes[id].used)
+            return pipe_reset(id) == 0 ? id : -1;
+    return -1;
+}
+
 static int pipe_write(int id, const u8 *buf, u32 len) {
-    if (id < 0 || id >= NPIPES || !pipes[id].open_w || !pipes[id].open_r)
+    if (id < 0 || id >= NPIPES || !pipes[id].used ||
+        !pipes[id].open_w || !pipes[id].open_r)
         return -1;
     if (!pipes[id].phys) {
         pipes[id].phys = frame_alloc_pages(1);
@@ -3193,7 +3231,7 @@ static int pipe_write(int id, const u8 *buf, u32 len) {
 }
 
 static int pipe_read(int id, u8 *buf, u32 max) {
-    if (id < 0 || id >= NPIPES || !pipes[id].open_r)
+    if (id < 0 || id >= NPIPES || !pipes[id].used || !pipes[id].open_r)
         return -1;
     if (!pipes[id].phys) {
         if (!pipes[id].open_w && pipes[id].count == 0)
@@ -3215,7 +3253,7 @@ static int pipe_read(int id, u8 *buf, u32 max) {
 }
 
 static int pipe_wait_ready(int id, int write) {
-    if (id < 0 || id >= NPIPES)
+    if (id < 0 || id >= NPIPES || !pipes[id].used)
         return 1;
     if (write)
         return !pipes[id].open_r || pipes[id].count < 0x1000u;
@@ -3227,14 +3265,10 @@ static void pipe_release_task(int slot) {
         return;
     u32 w = tasks[slot].pipe_w_id;
     u32 r = tasks[slot].pipe_r_id;
-    if (w && w <= NPIPES) {
-        pipes[w - 1].open_w = 0;
-        wake_pipe_tasks((int)w - 1);
-    }
-    if (r && r <= NPIPES) {
-        pipes[r - 1].open_r = 0;
-        wake_pipe_tasks((int)r - 1);
-    }
+    if (w && w <= NPIPES)
+        pipe_close_write((int)w - 1);
+    if (r && r <= NPIPES)
+        pipe_close_read((int)r - 1);
     tasks[slot].pipe_w_id = 0;
     tasks[slot].pipe_r_id = 0;
 }
@@ -3271,9 +3305,8 @@ static int pipe_block_op(int id, int write, u8 *buf, u32 len) {
 int kernel_pipe_abort(int id) {
     if (id < 0 || id >= NPIPES)
         return 0;
-    pipes[id].open_w = 0;
-    pipes[id].open_r = 0;
-    wake_pipe_tasks(id);
+    pipe_close_write(id);
+    pipe_close_read(id);
     return 1;
 }
 
@@ -3292,10 +3325,9 @@ int kernel_pipe_bind_console(int console, int id, int write) {
         return 1;
     }
     if (write)
-        pipes[id].open_w = 0;
+        pipe_close_write(id);
     else
-        pipes[id].open_r = 0;
-    wake_pipe_tasks(id);
+        pipe_close_read(id);
     return 0;
 }
 
@@ -3489,16 +3521,19 @@ static int make_pipe_script(const char *name, const char *body) {
 
 int prepare_pipe_scripts(void) {
     const char *prod =
-        "import time\n"
+        "import time, sys\n"
         "from minios import pipe_write, pipe_close\n"
+        "pid = int(sys.argv[1])\n"
         "for i in range(100):\n"
-        "    pipe_write(0, 'line %d\\n' % i)\n"
+        "    pipe_write(pid, 'line %d\\n' % i)\n"
         "    time.sleep_ms(100)\n"
-        "pipe_close(0)\n";
+        "pipe_close(pid)\n";
     const char *cons =
+        "import sys\n"
         "from minios import pipe_read\n"
+        "pid = int(sys.argv[1])\n"
         "while True:\n"
-        "    d = pipe_read(0, 64)\n"
+        "    d = pipe_read(pid, 64)\n"
         "    if not d:\n"
         "        break\n"
         "    print(d)\n";
@@ -4804,20 +4839,18 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
             }
         } else if (op == 3) {
             if (id >= 0 && id < NPIPES) {
-                pipes[id].open_w = 0;
                 if (current_task > 0 && current_task < task_cap &&
                     tasks[current_task].pipe_w_id == (u8)(id + 1))
                     tasks[current_task].pipe_w_id = 0;
-                wake_pipe_tasks(id);
+                pipe_close_write(id);
             }
             r = 0;
         } else if (op == 4) {
             if (id >= 0 && id < NPIPES) {
-                pipes[id].open_r = 0;
                 if (current_task > 0 && current_task < task_cap &&
                     tasks[current_task].pipe_r_id == (u8)(id + 1))
                     tasks[current_task].pipe_r_id = 0;
-                wake_pipe_tasks(id);
+                pipe_close_read(id);
             }
             r = 0;
         }
