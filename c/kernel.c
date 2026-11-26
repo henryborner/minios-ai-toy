@@ -4534,6 +4534,7 @@ void kmain(void) {
     gui_redraw();
 
     u32 last_draw = ticks;
+    u32 last_clock = ticks / 100;
 
     for (;;) {
         int event = 0;
@@ -4574,7 +4575,15 @@ void kmain(void) {
             }
         }
 
-        if (event || gui_dirty_pending() || (u32)(ticks - last_draw) >= 50) {
+        if ((u32)(ticks - last_draw) >= 50)
+            gui_mark_cursor_dirty();
+        if (ticks / 100 != last_clock) {
+            last_clock = ticks / 100;
+            gui_mark_clock_dirty();
+        }
+        if (event)
+            gui_mark_dirty();
+        if (event || gui_dirty_pending()) {
             gui_redraw();
             last_draw = ticks;
         }

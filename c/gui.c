@@ -212,6 +212,10 @@ static char clock_hms[9];
 static char date_str[11];
 static char uptime_str[9];
 static volatile u8 gui_dirty = 1;
+static int dirty_rect_active;
+static int dirty_x0, dirty_y0, dirty_x1, dirty_y1;
+static int compose_active;
+static int compose_x0, compose_y0, compose_x1, compose_y1;
 static u32 rtc_last_tick;
 static u8 rtc_valid;
 
@@ -274,11 +278,62 @@ static void set_palette(void) {
 
 static int clip_x0, clip_y0, clip_x1, clip_y1;
 
+static int rect_intersects(int ax, int ay, int aw, int ah,
+                           int bx, int by, int bw, int bh) {
+    return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
+}
+
+static void mark_rect(int x, int y, int w, int h) {
+    if (w <= 0 || h <= 0 || gui_dirty)
+        return;
+    if (x < 0) { w += x; x = 0; }
+    if (y < 0) { h += y; y = 0; }
+    if (x + w > scr_w) w = scr_w - x;
+    if (y + h > scr_h) h = scr_h - y;
+    if (w <= 0 || h <= 0)
+        return;
+    if (!dirty_rect_active) {
+        dirty_x0 = x; dirty_y0 = y;
+        dirty_x1 = x + w; dirty_y1 = y + h;
+        dirty_rect_active = 1;
+    } else {
+        if (x < dirty_x0) dirty_x0 = x;
+        if (y < dirty_y0) dirty_y0 = y;
+        if (x + w > dirty_x1) dirty_x1 = x + w;
+        if (y + h > dirty_y1) dirty_y1 = y + h;
+    }
+}
+
+static void mark_console_rect(struct console *c) {
+    if (!c)
+        return;
+    struct window *w = &wins[c->win_id];
+    mark_rect(w->x, w->y, w->w, w->h);
+}
+
+static void mark_cursor_rect(void) {
+    if (cursor_bg_valid)
+        mark_rect(cursor_px, cursor_py, 12, 18);
+    else
+        gui_dirty = 1;
+}
+
+static void mark_clock_rect(void) {
+    mark_rect(scr_w - 56, TASKBAR_Y, 52, 14);
+}
+
 static void clip_full(void) {
-    clip_x0 = 0;
-    clip_y0 = 0;
-    clip_x1 = scr_w;
-    clip_y1 = scr_h;
+    if (compose_active) {
+        clip_x0 = compose_x0;
+        clip_y0 = compose_y0;
+        clip_x1 = compose_x1;
+        clip_y1 = compose_y1;
+    } else {
+        clip_x0 = 0;
+        clip_y0 = 0;
+        clip_x1 = scr_w;
+        clip_y1 = scr_h;
+    }
 }
 
 static void clip_set(int x, int y, int w, int h) {
@@ -292,6 +347,14 @@ static void clip_set(int x, int y, int w, int h) {
     clip_y0 = y;
     clip_x1 = x + w;
     clip_y1 = y + h;
+    if (compose_active) {
+        if (clip_x0 < compose_x0) clip_x0 = compose_x0;
+        if (clip_y0 < compose_y0) clip_y0 = compose_y0;
+        if (clip_x1 > compose_x1) clip_x1 = compose_x1;
+        if (clip_y1 > compose_y1) clip_y1 = compose_y1;
+        if (clip_x1 < clip_x0) clip_x1 = clip_x0;
+        if (clip_y1 < clip_y0) clip_y1 = clip_y0;
+    }
 }
 
 static void plot(int x, int y, u8 color) {
@@ -2500,14 +2563,24 @@ static void draw_canvas(int id) {
         fill_rect(cx, cy, canvas_w, canvas_h, 0);
         return;
     }
-    for (int y = 0; y < canvas_h; y++) {
-        int py = cy + y;
-        if ((unsigned)py >= (unsigned)scr_h)
-            continue;
-        for (int x = 0; x < canvas_w; x++) {
-            int px = cx + x;
-            if ((unsigned)px < (unsigned)scr_w)
-                plot(px, py, canvas_buf[y * CANVAS_MAX_W + x]);
+    int sx0 = 0, sx1 = canvas_w;
+    int sy0 = 0, sy1 = canvas_h;
+    if (cx < clip_x0) sx0 = clip_x0 - cx;
+    if (cy < clip_y0) sy0 = clip_y0 - cy;
+    if (cx + canvas_w > clip_x1) sx1 = clip_x1 - cx;
+    if (cy + canvas_h > clip_y1) sy1 = clip_y1 - cy;
+    if (sx1 > canvas_w) sx1 = canvas_w;
+    if (sy1 > canvas_h) sy1 = canvas_h;
+    if (sx0 < 0) sx0 = 0;
+    if (sy0 < 0) sy0 = 0;
+    int span = sx1 - sx0;
+    if (span > 0) {
+        for (int y = sy0; y < sy1; y++) {
+            int py = cy + y;
+            u8 *dst = fb + py * scr_w + cx + sx0;
+            const u8 *src = canvas_buf + y * CANVAS_MAX_W + sx0;
+            for (int i = 0; i < span; i++)
+                dst[i] = src[i];
         }
     }
 }
@@ -2605,6 +2678,10 @@ static void cursor_capture(void) {
 static void cursor_set(int r, int c, u8 col) {
     int px = mouse_x + c;
     int py = mouse_y + r;
+    if (compose_active &&
+        (px < compose_x0 || py < compose_y0 ||
+         px >= compose_x1 || py >= compose_y1))
+        return;
     if ((unsigned)px < (unsigned)scr_w && (unsigned)py < (unsigned)scr_h)
         fb[py * scr_w + px] = col;
 }
@@ -3183,16 +3260,35 @@ void gui_redraw(void) {
     static u8 redraw_busy;
     if (redraw_busy || !fb)
         return;
+    if (!gui_dirty && !dirty_rect_active)
+        return;
     redraw_busy = 1;
-    clip_full();
+    int full = gui_dirty || !dirty_rect_active;
+    if (full) {
+        compose_active = 0;
+    } else {
+        compose_active = 1;
+        compose_x0 = dirty_x0;
+        compose_y0 = dirty_y0;
+        compose_x1 = dirty_x1;
+        compose_y1 = dirty_y1;
+    }
     gui_dirty = 0;
+    dirty_rect_active = 0;
+    clip_full();
     update_clock(0);
     make_uptime();
     draw_desktop();
     draw_taskbar();
     for (int i = 0; i < win_live; i++) {
         int id = zorder[i];
-        if (!wins[id].visible)
+        struct window *w = &wins[id];
+        if (!w->visible)
+            continue;
+        if (compose_active &&
+            !rect_intersects(w->x, w->y, w->w, w->h,
+                             compose_x0, compose_y0,
+                             compose_x1 - compose_x0, compose_y1 - compose_y0))
             continue;
         int ci = console_index_for_window(id);
         if (ci >= 0)
@@ -3211,8 +3307,17 @@ void gui_redraw(void) {
     draw_menu();
     draw_list();
     draw_context();
-    draw_cursor();
-    blit();
+    if (!compose_active ||
+        rect_intersects(compose_x0, compose_y0,
+                        compose_x1 - compose_x0, compose_y1 - compose_y0,
+                        cursor_px, cursor_py, 12, 18))
+        draw_cursor();
+    if (full)
+        blit();
+    else
+        blit_rect(compose_x0, compose_y0,
+                  compose_x1 - compose_x0, compose_y1 - compose_y0);
+    compose_active = 0;
     redraw_busy = 0;
 }
 
@@ -3222,10 +3327,19 @@ int gui_dirty_pending(void) {
 
 void gui_mark_dirty(void) {
     gui_dirty = 1;
+    dirty_rect_active = 0;
+}
+
+void gui_mark_cursor_dirty(void) {
+    mark_cursor_rect();
+}
+
+void gui_mark_clock_dirty(void) {
+    mark_clock_rect();
 }
 
 void gui_flush(void) {
-    if (gui_dirty)
+    if (gui_dirty || dirty_rect_active)
         gui_redraw();
 }
 
@@ -4142,7 +4256,7 @@ void gui_sys_write(const char *s, u32 len) {
     struct console *c = active_console();
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    gui_dirty = 1;
+    mark_console_rect(c);
 }
 
 void gui_prompt_console(int cid) {
@@ -4150,14 +4264,14 @@ void gui_prompt_console(int cid) {
         return;
     consoles[cid].pending_prompt = 0;
     term_prompt(&consoles[cid]);
-    gui_dirty = 1;
+    mark_console_rect(&consoles[cid]);
 }
 
 void gui_sys_print(const char *s) {
     struct console *c = active_console();
     while (*s)
         term_putc(c, *s++);
-    gui_dirty = 1;
+    mark_console_rect(c);
 }
 
 void gui_sys_write_console(int console, const char *s, u32 len) {
@@ -4166,7 +4280,7 @@ void gui_sys_write_console(int console, const char *s, u32 len) {
     struct console *c = &consoles[console];
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    gui_dirty = 1;
+    mark_console_rect(c);
 }
 
 void gui_sys_print_console(int console, const char *s) {
@@ -4175,7 +4289,7 @@ void gui_sys_print_console(int console, const char *s) {
     struct console *c = &consoles[console];
     while (*s)
         term_putc(c, *s++);
-    gui_dirty = 1;
+    mark_console_rect(c);
 }
 
 void gui_init(void) {
