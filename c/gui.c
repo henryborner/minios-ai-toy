@@ -1608,6 +1608,7 @@ static int launch_pipe_pair(struct console *c, const char *producer,
     extern int kernel_pipe_alloc(void);
     extern int kernel_pipe_abort(int id);
     extern int kernel_pipe_bind_console(int console, int id, int write);
+    extern int kernel_kill_console_task(int console);
     int self = (int)(c - consoles);
     int id = kernel_pipe_alloc();
     if (id < 0)
@@ -1618,6 +1619,8 @@ static int launch_pipe_pair(struct console *c, const char *producer,
         if (!gui_new_console()) {
             c = &consoles[self];
             kernel_pipe_abort(id);
+            if (cons[0] >= 0)
+                kernel_kill_console_task(cons[0]);
             return 0;
         }
         int nc = console_count - 1;
@@ -1633,6 +1636,8 @@ static int launch_pipe_pair(struct console *c, const char *producer,
         if (!launch_python(&consoles[nc], linebuf)) {
             c = &consoles[self];
             kernel_pipe_abort(id);
+            if (cons[0] >= 0)
+                kernel_kill_console_task(cons[0]);
             return 0;
         }
         cons[i] = nc;
@@ -1643,6 +1648,8 @@ static int launch_pipe_pair(struct console *c, const char *producer,
     if (!kernel_pipe_bind_console(cons[0], id, 1) ||
         !kernel_pipe_bind_console(cons[1], id, 0)) {
         kernel_pipe_abort(id);
+        kernel_kill_console_task(cons[0]);
+        kernel_kill_console_task(cons[1]);
         return 0;
     }
     term_puts(c, "pipeline: started on pipe ");
@@ -1856,6 +1863,27 @@ static void run_command(struct console *c, char *line) {
                 focus_window(consoles[self].win_id);
             }
             term_puts(c, "cputest: two CPU tasks started\n");
+        }
+    } else if (streq(line, "multipipe")) {
+        extern int prepare_pipe_scripts(void);
+        int self = (int)(c - consoles);
+        if (!prepare_pipe_scripts()) {
+            term_puts(c, "multipipe: scripts failed\n");
+        } else if (!launch_pipe_pair(c, "PPROD.PY", "PCONS.PY")) {
+            c = &consoles[self];
+            term_puts(c, "multipipe: first pipeline failed\n");
+        } else if (!launch_pipe_pair(c, "PPROD.PY", "PCONS.PY")) {
+            c = &consoles[self];
+            term_puts(c, "multipipe: second pipeline failed\n");
+        }
+    } else if (streq(line, "pipefull")) {
+        extern int prepare_full_scripts(void);
+        int self = (int)(c - consoles);
+        if (!prepare_full_scripts()) {
+            term_puts(c, "pipefull: scripts failed\n");
+        } else if (!launch_pipe_pair(c, "PFULLP.PY", "PFULLC.PY")) {
+            c = &consoles[self];
+            term_puts(c, "pipefull: launch failed\n");
         }
     } else if (streq(line, "pipedemo")) {
         extern int prepare_pipe_scripts(void);

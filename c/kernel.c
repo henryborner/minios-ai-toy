@@ -2461,6 +2461,16 @@ int task_kill_pid(u32 pid) {
     return 1;
 }
 
+int kernel_kill_console_task(int console) {
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+            continue;
+        if ((int)tasks[t].console_id == console)
+            return task_kill_pid(tasks[t].pid);
+    }
+    return 0;
+}
+
 int task_stop_pid(u32 pid) {
     int t = find_pid(pid);
     if (t <= 0 || pid == 0 || tasks[t].state == TASK_FREE ||
@@ -3504,7 +3514,7 @@ int prepare_cpu_scripts(void) {
 static int make_pipe_script(const char *name, const char *body) {
     int old = ramfile_find(name);
     if (old >= 0)
-        ramfile_delete(old);
+        return 1;               /* Reuse live scripts; a running task may hold them. */
     int idx = ramfile_create(name);
     if (idx < 0)
         return 0;
@@ -3525,7 +3535,8 @@ int prepare_pipe_scripts(void) {
         "from minios import pipe_write, pipe_close\n"
         "pid = int(sys.argv[1])\n"
         "for i in range(100):\n"
-        "    pipe_write(pid, 'line %d\\n' % i)\n"
+        "    if pipe_write(pid, 'line %d\\n' % i) < 0:\n"
+        "        break\n"
         "    time.sleep_ms(100)\n"
         "pipe_close(pid)\n";
     const char *cons =
@@ -3539,6 +3550,30 @@ int prepare_pipe_scripts(void) {
         "    print(d)\n";
     return make_pipe_script("PPROD.PY", prod) &&
            make_pipe_script("PCONS.PY", cons);
+}
+
+int prepare_full_scripts(void) {
+    const char *prod =
+        "import sys\n"
+        "from minios import pipe_write, pipe_close\n"
+        "pid = int(sys.argv[1])\n"
+        "data = b'X' * 512\n"
+        "for i in range(16):\n"
+        "    if pipe_write(pid, data) < 0:\n"
+        "        break\n"
+        "pipe_close(pid)\n";
+    const char *cons =
+        "import sys, time\n"
+        "from minios import pipe_read, pipe_close_read\n"
+        "pid = int(sys.argv[1])\n"
+        "time.sleep_ms(5000)\n"
+        "while True:\n"
+        "    d = pipe_read(pid, 512)\n"
+        "    if not d:\n"
+        "        break\n"
+        "pipe_close_read(pid)\n";
+    return make_pipe_script("PFULLP.PY", prod) &&
+           make_pipe_script("PFULLC.PY", cons);
 }
 
 int run_four_demo(void) {
