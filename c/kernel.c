@@ -2151,7 +2151,14 @@ static void task_exit(u32 status) {
     }
 }
 
+#define CRASH_HEADER_LBA 2820u
+#define CRASH_DATA_LBA   2821u
+static char crash_log[512];
+static u32 crash_log_len;
+
 static void bsod_putc(int *x, int *y, char ch) {
+    if (crash_log_len + 1 < sizeof(crash_log))
+        crash_log[crash_log_len++] = ch;
     volatile u8 *base;
     u32 pitch;
     int width, height;
@@ -2196,8 +2203,40 @@ static void bsod_hex(int *x, int *y, const char *label, u32 v) {
     bsod_putc(x, y, '\n');
 }
 
+static void crash_disk_dump(u32 vector) {
+    u8 sector[512];
+    for (int i = 0; i < 512; i++)
+        sector[i] = 0;
+    sector[0] = 'M'; sector[1] = 'C'; sector[2] = 'R'; sector[3] = '1';
+    for (int i = 0; i < 4; i++)
+        sector[4 + i] = (u8)(vector >> (i * 8));
+    u32 n = crash_log_len;
+    if (n > 496) n = 496;
+    for (int i = 0; i < 4; i++)
+        sector[8 + i] = (u8)(n >> (i * 8));
+    for (u32 i = 0; i < n; i++)
+        sector[16 + i] = (u8)crash_log[i];
+    scheduler_active = 0;
+    runtime_busy = 0;
+    outb(0x21, 0xB9);           /* IRQ0, cascade, IRQ6 only */
+    outb(0xA1, 0xFF);
+    __asm__ __volatile__("sti");
+    serial_puts("BSOD disk dump LBA=2820\r\n");
+    int ok = fdc_write_sector(CRASH_HEADER_LBA, sector);
+    if (ok && n > 480) {
+        for (int i = 0; i < 512; i++)
+            sector[i] = 0;
+        for (u32 i = 480; i < n; i++)
+            sector[i - 480] = (u8)crash_log[i];
+        ok = fdc_write_sector(CRASH_DATA_LBA, sector);
+    }
+    __asm__ __volatile__("cli");
+    serial_puts(ok ? "BSOD disk dump OK\r\n" : "BSOD disk dump FAILED\r\n");
+}
+
 static void bsod_show(u32 vector, u32 *frame) {
     __asm__ __volatile__("cli");
+    crash_log_len = 0;
     __asm__ __volatile__(
         "movw $0x10, %%ax; movw %%ax, %%ds; movw %%ax, %%es;"
         "movw %%ax, %%fs; movw %%ax, %%gs; movw %%ax, %%ss"
@@ -2246,6 +2285,7 @@ static void bsod_show(u32 vector, u32 *frame) {
     for (int i = 28; i >= 0; i -= 4)
         serial_putc((char)h[(vector >> i) & 15]);
     serial_puts("\r\n");
+    crash_disk_dump(vector);
     for (;;) {
         __asm__ __volatile__("cli");
         __asm__ __volatile__("hlt");
