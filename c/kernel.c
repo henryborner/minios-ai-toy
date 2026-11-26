@@ -1226,6 +1226,7 @@ struct task {
     u32 pid;
     u32 parent_pid;
     u32 waiting_pid;
+    u32 wait_pipe;
     u32 wait_status;
     u32 sleep_until;
     u32 exit_code;
@@ -1235,6 +1236,9 @@ struct task {
     u8 stop_prev_state;
     u8 kill_pending;
     u8 wait_kbd;
+    u8 wait_pipe_write;
+    u8 pipe_w_id;
+    u8 pipe_r_id;
     u8 fpu[108];
 };
 
@@ -1326,7 +1330,7 @@ struct fd_entry {
 struct kpipe {
     u32 phys;
     u16 head, tail, count;
-    u8 open_w;
+    u8 open_w, open_r;
 };
 static struct kpipe pipes[NPIPES];
 #define RAMFILE_MAX_PAGES 16
@@ -1619,6 +1623,7 @@ static void vbe_init(void) {
 }
 
 static void task_free_frames(int slot);
+static void pipe_release_task(int slot);
 
 static void task_init_kernel_context(int slot, u32 *frame) {
     u32 *ks = (u32 *)((u32)frame - 24);
@@ -1729,6 +1734,10 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
     tasks[slot].cpu_ticks = 0;
+    tasks[slot].wait_pipe = 0;
+    tasks[slot].wait_pipe_write = 0;
+    tasks[slot].pipe_w_id = 0;
+    tasks[slot].pipe_r_id = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
     tasks[slot].wait_kbd = 0;
@@ -1867,6 +1876,10 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].sleep_until = 0;
     tasks[slot].exit_code = 0;
     tasks[slot].cpu_ticks = 0;
+    tasks[slot].wait_pipe = 0;
+    tasks[slot].wait_pipe_write = 0;
+    tasks[slot].pipe_w_id = 0;
+    tasks[slot].pipe_r_id = 0;
     tasks[slot].console_id = (u8)gui_focused_console();
     tasks[slot].kill_pending = 0;
     tasks[slot].wait_kbd = 0;
@@ -1987,6 +2000,7 @@ static void __attribute__((unused)) switch_task(int next) {
 static void task_free_frames(int slot) {
     if (slot == current_task)
         return;
+    pipe_release_task(slot);
     if (tasks[slot].shared_ro) {
         if (shared_ro_refs)
             shared_ro_refs--;
@@ -2152,6 +2166,7 @@ static void task_yield(u32 frame) {
 static void task_exit(u32 status) {
     int me = current_task;
     int cid = tasks[me].console_id;
+    pipe_release_task(me);
     tasks[me].exit_code = status;
     tasks[me].state = TASK_DONE;
     tasks[me].reap_pending = 1;
@@ -2465,6 +2480,8 @@ int task_stop_pid(u32 pid) {
     return 1;
 }
 
+static int pipe_wait_ready(int id, int write);
+
 int task_bg_pid(u32 pid) {
     int t = find_pid(pid);
     if (t <= 0 || pid == 0 || tasks[t].state == TASK_FREE ||
@@ -2522,6 +2539,15 @@ int task_bg_pid(u32 pid) {
             if (cid >= 0 && cid < kbd_console_count &&
                 kbd_tail[cid] != kbd_head[cid]) {
                 tasks[t].wait_kbd = 0;
+                tasks[t].state = TASK_READY;
+            } else {
+                tasks[t].state = TASK_BLOCKED;
+            }
+        } else if (tasks[t].wait_pipe != 0) {
+            int pid_ = (int)tasks[t].wait_pipe - 1;
+            if (pipe_wait_ready(pid_, tasks[t].wait_pipe_write)) {
+                tasks[t].wait_pipe = 0;
+                tasks[t].wait_pipe_write = 0;
                 tasks[t].state = TASK_READY;
             } else {
                 tasks[t].state = TASK_BLOCKED;
@@ -3119,6 +3145,18 @@ static int name16_eq(const char *a, const char *b) {
     return 1;
 }
 
+static void wake_pipe_tasks(int id) {
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state == TASK_BLOCKED && tasks[t].wait_pipe == (u32)(id + 1)) {
+            tasks[t].wait_pipe = 0;
+            tasks[t].wait_pipe_write = 0;
+            tasks[t].state = TASK_READY;
+        }
+    }
+}
+
+static int pipe_wait_ready(int id, int write);
+
 static int pipe_reset(int id) {
     if (id < 0 || id >= NPIPES)
         return -1;
@@ -3128,11 +3166,13 @@ static int pipe_reset(int id) {
     }
     pipes[id].head = pipes[id].tail = pipes[id].count = 0;
     pipes[id].open_w = 1;
+    pipes[id].open_r = 1;
+    wake_pipe_tasks(id);
     return 0;
 }
 
 static int pipe_write(int id, const u8 *buf, u32 len) {
-    if (id < 0 || id >= NPIPES || !pipes[id].open_w)
+    if (id < 0 || id >= NPIPES || !pipes[id].open_w || !pipes[id].open_r)
         return -1;
     if (!pipes[id].phys) {
         pipes[id].phys = frame_alloc_pages(1);
@@ -3147,11 +3187,13 @@ static int pipe_write(int id, const u8 *buf, u32 len) {
         pipes[id].head = (u16)((pipes[id].head + 1) & 0xFFF);
         pipes[id].count++;
     }
+    if (n)
+        wake_pipe_tasks(id);
     return (int)n;
 }
 
 static int pipe_read(int id, u8 *buf, u32 max) {
-    if (id < 0 || id >= NPIPES)
+    if (id < 0 || id >= NPIPES || !pipes[id].open_r)
         return -1;
     if (!pipes[id].phys) {
         if (!pipes[id].open_w && pipes[id].count == 0)
@@ -3165,9 +3207,63 @@ static int pipe_read(int id, u8 *buf, u32 max) {
         pipes[id].tail = (u16)((pipes[id].tail + 1) & 0xFFF);
         pipes[id].count--;
     }
+    if (n)
+        wake_pipe_tasks(id);
     if (n == 0 && !pipes[id].open_w)
         return -1;
     return (int)n;
+}
+
+static int pipe_wait_ready(int id, int write) {
+    if (id < 0 || id >= NPIPES)
+        return 1;
+    if (write)
+        return !pipes[id].open_r || pipes[id].count < 0x1000u;
+    return pipes[id].count > 0 || !pipes[id].open_w;
+}
+
+static void pipe_release_task(int slot) {
+    if (slot < 0 || slot >= task_cap)
+        return;
+    u32 w = tasks[slot].pipe_w_id;
+    u32 r = tasks[slot].pipe_r_id;
+    if (w && w <= NPIPES) {
+        pipes[w - 1].open_w = 0;
+        wake_pipe_tasks((int)w - 1);
+    }
+    if (r && r <= NPIPES) {
+        pipes[r - 1].open_r = 0;
+        wake_pipe_tasks((int)r - 1);
+    }
+    tasks[slot].pipe_w_id = 0;
+    tasks[slot].pipe_r_id = 0;
+}
+
+static int pipe_block_op(int id, int write, u8 *buf, u32 len) {
+    if (id < 0 || id >= NPIPES)
+        return -1;
+    for (;;) {
+        u32 flags = irq_save_flags();
+        int n = write ? pipe_write(id, buf, len)
+                      : pipe_read(id, buf, len);
+        if (n != 0 || pipe_wait_ready(id, write)) {
+            if (write && n == 0 && !pipes[id].open_r)
+                n = -1;
+            irq_restore_flags(flags);
+            return n;
+        }
+        if (current_task < 0 || current_task >= task_cap) {
+            irq_restore_flags(flags);
+            return -1;
+        }
+        tasks[current_task].wait_pipe = (u32)(id + 1);
+        tasks[current_task].wait_pipe_write = (u8)write;
+        tasks[current_task].state = TASK_BLOCKED;
+        irq_restore_flags(flags);
+        sched_yield();
+        tasks[current_task].wait_pipe = 0;
+        tasks[current_task].wait_pipe_write = 0;
+    }
 }
 
 static int ramfile_find(const char *name) {
@@ -3338,6 +3434,43 @@ static int make_cpu_script(const char *name) {
 
 int prepare_cpu_scripts(void) {
     return make_cpu_script("CPUA.PY") && make_cpu_script("CPUB.PY");
+}
+
+static int make_pipe_script(const char *name, const char *body) {
+    int old = ramfile_find(name);
+    if (old >= 0)
+        ramfile_delete(old);
+    int idx = ramfile_create(name);
+    if (idx < 0)
+        return 0;
+    int n = 0;
+    while (body[n]) n++;
+    struct ramfile *r = &ramfiles[idx];
+    if (ramfile_rw(r, 0, (u8 *)body, (u32)n, 1) != n) {
+        ramfile_delete(idx);
+        return 0;
+    }
+    r->size = (u32)n;
+    return 1;
+}
+
+int prepare_pipe_scripts(void) {
+    const char *prod =
+        "import time\n"
+        "from minios import pipe_write, pipe_close\n"
+        "for i in range(100):\n"
+        "    pipe_write(0, 'line %d\\n' % i)\n"
+        "    time.sleep_ms(100)\n"
+        "pipe_close(0)\n";
+    const char *cons =
+        "from minios import pipe_read\n"
+        "while True:\n"
+        "    d = pipe_read(0, 64)\n"
+        "    if not d:\n"
+        "        break\n"
+        "    print(d)\n";
+    return make_pipe_script("PPROD.PY", prod) &&
+           make_pipe_script("PCONS.PY", cons);
 }
 
 int run_four_demo(void) {
@@ -4623,14 +4756,36 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         if (op == 0) {
             r = pipe_reset(id);
         } else if (op == 1) {
-            if (a3 <= 4096 && user_ptr_ok(a2, a3))
-                r = pipe_write(id, (const u8 *)a2, a3);
+            if (a3 <= 4096 && user_ptr_ok(a2, a3)) {
+                if (current_task > 0 && current_task < task_cap &&
+                    id >= 0 && id < NPIPES)
+                    tasks[current_task].pipe_w_id = (u8)(id + 1);
+                r = pipe_block_op(id, 1, (u8 *)a2, a3);
+            }
         } else if (op == 2) {
-            if (a3 <= 4096 && user_ptr_writable(a2, a3))
-                r = pipe_read(id, (u8 *)a2, a3);
+            if (a3 <= 4096 && user_ptr_writable(a2, a3)) {
+                if (current_task > 0 && current_task < task_cap &&
+                    id >= 0 && id < NPIPES)
+                    tasks[current_task].pipe_r_id = (u8)(id + 1);
+                r = pipe_block_op(id, 0, (u8 *)a2, a3);
+            }
         } else if (op == 3) {
-            if (id >= 0 && id < NPIPES)
+            if (id >= 0 && id < NPIPES) {
                 pipes[id].open_w = 0;
+                if (current_task > 0 && current_task < task_cap &&
+                    tasks[current_task].pipe_w_id == (u8)(id + 1))
+                    tasks[current_task].pipe_w_id = 0;
+                wake_pipe_tasks(id);
+            }
+            r = 0;
+        } else if (op == 4) {
+            if (id >= 0 && id < NPIPES) {
+                pipes[id].open_r = 0;
+                if (current_task > 0 && current_task < task_cap &&
+                    tasks[current_task].pipe_r_id == (u8)(id + 1))
+                    tasks[current_task].pipe_r_id = 0;
+                wake_pipe_tasks(id);
+            }
             r = 0;
         }
         SYS_RET(frame) = (u32)r;
@@ -4804,6 +4959,8 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
 
 
 

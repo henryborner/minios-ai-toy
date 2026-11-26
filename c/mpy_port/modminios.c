@@ -286,6 +286,11 @@ static mp_obj_t minios_pipe_close(mp_obj_t id_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(minios_pipe_close_obj, minios_pipe_close);
 
+static mp_obj_t minios_pipe_close_read(mp_obj_t id_in) {
+    return mp_obj_new_int(sys_pipe(4, mp_obj_get_int(id_in), NULL, 0));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(minios_pipe_close_read_obj, minios_pipe_close_read);
+
 static mp_obj_t minios_getchar(void) {
     return mp_obj_new_int(sys_getchar());
 }
@@ -443,6 +448,7 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_pipe_write), MP_ROM_PTR(&minios_pipe_write_obj) },
     { MP_ROM_QSTR(MP_QSTR_pipe_read), MP_ROM_PTR(&minios_pipe_read_obj) },
     { MP_ROM_QSTR(MP_QSTR_pipe_close), MP_ROM_PTR(&minios_pipe_close_obj) },
+    { MP_ROM_QSTR(MP_QSTR_pipe_close_read), MP_ROM_PTR(&minios_pipe_close_read_obj) },
     { MP_ROM_QSTR(MP_QSTR_run_file), MP_ROM_PTR(&minios_run_file_obj) },
     { MP_ROM_QSTR(MP_QSTR_getchar_nb), MP_ROM_PTR(&minios_getchar_nb_obj) },
     { MP_ROM_QSTR(MP_QSTR_tasks), MP_ROM_PTR(&minios_tasks_obj) },

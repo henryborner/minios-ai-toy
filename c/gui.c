@@ -1600,6 +1600,39 @@ static int gui_new_console(void) {
     return 1;
 }
 
+static int launch_pipe_pair(struct console *c, const char *producer,
+                            const char *consumer) {
+    extern int kernel_pipe_reset(int id);
+    int self = (int)(c - consoles);
+    if (kernel_pipe_reset(0) < 0)
+        return 0;
+    const char *names[2] = { producer, consumer };
+    for (int i = 0; i < 2; i++) {
+        if (!gui_new_console()) {
+            c = &consoles[self];
+            return 0;
+        }
+        int nc = console_count - 1;
+        launch_python(&consoles[nc], names[i]);
+        c = &consoles[self];
+        focus_window(consoles[self].win_id);
+    }
+    c = &consoles[self];
+    term_puts(c, "pipeline: started on pipe 0\n");
+    return 1;
+}
+
+static char *trim_cmd(char *s) {
+    while (*s == ' ')
+        s++;
+    int n = 0;
+    while (s[n])
+        n++;
+    while (n > 0 && s[n - 1] == ' ')
+        s[--n] = 0;
+    return s;
+}
+
 static void run_command(struct console *c, char *line) {
     while (*line == ' ')
         line++;
@@ -1628,6 +1661,37 @@ static void run_command(struct console *c, char *line) {
          starts_with(line, "mod ") || starts_with(line, "upload ") ||
          starts_with(line, "download "))) {
         term_puts(c, "[busy] command unavailable while a task is running.\n");
+        return;
+    }
+
+    char left[64], right[64];
+    char *bar = 0;
+    for (char *p = line; *p; p++)
+        if (*p == '|') { bar = p; break; }
+    if (bar) {
+        int n = (int)(bar - line);
+        if (n > 63) n = 63;
+        for (int i = 0; i < n; i++)
+            left[i] = line[i];
+        left[n] = 0;
+        int r = 0;
+        while (bar[1 + r] && r < 63) {
+            right[r] = bar[1 + r];
+            r++;
+        }
+        right[r] = 0;
+        char *lp = trim_cmd(left);
+        char *rp = trim_cmd(right);
+        if (!starts_with(lp, "py ") || !starts_with(rp, "py ")) {
+            term_puts(c, "pipeline: usage: py PROD.PY | py CONS.PY\n");
+            return;
+        }
+        lp = trim_cmd(lp + 3);
+        rp = trim_cmd(rp + 3);
+        if (!*lp || !*rp)
+            term_puts(c, "pipeline: missing script\n");
+        else if (!launch_pipe_pair(c, lp, rp))
+            term_puts(c, "pipeline: launch failed\n");
         return;
     }
 
@@ -1761,6 +1825,29 @@ static void run_command(struct console *c, char *line) {
             }
             term_puts(c, "cputest: two CPU tasks started\n");
         }
+    } else if (streq(line, "pipedemo")) {
+        extern int prepare_pipe_scripts(void);
+        extern int kernel_pipe_reset(int id);
+        int self = (int)(c - consoles);
+        if (!prepare_pipe_scripts()) {
+            term_puts(c, "pipedemo: scripts failed\n");
+        } else if (kernel_pipe_reset(0) < 0) {
+            term_puts(c, "pipedemo: pipe reset failed\n");
+        } else {
+            const char *names[2] = { "PPROD.PY", "PCONS.PY" };
+            for (int i = 0; i < 2; i++) {
+                if (!gui_new_console()) {
+                    c = &consoles[self];
+                    term_puts(c, "pipedemo: no free console\n");
+                    return;
+                }
+                int nc = console_count - 1;
+                launch_python(&consoles[nc], names[i]);
+                c = &consoles[self];
+                focus_window(consoles[self].win_id);
+            }
+            term_puts(c, "pipedemo: producer/consumer started on pipe 0\n");
+        }
     } else if (streq(line, "longjob")) {
         extern int prepare_long_script(void);
         int oldc = (int)(c - consoles);
@@ -1805,7 +1892,7 @@ static void run_command(struct console *c, char *line) {
     } else if (streq(line, "help")) {
         term_puts(c, "Commands:\n");
         term_puts(c, "help ver cpu mem time date ps kill\n");
-        term_puts(c, "py python pyn py4 py4test pyntest cputest pybg spawn longjob jobs fg bg stop newcon clear echo console windows\n");
+        term_puts(c, "py python pyn py4 py4test pyntest cputest pipedemo pybg spawn longjob jobs fg bg stop newcon clear echo console windows\n");
         term_puts(c, "serial upload NAME download NAME sync\n");
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
@@ -1885,12 +1972,15 @@ static void run_command(struct console *c, char *line) {
         menu_open = 0;
         gui_redraw();
     } else if (starts_with(line, "console ")) {
-        int n = (line[8] >= '1' && line[8] <= '3') ? line[8] - '1' : -1;
-        if (n >= 0) {
-            focus_window(n);
+        int n = 0;
+        const char *p = line + 8;
+        while (*p >= '0' && *p <= '9')
+            n = n * 10 + (*p++ - '0');
+        if (n >= 1 && n <= console_count) {
+            focus_window(consoles[n - 1].win_id);
             term_puts(c, "Console switched.\n");
         } else {
-            term_puts(c, "Usage: console 1|2|3\n");
+            term_puts(c, "Usage: console N\n");
         }
     } else if (streq(line, "ps")) {
         extern void task_ps(void);
@@ -4436,6 +4526,7 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
 
 
 
