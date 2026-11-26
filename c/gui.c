@@ -1905,6 +1905,23 @@ static void run_command(struct console *c, char *line) {
             c = &consoles[self];
             focus_window(consoles[self].win_id);
         }
+    } else if (streq(line, "fdctestbg")) {
+        extern int prepare_fdctest_script(void);
+        int self = (int)(c - consoles);
+        if (!prepare_fdctest_script()) {
+            term_puts(c, "fdctestbg: script failed\n");
+        } else if (!gui_new_console()) {
+            c = &consoles[self];
+            term_puts(c, "fdctestbg: console failed\n");
+        } else {
+            int nc = console_count - 1;
+            if (!launch_python(&consoles[nc], "FDCTEST.PY"))
+                term_puts(c, "fdctestbg: launch failed\n");
+            else
+                term_puts(c, "fdctestbg: started\n");
+            c = &consoles[self];
+            focus_window(consoles[self].win_id);
+        }
     } else if (streq(line, "fdchold")) {
         extern void fdc_set_hold(int);
         fdc_set_hold(1);

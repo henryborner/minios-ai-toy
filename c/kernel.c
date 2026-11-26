@@ -3740,6 +3740,14 @@ int prepare_pipe_scripts(void) {
            make_pipe_script("PCONS.PY", cons);
 }
 
+int prepare_fdctest_script(void) {
+    return make_pipe_script("FDCTEST.PY",
+        "from minios import fdc_test\n"
+        "print('fdc test start')\n"
+        "r = fdc_test(10000)\n"
+        "print('fdc test woke', r)\n");
+}
+
 int prepare_disk_script(void) {
     return make_pipe_script("DISKREAD.PY",
         "import time\n"
@@ -5080,6 +5088,11 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         } else {
             SYS_RET(frame) = 0;
         }
+    } else if (number == 35) {
+        __asm__ __volatile__("sti");
+        int r = kernel_fdc_wait((int)SYS_ARG1(frame));
+        __asm__ __volatile__("cli");
+        SYS_RET(frame) = (u32)r;
     } else if (number == 34) {
         u32 op = SYS_ARG1(frame);
         u32 mask = SYS_ARG2(frame);

@@ -37,6 +37,7 @@
 #define SYS_TASK_INFO    32
 #define SYS_PIPE         33
 #define SYS_SIGNAL       34
+#define SYS_FDC_TEST     35
 
 struct minios_taskinfo {
     uint32_t pid;
@@ -131,6 +132,10 @@ static inline int sys_read_file(const char *name, void *buf, uint32_t max) {
 
 static inline int sys_spawn(const char *name) {
     return (int)(int32_t)minios_syscall1(SYS_SPAWN, (uint32_t)name);
+}
+
+static inline int sys_fdc_test(uint32_t ms) {
+    return (int)(int32_t)minios_syscall1(SYS_FDC_TEST, ms);
 }
 
 static inline int sys_wait(int pid, int nohang) {
