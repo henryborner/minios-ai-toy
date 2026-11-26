@@ -1495,10 +1495,13 @@ static void run_command(struct console *c, char *line) {
     if (streq(line, "jobs")) {
         extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
         extern u32 kernel_task_cpu(u32 pid);
+        extern void serial_puts(const char *s);
+        extern void serial_u32(u32 v);
         u32 pid, state, pages;
         int con;
         char name[16];
         term_puts(c, "PID CON STATE PAGES CPU NAME\n");
+        serial_puts("JOBS\r\nPID CON STATE PAGES CPU NAME\r\n");
         for (int i = 0; ; i++) {
             if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
                 break;
@@ -1515,6 +1518,13 @@ static void run_command(struct console *c, char *line) {
             term_puts(c, "  ");
             term_puts(c, name);
             term_puts(c, "\n");
+            serial_u32(pid); serial_puts(" ");
+            serial_u32((u32)con); serial_puts(" ");
+            serial_puts(state == 2 ? "R " : (state == 4 ? "B " :
+                        (state == 5 ? "T " : "S ")));
+            serial_u32(pages); serial_puts(" ");
+            serial_u32(kernel_task_cpu(pid)); serial_puts(" ");
+            serial_puts(name); serial_puts("\r\n");
         }
     } else if (starts_with(line, "stop ") || starts_with(line, "bg ")) {
         extern int task_stop_pid(u32 pid);
