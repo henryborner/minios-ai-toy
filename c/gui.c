@@ -311,7 +311,17 @@ static void mark_console_rect(struct console *c) {
     mark_rect(w->x, w->y, w->w, w->h);
 }
 
-static void mark_console_output(struct console *c, int start_row, int start_scroll) {
+static void mark_canvas_rect(void) {
+    if (!canvas_open || !canvas_active || canvas_active->win_id < 0) {
+        gui_dirty = 1;
+        return;
+    }
+    struct window *w = &wins[canvas_active->win_id];
+    mark_rect(w->x + 2, w->y + 12, canvas_w, canvas_h);
+}
+
+static void mark_console_output(struct console *c, int start_row, int start_col,
+                                int start_scroll) {
     if (!c)
         return;
     if (c->scroll != start_scroll || start_row >= TERM_ROWS - 1 ||
@@ -328,8 +338,26 @@ static void mark_console_output(struct console *c, int start_row, int start_scro
     if (r1 >= c->rows) r1 = c->rows - 1;
     if (r1 < r0)
         return;
-    mark_rect(c->x + 4, c->y + 14 + r0 * 9,
-              c->cols * 8, (r1 - r0 + 1) * 9);
+    int cols = c->cols;
+    if (cols > TERM_COLS) cols = TERM_COLS;
+    if (r0 == r1) {
+        int a = start_col, b = c->col;
+        if (a > b) { int t = a; a = b; b = t; }
+        if (a < 0) a = 0;
+        if (b > cols) b = cols;
+        if (b > a)
+            mark_rect(c->x + 4 + a * 8, c->y + 14 + r0 * 9,
+                      (b - a) * 8, 9);
+        return;
+    }
+    if (start_col < cols)
+        mark_rect(c->x + 4 + start_col * 8, c->y + 14 + r0 * 9,
+                  (cols - start_col) * 8, 9);
+    if (r1 > r0 + 1)
+        mark_rect(c->x + 4, c->y + 14 + (r0 + 1) * 9,
+                  cols * 8, (r1 - r0 - 1) * 9);
+    if (c->col > 0)
+        mark_rect(c->x + 4, c->y + 14 + r1 * 9, c->col * 8, 9);
 }
 
 static void mark_cursor_rect(void) {
@@ -378,13 +406,6 @@ static void clip_set(int x, int y, int w, int h) {
     }
 }
 
-static void plot(int x, int y, u8 color) {
-    if (x < clip_x0 || y < clip_y0 || x >= clip_x1 || y >= clip_y1)
-        return;
-    if ((unsigned)x < (unsigned)scr_w && (unsigned)y < (unsigned)scr_h)
-        fb[y * scr_w + x] = color;
-}
-
 static void fill_rect(int x, int y, int w, int h, u8 color) {
     if (w <= 0 || h <= 0)
         return;
@@ -411,14 +432,22 @@ static void fill_rect(int x, int y, int w, int h, u8 color) {
 
 static void draw_char(int x, int y, char ch, u8 color, int scale) {
     const u8 *glyph = FONT + (u8)ch * 8;
+    if (scale < 1)
+        scale = 1;
     for (int r = 0; r < 8; r++) {
         u8 bits = glyph[r];
-        for (int c = 0; c < 8; c++) {
-            if (bits & (0x80u >> c)) {
-                for (int sy = 0; sy < scale; sy++)
-                    for (int sx = 0; sx < scale; sx++)
-                        plot(x + c * scale + sx, y + r * scale + sy, color);
+        int c = 0;
+        while (c < 8) {
+            if (!(bits & (0x80u >> c))) {
+                c++;
+                continue;
             }
+            int run = 1;
+            while (c + run < 8 && (bits & (0x80u >> (c + run))))
+                run++;
+            fill_rect(x + c * scale, y + r * scale,
+                      run * scale, scale, color);
+            c += run;
         }
     }
 }
@@ -2447,9 +2476,11 @@ static void draw_console(int ci) {
         if (cy + 9 < clip_y0 || cy >= clip_y1)
             continue;
         for (int col = 0; col < c->cols; col++) {
+            int cx = c->x + 4 + col * 8;
+            if (cx + 8 < clip_x0 || cx >= clip_x1)
+                continue;
             u8 attr = c->attrs ? c->attrs[idx * TERM_COLS + col] : term_default_attr;
             char ch = c->term[idx][col];
-            int cx = c->x + 4 + col * 8;
             int inv = sel_active && sel_id == c->win_id && idx >= slo && idx <= shi &&
                       col >= clo && col <= chi;
             fill_rect(cx, cy, 8, 9, inv ? (attr & 15) : (attr >> 4));
@@ -3151,7 +3182,7 @@ void gui_canvas_present(void) {
                 canvas_buf[y * CANVAS_MAX_W + x] = canvas_back[y * CANVAS_MAX_W + x];
     }
     canvas_target = canvas_batch ? canvas_back : canvas_buf;
-    gui_dirty = 1;
+    mark_canvas_rect();
 }
 
 int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
@@ -3218,7 +3249,7 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
         return -1;
     }
     if (!canvas_batch)
-        gui_dirty = 1;
+        mark_canvas_rect();
     return 0;
 }
 
@@ -4298,10 +4329,10 @@ void gui_special(int key) {
 
 void gui_sys_write(const char *s, u32 len) {
     struct console *c = active_console();
-    int r0 = c->cur, sc = c->scroll;
+    int r0 = c->cur, c0 = c->col, sc = c->scroll;
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    mark_console_output(c, r0, sc);
+    mark_console_output(c, r0, c0, sc);
 }
 
 void gui_prompt_console(int cid) {
@@ -4314,30 +4345,30 @@ void gui_prompt_console(int cid) {
 
 void gui_sys_print(const char *s) {
     struct console *c = active_console();
-    int r0 = c->cur, sc = c->scroll;
+    int r0 = c->cur, c0 = c->col, sc = c->scroll;
     while (*s)
         term_putc(c, *s++);
-    mark_console_output(c, r0, sc);
+    mark_console_output(c, r0, c0, sc);
 }
 
 void gui_sys_write_console(int console, const char *s, u32 len) {
     if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
-    int r0 = c->cur, sc = c->scroll;
+    int r0 = c->cur, c0 = c->col, sc = c->scroll;
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    mark_console_output(c, r0, sc);
+    mark_console_output(c, r0, c0, sc);
 }
 
 void gui_sys_print_console(int console, const char *s) {
     if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
-    int r0 = c->cur, sc = c->scroll;
+    int r0 = c->cur, c0 = c->col, sc = c->scroll;
     while (*s)
         term_putc(c, *s++);
-    mark_console_output(c, r0, sc);
+    mark_console_output(c, r0, c0, sc);
 }
 
 void gui_init(void) {
