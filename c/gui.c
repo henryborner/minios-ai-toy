@@ -1442,6 +1442,57 @@ static int launch_python(struct console *c, const char *rest) {
     return 1;
 }
 
+/* Split a shell tail into argv entries (quotes supported, 32 args max).
+ * Writes the strings into buf and returns the new argc. */
+static int tokenize_args(const char *rest, char *buf, int bufsz,
+                         const char *argv[], int argc, int maxargc) {
+    int bi = 0;
+    while (*rest && argc < maxargc && bi < bufsz - 2) {
+        while (*rest == ' ')
+            rest++;
+        if (!*rest)
+            break;
+        char quote = 0;
+        if (*rest == '"' || *rest == '\'')
+            quote = *rest++;
+        argv[argc++] = &buf[bi];
+        while (*rest && bi < bufsz - 2) {
+            if (quote) {
+                if (*rest == quote) {
+                    rest++;
+                    break;
+                }
+            } else if (*rest == ' ') {
+                break;
+            }
+            buf[bi++] = *rest++;
+        }
+        buf[bi++] = 0;
+    }
+    return argc;
+}
+
+/* Launch a UMP1 module with argv[0] = argv0 plus up to 31 shell arguments. */
+static int launch_user_module_cmd(struct console *c, const char *mod_name,
+                                  const char *argv0, const char *rest) {
+    extern int run_user_module_args(const char *name, int argc,
+                                    const char *const *argv);
+    char buf[256];
+    const char *argv[32];
+    int argc = 0;
+
+    if (argv0)
+        argv[argc++] = argv0;
+    argc = tokenize_args(rest, buf, (int)sizeof(buf), argv, argc, 32);
+    if (!run_user_module_args(mod_name, argc, argv)) {
+        term_puts(c, "Launch failed: ");
+        term_puts(c, mod_name);
+        term_puts(c, "\n");
+        return 0;
+    }
+    return 1;
+}
+
 void gui_request_py(const char *name) {
     int i = 0;
     while (name[i] && i < 16) {
@@ -2157,7 +2208,7 @@ static void run_command(struct console *c, char *line) {
         term_puts(c, "py pystat = EXPR calc top demos bench\n");
         term_puts(c, "xxd FILE edit FILE futil ps kill PID\n");
         term_puts(c, "sysinfo about ring3 tasks progs\n");
-        term_puts(c, "run NAME ls exec disktest\n");
+        term_puts(c, "run NAME ls exec NAME [args] cc [args] disktest\n");
         term_puts(c, "modtest mod NAME utest reboot halt\n");
     } else if (streq(line, "selftest")) {
         extern int gui_selftest(void);
@@ -2508,12 +2559,35 @@ static void run_command(struct console *c, char *line) {
         extern void list_ram_files(void);
         list_disk_files();
         list_ram_files();
-    } else if (starts_with(line, "exec ")) {
-        extern int exec_disk(const char *name);
-        term_puts(c, "Reading MiniFS from floppy...\n");
+    } else if (streq(line, "cc") || starts_with(line, "cc ")) {
+        term_puts(c, "Launching MiniCC...\n");
         gui_redraw();
-        if (!exec_disk(line + 5))
-            term_puts(c, "Exec failed.\n");
+        launch_user_module_cmd(c, "CC.BIN", "cc", line + 2);
+    } else if (starts_with(line, "exec ")) {
+        extern int exec_file_args(const char *name, int argc,
+                                  const char *const *argv);
+        char namebuf[32];
+        char argbuf[512];
+        const char *argv[32];
+        int argc = 0;
+        int n = 0;
+        const char *p = line + 5;
+
+        while (*p == ' ')
+            p++;
+        while (*p && *p != ' ' && n < 31)
+            namebuf[n++] = *p++;
+        namebuf[n] = 0;
+        if (n == 0) {
+            term_puts(c, "usage: exec NAME [args...]\n");
+        } else {
+            argv[argc++] = namebuf;
+            argc = tokenize_args(p, argbuf, (int)sizeof(argbuf), argv, argc, 32);
+            term_puts(c, "Reading RAMFS/MiniFS...\n");
+            gui_redraw();
+            if (!exec_file_args(namebuf, argc, argv))
+                term_puts(c, "Exec failed.\n");
+        }
     } else if (starts_with(line, "run ")) {
         extern int run_pack_program(const char *name);
         term_puts(c, "Loading from program pack...\n");

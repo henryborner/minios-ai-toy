@@ -776,16 +776,32 @@ static void gdt_install(void) {
  * supervisor direct map covers 4..512 MiB at 16 MiB.
  * ----------------------------------------------------------------------------- */
 #define FRAME_POOL_START  0x00800000u
-#define MAX_PHYS          0x20000000u
+#define LOW_POOL_END      0x01000000u
+#define HIGH_POOL_START   0x01000000u
+#define MAX_PHYS          0x80000000u
 #define MAX_FRAME_PAGES   (MAX_PHYS / 0x1000u)
 #define DIRECT_PHYS_START 0x00400000u
 #define DIRECT_BASE       0x01000000u
-#define DIRECT_PT_COUNT   ((MAX_PHYS - DIRECT_PHYS_START) / 0x400000u)
+#define HIGH_BASE         0x40000000u
+#define LOW_DIRECT_PT_COUNT 3u
+#define HIGH_PSE_COUNT    (MAX_PHYS / 0x400000u)
 
 static u32 page_directory[1024] __attribute__((aligned(4096)));
 static u32 page_table0[1024] __attribute__((aligned(4096)));
 static u32 page_table1[1024] __attribute__((aligned(4096)));
-static u32 direct_pt[DIRECT_PT_COUNT][1024] __attribute__((aligned(4096)));
+static u32 direct_pt[LOW_DIRECT_PT_COUNT][1024] __attribute__((aligned(4096)));
+
+static void install_high_pse(u32 *pd) {
+    for (u32 i = 0; i < HIGH_PSE_COUNT; i++)
+        pd[(HIGH_BASE >> 22) + i] = i * 0x400000u | 0x083u;
+}
+
+static void enable_pse(void) {
+    u32 cr4;
+    __asm__ __volatile__("mov %%cr4, %0" : "=r"(cr4));
+    cr4 |= 0x00000010u;
+    __asm__ __volatile__("mov %0, %%cr4" : : "r"(cr4));
+}
 
 static void paging_install(void) {
     for (int i = 0; i < 1024; i++) {
@@ -796,8 +812,10 @@ static void paging_install(void) {
 
     page_directory[0] = (u32)page_table0 | 0x003;   /* supervisor 0-4 MB */
     page_directory[1] = (u32)page_table1 | 0x007;   /* user-capable 4-8 MB */
-    for (u32 i = 0; i < DIRECT_PT_COUNT; i++)
+    for (u32 i = 0; i < LOW_DIRECT_PT_COUNT; i++)
         page_directory[4 + i] = (u32)direct_pt[i] | 0x003;
+    install_high_pse(page_directory);
+    enable_pse();
     if (vbe_active)
         page_directory[VBE_PDE_INDEX] = vbe_pde_entry;
 
@@ -940,7 +958,6 @@ struct fs_entry {
 
 static u8 fs_dir[2048];
 static u8 fs_sector[512];
-static u8 fs_program[FS_MAX_FILE];
 
 static int fs_name_eq(const struct fs_entry *e, const char *name) {
     for (int i = 0; i < 16; i++) {
@@ -975,43 +992,6 @@ static int fs_load_dir(void) {
             fs_dir[s * 512 + i] = fs_sector[i];
     }
     return 1;
-}
-
-static int fs_load_file_locked(const char *name, u8 *dst, u32 max, u32 *out_size) {
-    if (!fs_load_dir())
-        return 0;
-    struct fs_header *h = (struct fs_header *)fs_dir;
-    struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
-    for (int i = 0; i < h->count; i++) {
-        struct fs_entry *e = &entries[i];
-        if (!fs_name_eq(e, name))
-            continue;
-        if (e->size > max)
-            return 0;
-        u32 sectors = (e->size + 511) / 512;
-        u32 done = 0;
-        for (u32 s = 0; s < sectors; s++) {
-            if (!fdc_read_sector(e->start_lba + s, fs_sector))
-                return 0;
-            u32 chunk = e->size - done;
-            if (chunk > 512)
-                chunk = 512;
-            for (u32 j = 0; j < chunk; j++)
-                dst[done + j] = fs_sector[j];
-            done += chunk;
-        }
-        *out_size = e->size;
-        return 1;
-    }
-    return 0;
-}
-
-static int fs_load_file(const char *name, u8 *dst, u32 max, u32 *out_size) {
-    if (!kernel_fdc_lock())
-        return 0;
-    int r = fs_load_file_locked(name, dst, max, out_size);
-    kernel_fdc_unlock();
-    return r;
 }
 
 void list_disk_files(void) {
@@ -1500,7 +1480,7 @@ static int console_has_live_task(int cid) {
     return 0;
 }
 
-#define MAX_FDS 8
+#define MAX_FDS 32
 struct fd_entry {
     u8 used;
     u8 kind;            /* 0 = MiniFS read-only, 1 = RAMFS */
@@ -1514,7 +1494,7 @@ struct fd_entry {
 };
 
 
-#define MAX_RAMFILES 16
+#define MAX_RAMFILES 32
 #define NPIPES 4
 struct kpipe {
     u32 phys;
@@ -1523,7 +1503,7 @@ struct kpipe {
     u8 used;
 };
 static struct kpipe pipes[NPIPES];
-#define RAMFILE_MAX_PAGES 16
+#define RAMFILE_MAX_PAGES 64
 struct ramfile {
     u8 used;
     char name[16];
@@ -1553,14 +1533,16 @@ static void set_cr3(u32 value) {
 }
 
 static void *direct_ptr(u32 phys) {
-    return (void *)(DIRECT_BASE + (phys - DIRECT_PHYS_START));
+    if (phys < LOW_POOL_END)
+        return (void *)(DIRECT_BASE + (phys - DIRECT_PHYS_START));
+    return (void *)(HIGH_BASE + phys);
 }
 
 static void frame_init(void) {
     if (frames_ready)
         return;
 
-    for (u32 t = 0; t < DIRECT_PT_COUNT; t++) {
+    for (u32 t = 0; t < LOW_DIRECT_PT_COUNT; t++) {
         for (int i = 0; i < 1024; i++) {
             u32 phys = DIRECT_PHYS_START + (u32)t * 0x400000u + (u32)i * 0x1000u;
             direct_pt[t][i] = phys | 0x003;
@@ -1603,18 +1585,21 @@ static inline void frame_invlpg(u32 va) {
     __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
 }
 
-static u32 frame_alloc_pages(u32 pages) {
+static u32 frame_alloc_from(u32 pages, u32 first_page, u32 last_page) {
     if (pages == 0 || pages > frame_total - frame_used)
         return 0;
-    u32 start = frame_find_run(frame_bitmap, MAX_FRAME_PAGES, pages);
-    if (start == 0xFFFFFFFFu)
+    if (first_page >= last_page)
+        return 0;
+    u32 start = frame_find_run_from(frame_bitmap, MAX_FRAME_PAGES, pages,
+                                    first_page);
+    if (start == 0xFFFFFFFFu || start + pages > last_page)
         return 0;
     for (u32 j = 0; j < pages; j++) {
         u32 bit = start + j;
         frame_bitmap[bit / 32] |= (1u << (bit % 32));
         frame_alloc_bitmap[bit / 32] |= (1u << (bit % 32));
         u32 phys = bit * 0x1000u;
-        if (phys >= DIRECT_PHYS_START && phys < MAX_PHYS) {
+        if (phys >= DIRECT_PHYS_START && phys < LOW_POOL_END) {
             u32 idx = (phys - DIRECT_PHYS_START) >> 12;
             u32 *pte = &direct_pt[idx / 1024u][idx % 1024u];
             if (!(*pte & 1)) {
@@ -1625,6 +1610,16 @@ static u32 frame_alloc_pages(u32 pages) {
     }
     frame_used += pages;
     return start * 0x1000u;
+}
+
+static u32 frame_alloc_pages(u32 pages) {
+    return frame_alloc_from(pages, HIGH_POOL_START / 0x1000u,
+                            MAX_FRAME_PAGES);
+}
+
+static u32 frame_alloc_low_pages(u32 pages) {
+    return frame_alloc_from(pages, FRAME_POOL_START / 0x1000u,
+                            LOW_POOL_END / 0x1000u);
 }
 
 static void frame_free_pages(u32 base, u32 pages) {
@@ -1707,8 +1702,20 @@ int kernel_mem_selftest(void) {
         frame_free_pages(high, 2049);
     }
 
+    u32 high512_ok = 1;
+    if (frame_total > 0x20000000u / 0x1000u) {
+        high512_ok = 0;
+        u32 hp = frame_alloc_from(1, 0x20000000u / 0x1000u, MAX_FRAME_PAGES);
+        if (hp) {
+            u8 *v = (u8 *)direct_ptr(hp);
+            *(u32 *)v = 0x51200000u;
+            high512_ok = *(u32 *)v == 0x51200000u;
+            frame_free_pages(hp, 1);
+        }
+    }
+
     u32 guard_ok = 0, cr3_before = 0, cr3_after = 0;
-    u32 gp = frame_alloc_pages(1);
+    u32 gp = frame_alloc_low_pages(1);
     if (gp) {
         __asm__ __volatile__("mov %%cr3, %0" : "=r"(cr3_before));
         u8 *gv = (u8 *)direct_ptr(gp);
@@ -1730,7 +1737,8 @@ int kernel_mem_selftest(void) {
     const char *s = "initial=";
     while (*s) *p++ = *s++;
     u32 vals[4] = { initial, allocated, restored,
-                    (unique_ok && data_ok && high_ok && guard_ok && cr3_before) };
+                    (unique_ok && data_ok && high_ok && high512_ok &&
+                     guard_ok && cr3_before) };
     for (int k = 0; k < 4; k++) {
         char tmp[12];
         int n = 0;
@@ -1764,7 +1772,21 @@ void *kernel_alloc_pages_zero(u32 pages) {
 void kernel_free_pages_ptr(void *p, u32 pages) {
     if (!p || (u32)p < DIRECT_BASE)
         return;
-    frame_free_pages(DIRECT_PHYS_START + ((u32)p - DIRECT_BASE), pages);
+    u32 v = (u32)p;
+    u32 phys;
+    if (v >= HIGH_BASE)
+        phys = v - HIGH_BASE;
+    else
+        phys = DIRECT_PHYS_START + (v - DIRECT_BASE);
+    frame_free_pages(phys, pages);
+}
+
+static void *kernel_alloc_low_pages_zero(u32 pages) {
+    u32 phys = frame_alloc_low_pages(pages);
+    if (!phys)
+        return 0;
+    frame_zero(phys, pages);
+    return direct_ptr(phys);
 }
 
 static void task_system_init(void) {
@@ -1775,8 +1797,10 @@ static void task_system_init(void) {
             sched_safe_pd[i] = 0;
         }
         sched_safe_pd[0] = (u32)sched_safe_pt | 0x003;
-        for (u32 i = 0; i < DIRECT_PT_COUNT; i++)
+        for (u32 i = 0; i < LOW_DIRECT_PT_COUNT; i++)
             sched_safe_pd[4 + i] = (u32)direct_pt[i] | 0x003;
+        install_high_pse(sched_safe_pd);
+        enable_pse();
         sched_safe_ready = 1;
     }
     if (vbe_active)
@@ -1889,8 +1913,8 @@ static int task_alloc_slot(void) {
 }
 
 static int task_fill_pd(int slot) {
-    u32 pd_phys = frame_alloc_pages(1);
-    u32 upt_phys = frame_alloc_pages(1);
+    u32 pd_phys = frame_alloc_low_pages(1);
+    u32 upt_phys = frame_alloc_low_pages(1);
     if (!pd_phys || !upt_phys) {
         if (pd_phys) frame_free_pages(pd_phys, 1);
         if (upt_phys) frame_free_pages(upt_phys, 1);
@@ -1904,8 +1928,9 @@ static int task_fill_pd(int slot) {
     tasks[slot].upt_phys = upt_phys;
     tasks[slot].pd[0] = (u32)task_kernel_pt | 0x003;
     tasks[slot].pd[1] = upt_phys | 0x007;
-    for (u32 i = 0; i < DIRECT_PT_COUNT; i++)
+    for (u32 i = 0; i < LOW_DIRECT_PT_COUNT; i++)
         tasks[slot].pd[4 + i] = (u32)direct_pt[i] | 0x003;
+    install_high_pse(tasks[slot].pd);
     if (vbe_active)
         tasks[slot].pd[VBE_PDE_INDEX] = vbe_pde_entry;
     return 1;
@@ -1979,7 +2004,7 @@ static int task_guard_pte(u8 *base, int present) {
     if (v < DIRECT_BASE)
         return 0;
     u32 idx = (v - DIRECT_BASE) >> 12;
-    if (idx >= (u32)DIRECT_PT_COUNT * 1024u)
+    if (idx >= (u32)LOW_DIRECT_PT_COUNT * 1024u)
         return 0;
     direct_pt[idx / 1024u][idx % 1024u] =
         present ? (DIRECT_PHYS_START + idx * 0x1000u) | 0x003 : 0;
@@ -1989,9 +2014,9 @@ static int task_guard_pte(u8 *base, int present) {
 }
 
 static int task_alloc_runtime(int slot, int kpages) {
-    tasks[slot].kstack = (u8 *)kernel_alloc_pages_zero((u32)(kpages + 1));
+    tasks[slot].kstack = (u8 *)kernel_alloc_low_pages_zero((u32)(kpages + 1));
     tasks[slot].kstack_pages = (u16)(kpages + 1);
-    tasks[slot].fds = (struct fd_entry *)kernel_alloc_pages_zero(1);
+    tasks[slot].fds = (struct fd_entry *)kernel_alloc_low_pages_zero(1);
     if (!tasks[slot].kstack || !tasks[slot].fds ||
         !task_fill_pd(slot))
         return 0;
@@ -3048,6 +3073,24 @@ int task_bg_pid(u32 pid) {
 static int run_user_module_ex(const char *name, int argc,
                               const char *const *argv);
 
+/* Forward declarations: the implementations live next to the RAMFS helpers. */
+static int ramfile_find(const char *name);
+static int ramfile_rw(struct ramfile *r, u32 off, u8 *buf, u32 len, int wr);
+static int ramfs_load_file_to(const char *name, u8 *dst, u32 max,
+                              u32 *out_size);
+static int vfs_load_file_to(const char *name, u8 *dst, u32 max,
+                            u32 *out_size, int *out_from_ramfs);
+
+static int image_is_ump1(const u8 *p, u32 size) {
+    return size >= 4 && p[0] == 'U' && p[1] == 'M' && p[2] == 'P' && p[3] == '1';
+}
+
+static int ump1_header_ok(const struct module_header *h, u32 size) {
+    return h->image_size <= size && h->entry_offset < h->image_size &&
+           h->image_size <= BIG_CODE_MAX &&
+           h->bss_size <= BIG_CODE_MAX - h->image_size;
+}
+
 static int name_is_py(const char *name) {
     int n = 0;
     while (name[n]) n++;
@@ -3073,12 +3116,22 @@ static int task_spawn_user(const char *name) {
         return (int)tasks[child].pid;
     }
     u32 size = 0;
+    int child = -1;
+    u8 *base = (u8 *)BIG_CODE_PHYS;
     __asm__ __volatile__("sti");
-    int ok = fs_load_file_to(name, fs_program, FS_MAX_FILE, &size);
+    int ok = vfs_load_file_to(name, base, BIG_CODE_MAX, &size, 0);
     __asm__ __volatile__("cli");
     if (!ok || size == 0)
         return 0;
-    int child = task_create(name, fs_program, fs_program + size);
+    if (image_is_ump1(base, size)) {
+        struct module_header *h = (struct module_header *)base;
+        if (!ump1_header_ok(h, size))
+            return 0;
+        child = task_create_big(name, h->image_size, h->bss_size,
+                                h->entry_offset);
+    } else if (size <= FS_MAX_FILE) {
+        child = task_create(name, base, base + size);
+    }
     if (child < 0)
         return 0;
     tasks[child].parent_pid = tasks[current_task].pid;
@@ -3088,63 +3141,84 @@ static int task_spawn_user(const char *name) {
 
 static int user_str_ok(u32 ptr, u32 max);
 
-static int task_spawn_args(const char *name, u32 argv, u32 argc) {
-    if (!scheduler_active || current_task < 0 || current_task >= task_cap)
+/* Copy a user-space argv array onto a child's user stack. */
+static int build_user_args_on_stack(int slot, u32 argc, u32 uargv,
+                                    u32 stack_base, u32 stack_top) {
+    if (argc > 32 || tasks[slot].stack_phys == 0)
         return 0;
-    if (argc > 8 || argv < 0x400000 || argv >= 0x800000)
-        return 0;
-    u32 size = 0;
-    __asm__ __volatile__("sti");
-    int ok = fs_load_file_to(name, fs_program, FS_MAX_FILE, &size);
-    __asm__ __volatile__("cli");
-    if (!ok || size == 0)
-        return 0;
+    u8 *stackv = (u8 *)direct_ptr(tasks[slot].stack_phys);
+    u32 sp = stack_top;
+    u32 ptrs[32];
 
-    int child = task_create(name, fs_program, fs_program + size);
-    if (child < 0)
-        return 0;
-    tasks[child].parent_pid = tasks[current_task].pid;
-    tasks[child].console_id = tasks[current_task].console_id;
-
-    u8 *stackv = (u8 *)direct_ptr(tasks[child].stack_phys);
-    u32 sp = 0x402000;
-    u32 ptrs[8];
     for (u32 i = 0; i < argc; i++) {
-        u32 up = ((u32 *)argv)[i];
-        if (!user_str_ok(up, 64)) {
-            tasks[child].state = TASK_FREE;
-            task_free_frames(child);
+        u32 up = ((const u32 *)uargv)[i];
+        if (!user_str_ok(up, 64))
             return 0;
-        }
         int len = 0;
         while (len < 64 && *(volatile u8 *)(up + (u32)len) != 0)
             len++;
-        if (len == 64) {
-            tasks[child].state = TASK_FREE;
-            task_free_frames(child);
+        if (len == 64)
             return 0;
-        }
         sp -= (u32)len + 1;
-        if (sp < 0x401000) {
-            tasks[child].state = TASK_FREE;
-            task_free_frames(child);
+        if (sp < stack_base + 64)
             return 0;
-        }
-        u8 *dst = stackv + (sp - 0x401000);
+        u8 *dst = stackv + (sp - stack_base);
         for (int j = 0; j <= len; j++)
             dst[j] = *(volatile u8 *)(up + (u32)j);
         ptrs[i] = sp;
     }
     sp &= ~3u;
     sp -= 4;
-    *(u32 *)(stackv + (sp - 0x401000)) = 0;
+    *(u32 *)(stackv + (sp - stack_base)) = 0;
     for (int i = (int)argc - 1; i >= 0; i--) {
         sp -= 4;
-        *(u32 *)(stackv + (sp - 0x401000)) = ptrs[i];
+        *(u32 *)(stackv + (sp - stack_base)) = ptrs[i];
     }
     sp -= 4;
-    *(u32 *)(stackv + (sp - 0x401000)) = argc;
-    ((u32 *)tasks[child].esp)[11] = sp;
+    if (sp < stack_base + 64)
+        return 0;
+    *(u32 *)(stackv + (sp - stack_base)) = argc;
+    ((u32 *)tasks[slot].esp)[11] = sp;
+    return 1;
+}
+
+static int task_spawn_args(const char *name, u32 argv, u32 argc) {
+    if (!scheduler_active || current_task < 0 || current_task >= task_cap)
+        return 0;
+    if (argc > 32 || argv < 0x400000 || argv >= 0x800000)
+        return 0;
+    u32 size = 0;
+    u8 *base = (u8 *)BIG_CODE_PHYS;
+    __asm__ __volatile__("sti");
+    int ok = vfs_load_file_to(name, base, BIG_CODE_MAX, &size, 0);
+    __asm__ __volatile__("cli");
+    if (!ok || size == 0)
+        return 0;
+
+    int child = -1;
+    u32 stack_base = 0x00401000u;
+    u32 stack_top = 0x00402000u;
+    if (image_is_ump1(base, size)) {
+        struct module_header *h = (struct module_header *)base;
+        if (!ump1_header_ok(h, size))
+            return 0;
+        child = task_create_big(name, h->image_size, h->bss_size,
+                                h->entry_offset);
+        stack_base = BIG_USER_STACK;
+        stack_top = BIG_USER_STACK + BIG_STACK_SIZE;
+    } else if (size <= FS_MAX_FILE) {
+        child = task_create(name, base, base + size);
+    }
+    if (child < 0)
+        return 0;
+    tasks[child].parent_pid = tasks[current_task].pid;
+    tasks[child].console_id = tasks[current_task].console_id;
+
+    if (!build_user_args_on_stack(child, argc, argv, stack_base, stack_top)) {
+        tasks[child].state = TASK_FREE;
+        task_free_frames(child);
+        return 0;
+    }
     return (int)tasks[child].pid;
 }
 
@@ -3265,11 +3339,11 @@ void run_task_demo(void) {
 
 static int build_args_on_stack(int slot, u32 argc, const char *const *argv,
                                u32 stack_base, u32 stack_top) {
-    if (argc > 8 || tasks[slot].stack_phys == 0)
+    if (argc > 32 || tasks[slot].stack_phys == 0)
         return 0;
     u8 *stackv = (u8 *)direct_ptr(tasks[slot].stack_phys);
     u32 sp = stack_top;
-    u32 ptrs[8];
+    u32 ptrs[32];
 
     for (u32 i = 0; i < argc; i++) {
         const char *s = argv[i];
@@ -3379,8 +3453,18 @@ static int run_user_module_ex(const char *name, int argc,
     u32 size = 0;
     int cache = warm_find(name);
     int cache_hit = 0;
+    int from_ramfs = 0;
 
-    if (cache >= 0) {
+    if (ramfile_find(name) >= 0) {
+        /* RAMFS wins over the disk copy and the warm cache: never run a
+         * stale image after a recompile. */
+        if (!ramfs_load_file_to(name, (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX,
+                                &size)) {
+            gui_sys_print("[user-mod] load failed.\n");
+            return 0;
+        }
+        from_ramfs = 1;
+    } else if (cache >= 0) {
         size = warm_modules[cache].size;
     } else if (!fs_load_file_to(name, (u8 *)BIG_CODE_PHYS, BIG_CODE_MAX, &size)) {
         gui_sys_print("[user-mod] load failed.\n");
@@ -3411,7 +3495,7 @@ static int run_user_module_ex(const char *name, int argc,
         return 0;
     }
 
-    if (!cache_hit)
+    if (!cache_hit && !from_ramfs)
         warm_store(name, size);
 
     int slot = task_create_big(name, h->image_size, h->bss_size, h->entry_offset);
@@ -3627,10 +3711,16 @@ int run_user_module_args(const char *name, int argc, const char *const *argv) {
     return run_user_module_ex(name, argc, argv);
 }
 
-int exec_disk(const char *name) {
+int exec_file_args(const char *name, int argc, const char *const *argv) {
     u32 size = 0;
-    if (!fs_load_file(name, fs_program, FS_MAX_FILE, &size)) {
+    u8 *base = (u8 *)BIG_CODE_PHYS;
+
+    if (!vfs_load_file_to(name, base, BIG_CODE_MAX, &size, 0)) {
         gui_sys_print("[disk] file not found or read failed.\n");
+        return 0;
+    }
+    if (size == 0) {
+        gui_sys_print("[disk] empty file.\n");
         return 0;
     }
 
@@ -3639,7 +3729,32 @@ int exec_disk(const char *name) {
     idt_set_flags(0x80, (u32)syscall_stub, 0xEE);
     /* Task 0 already owns scheduler state; do not clear peers. */
 
-    int slot = task_create(name, fs_program, fs_program + size);
+    int slot = -1;
+    if (image_is_ump1(base, size)) {
+        struct module_header *h = (struct module_header *)base;
+        if (!ump1_header_ok(h, size)) {
+            gui_sys_print("[disk] bad UMP1 header.\n");
+            __asm__ __volatile__("sti");
+            return 0;
+        }
+        slot = task_create_big(name, h->image_size, h->bss_size,
+                               h->entry_offset);
+        if (slot >= 0 && argc > 0 &&
+            !build_args_on_stack(slot, (u32)argc, argv, BIG_USER_STACK,
+                                 BIG_USER_STACK + BIG_STACK_SIZE)) {
+            tasks[slot].state = TASK_FREE;
+            task_free_frames(slot);
+            gui_sys_print("[disk] argv does not fit.\n");
+            __asm__ __volatile__("sti");
+            return 0;
+        }
+    } else if (size <= FS_MAX_FILE) {
+        slot = task_create(name, base, base + size);
+    } else {
+        gui_sys_print("[disk] binary too large (need UMP1).\n");
+        __asm__ __volatile__("sti");
+        return 0;
+    }
     if (slot < 0) {
         gui_sys_print("[task] no free task slot.\n");
         __asm__ __volatile__("sti");
@@ -3647,6 +3762,10 @@ int exec_disk(const char *name) {
     }
     start_tasks(slot);
     return 1;
+}
+
+int exec_disk(const char *name) {
+    return exec_file_args(name, 0, 0);
 }
 
 static int name16_eq(const char *a, const char *b) {
@@ -3900,6 +4019,36 @@ static int ramfile_rw(struct ramfile *r, u32 off, u8 *buf, u32 len, int wr) {
         done += chunk;
     }
     return (int)done;
+}
+
+/* RAMFS-first load helper: a matching RAMFS name always shadows MiniFS. */
+static int ramfs_load_file_to(const char *name, u8 *dst, u32 max,
+                              u32 *out_size) {
+    int idx = ramfile_find(name);
+    if (idx < 0)
+        return 0;
+    struct ramfile *r = &ramfiles[idx];
+    if (r->size > max)
+        return 0;
+    u32 n = r->size;
+    if (n && ramfile_rw(r, 0, dst, n, 0) != (int)n)
+        return 0;
+    *out_size = n;
+    return 1;
+}
+
+static int vfs_load_file_to(const char *name, u8 *dst, u32 max, u32 *out_size,
+                            int *out_from_ramfs) {
+    if (out_from_ramfs)
+        *out_from_ramfs = 0;
+    if (ramfile_find(name) >= 0) {
+        if (!ramfs_load_file_to(name, dst, max, out_size))
+            return 0;
+        if (out_from_ramfs)
+            *out_from_ramfs = 1;
+        return 1;
+    }
+    return fs_load_file_to(name, dst, max, out_size);
 }
 
 static int ramfile_create(const char *name) {
@@ -4747,10 +4896,15 @@ static int fd_open(const char *name) {
     if (current_task < 0 || current_task >= task_cap || !tasks[current_task].fds)
         return -1;
     __asm__ __volatile__("sti");
-    int ok = fs_load_dir();
-    __asm__ __volatile__("cli");
-    if (!ok)
+    if (!kernel_fdc_lock()) {
+        __asm__ __volatile__("cli");
         return -1;
+    }
+    if (!fs_load_dir()) {
+        kernel_fdc_unlock();
+        __asm__ __volatile__("cli");
+        return -1;
+    }
     struct fs_header *h = (struct fs_header *)fs_dir;
     struct fs_entry *entries = (struct fs_entry *)(fs_dir + sizeof(*h));
     for (int i = 0; i < h->count; i++) {
@@ -4768,10 +4922,16 @@ static int fd_open(const char *name) {
             tasks[current_task].fds[f].offset = 0;
             for (int j = 0; j < 16; j++)
                 tasks[current_task].fds[f].name[j] = entries[i].name[j];
+            kernel_fdc_unlock();
+            __asm__ __volatile__("cli");
             return f + 1;
         }
+        kernel_fdc_unlock();
+        __asm__ __volatile__("cli");
         return -1;
     }
+    kernel_fdc_unlock();
+    __asm__ __volatile__("cli");
     return -1;
 }
 
@@ -4801,9 +4961,14 @@ static int fd_read(int fd, u8 *buf, u32 len) {
     }
     u32 done = 0;
     __asm__ __volatile__("sti");
+    if (!kernel_fdc_lock()) {
+        __asm__ __volatile__("cli");
+        return -1;
+    }
     while (done < len && f->offset < f->size) {
         u32 lba = f->start_lba + f->offset / 512;
         if (!fdc_read_sector(lba, fs_sector)) {
+            kernel_fdc_unlock();
             __asm__ __volatile__("cli");
             return -1;
         }
@@ -4818,6 +4983,7 @@ static int fd_read(int fd, u8 *buf, u32 len) {
         f->offset += chunk;
         done += chunk;
     }
+    kernel_fdc_unlock();
     __asm__ __volatile__("cli");
     return (int)done;
 }
@@ -5334,7 +5500,7 @@ void syscall_handler(u32 number, u32 arg, u32 cs, u32 frame) {
         u32 argv = SYS_ARG2(frame);
         u32 argc = SYS_ARG3(frame);
         int pid = 0;
-        if (user_str_ok(name, 256) && argc <= 16 &&
+        if (user_str_ok(name, 256) && argc <= 32 &&
             user_ptr_ok(argv, argc * 4))
             pid = task_spawn_args((const char *)name, argv, argc);
         SYS_RET(frame) = (u32)pid;
@@ -5788,6 +5954,9 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
+
+
 
 
 
