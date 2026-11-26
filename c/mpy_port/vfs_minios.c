@@ -186,7 +186,7 @@ mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) 
     for (const char *m = mode; *m; m++) {
         if (*m == 'b') is_binary = true;
         else if (*m == 'w') { writable = true; flags |= MINIOS_O_CREAT | MINIOS_O_TRUNC | MINIOS_O_WRITE; }
-        else if (*m == 'a') { writable = true; append = true; flags |= MINIOS_O_CREAT | MINIOS_O_WRITE; }
+        else if (*m == 'a') { writable = true; append = true; flags |= MINIOS_O_CREAT | MINIOS_O_WRITE | MINIOS_O_APPEND; }
         else if (*m == '+') { writable = true; flags |= MINIOS_O_WRITE; }
     }
 
@@ -194,9 +194,7 @@ mp_obj_t mp_builtin_open(size_t n_args, const mp_obj_t *args, mp_map_t *kwargs) 
     if (fd < 0) {
         mp_raise_OSError(writable ? MP_EACCES : MP_ENOENT);
     }
-    if (append) {
-        (void)sys_seek(fd, 0, 2);
-    }
+    (void)append;
 
     minios_file_obj_t *o = mp_obj_malloc(minios_file_obj_t, is_binary ? &minios_binfile_type : &minios_textfile_type);
     o->fd = fd;
@@ -321,7 +319,8 @@ static mp_obj_t os_unlink_fn(mp_obj_t path_in) {
 static MP_DEFINE_CONST_FUN_OBJ_1(os_unlink_obj, os_unlink_fn);
 
 static mp_obj_t os_sync_fn(void) {
-    (void)sys_sync_fs();
+    if (sys_sync_fs() < 0)
+        mp_raise_OSError(MP_EIO);
     return mp_const_none;
 }
 static MP_DEFINE_CONST_FUN_OBJ_0(os_sync_obj, os_sync_fn);

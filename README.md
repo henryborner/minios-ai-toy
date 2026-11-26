@@ -126,7 +126,7 @@ Build guardrails:
 Current measured sizes after Phase 3E Step 3A:
 
 ```text
-kernel:  86,592 / 131,072 B
+kernel:  88,576 / 131,072 B
 BSS end: 0x32944e
 MPY:     208,912 B
 image:   1,474,560 B
@@ -169,6 +169,7 @@ baseline.
 
 MIT for the MiniOS code. See [LICENSE](LICENSE) and [NOTICE](NOTICE) for
 third-party attribution, especially MicroPython (MIT).
+
 
 
 

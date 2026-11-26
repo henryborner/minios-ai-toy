@@ -68,9 +68,10 @@ def image_nonblank(path):
     return len(set(pix[: w * h * 3])) > 2
 
 
-def parse_metrics(log):
+def parse_metrics(log, offset=0):
     try:
-        vals = re.findall(rb"\[metrics\] free=(\d+) total=(\d+)", log.read_bytes())
+        vals = re.findall(rb"\[metrics\] free=(\d+) total=(\d+)",
+                          Path(log).read_bytes()[offset:])
         return vals[-1] if vals else None
     except Exception:
         return None
@@ -104,18 +105,20 @@ def exercise(prefix, img, serial):
         time.sleep(0.8)
         if b"[selftest] PASS" not in Path(serial).read_bytes():
             raise AssertionError("guest selftest failed: " + prefix)
+        m1 = Path(serial).stat().st_size
         h.type("metrics\n")
         time.sleep(0.5)
-        before = parse_metrics(Path(serial))
+        before = parse_metrics(serial, m1)
         h.type("calc 2**10\n")
         time.sleep(1.0)
         h.type("selftest\n")
         time.sleep(0.8)
+        m2 = Path(serial).stat().st_size
         h.type("metrics\n")
         time.sleep(0.5)
-        after = parse_metrics(Path(serial))
+        after = parse_metrics(serial, m2)
         if before is None or after is None:
-            raise AssertionError("missing metrics: " + prefix)
+            raise AssertionError("missing new metrics: " + prefix)
         if before != after:
             raise AssertionError("frame leak %s -> %s (%s)" % (before, after, prefix))
         h.cmd(f"screendump {shot2.as_posix()}")
@@ -131,6 +134,35 @@ def exercise(prefix, img, serial):
     return shot1, shot2
 
 
+def regression(img):
+    serial = Path(tempfile.mkdtemp()) / "regress.log"
+    p, h = boot(img, serial, "MiniOS-regress")
+    try:
+        h.type("regress\n")
+        expected = [
+            b"REGRESS SYNC_FAIL",
+            b"REGRESS APPEND 0AB",
+            b"REGRESS SEEKEND 3",
+            b"REGRESS STATUSES 5 5",
+        ]
+        deadline = time.time() + 12
+        data = b""
+        while time.time() < deadline:
+            data = serial.read_bytes() if serial.exists() else b""
+            if all(x in data for x in expected):
+                break
+            time.sleep(0.25)
+        for want in expected:
+            if want not in data:
+                raise AssertionError("regression missing: " + want.decode())
+    finally:
+        h.cmd("quit")
+        try:
+            p.wait(timeout=5)
+        except Exception:
+            p.kill()
+
+
 def main():
     if not IMAGE.exists():
         raise SystemExit("missing MiniOS-C.img")
@@ -141,6 +173,7 @@ def main():
         serial = td / "serial.log"
         # 640x480 normal boot
         exercise("640", IMAGE, serial)
+        regression(IMAGE)
         # force VGA fallback
         vga = td / "MiniOS-320.img"
         shutil.copyfile(IMAGE, vga)

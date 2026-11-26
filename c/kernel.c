@@ -1275,6 +1275,7 @@ struct task {
     u8 stop_prev_state;
     u8 kill_pending;
     u8 sig_pending;
+    u8 frames_freed;
     u32 sig_ignored;
     u8 wait_kbd;
     u8 wait_fdc;
@@ -1364,10 +1365,10 @@ int kernel_fdc_lock(void) {
         }
         tasks[current_task].wait_fdc_lock = 1;
         tasks[current_task].state = TASK_BLOCKED;
-        irq_restore_flags(flags);
         if (!sched_block_current()) {
             tasks[current_task].wait_fdc_lock = 0;
             tasks[current_task].state = TASK_READY;
+            irq_restore_flags(flags);
             if (current_task == 0) {
                 __asm__ __volatile__("sti");
                 __asm__ __volatile__("pause");
@@ -1375,6 +1376,7 @@ int kernel_fdc_lock(void) {
             }
             return 0;
         }
+        irq_restore_flags(flags);
     }
 }
 
@@ -1417,13 +1419,14 @@ int kernel_fdc_wait(int ms) {
     tasks[current_task].wait_fdc = 1;
     tasks[current_task].sleep_until = ticks + (u32)(ms / 10 + 1);
     tasks[current_task].state = TASK_BLOCKED;
-    irq_restore_flags(flags);
     if (!sched_block_current()) {
         tasks[current_task].wait_fdc = 0;
         tasks[current_task].sleep_until = 0;
         tasks[current_task].state = TASK_READY;
+        irq_restore_flags(flags);
         return 0;
     }
+    irq_restore_flags(flags);
     tasks[current_task].wait_fdc = 0;
     tasks[current_task].sleep_until = 0;
     return 1;
@@ -1497,6 +1500,7 @@ struct fd_entry {
     u8 used;
     u8 kind;            /* 0 = MiniFS read-only, 1 = RAMFS */
     u8 writable;
+    u8 append;
     u8 ram_index;
     u32 start_lba;
     u32 size;
@@ -1522,6 +1526,8 @@ struct ramfile {
     u32 pages[RAMFILE_MAX_PAGES];
 };
 static struct ramfile ramfiles[MAX_RAMFILES];
+static volatile u8 fs_snapshot_busy;
+static int fs_sync_owner = -1;
 
 static u32 task_kernel_pt[1024] __attribute__((aligned(4096)));
 
@@ -1675,6 +1681,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         }
         tasks[t].state = TASK_FREE;
         tasks[t].reap_pending = 0;
+        tasks[t].frames_freed = 0;
         tasks[t].stop_prev_state = 0;
         tasks[t].code_phys = 0;
         tasks[t].stack_phys = 0;
@@ -1911,6 +1918,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].shared_ro = 0;
     tasks[slot].state = TASK_READY;
     tasks[slot].reap_pending = 0;
+    tasks[slot].frames_freed = 0;
     tasks[slot].stop_prev_state = 0;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
@@ -2057,6 +2065,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
         shared_ro_refs++;
     tasks[slot].state = TASK_READY;
     tasks[slot].reap_pending = 0;
+    tasks[slot].frames_freed = 0;
     tasks[slot].stop_prev_state = 0;
     tasks[slot].pid = next_pid++;
     tasks[slot].parent_pid = 0;
@@ -2216,6 +2225,10 @@ static void __attribute__((unused)) switch_task(int next) {
 static void task_free_frames(int slot) {
     if (slot == current_task)
         return;
+    if (fs_sync_owner == slot) {
+        fs_sync_owner = -1;
+        fs_snapshot_busy = 0;
+    }
     kernel_fdc_release_owner(slot);
     pipe_release_task(slot);
     if (tasks[slot].shared_ro) {
@@ -2262,10 +2275,14 @@ static void task_free_frames(int slot) {
 
 static void task_reap_done(void) {
     for (int t = 1; t < task_cap; t++) {
-        if (tasks[t].state == TASK_DONE && tasks[t].reap_pending) {
+        if (tasks[t].state != TASK_DONE || !tasks[t].reap_pending)
+            continue;
+        if (!tasks[t].frames_freed) {
             task_free_frames(t);
-            tasks[t].reap_pending = 0;
+            tasks[t].frames_freed = 1;
         }
+        if (tasks[t].parent_pid == 0)
+            tasks[t].reap_pending = 0;
     }
 }
 
@@ -2397,6 +2414,7 @@ static void task_exit(u32 status) {
     tasks[me].exit_code = status;
     tasks[me].state = TASK_DONE;
     tasks[me].reap_pending = 1;
+    tasks[me].frames_freed = 0;
     wake_parent(me);
     /* The current kernel stack must stay mapped until we switch away. */
     set_cr3((u32)sched_safe_pd);
@@ -2750,9 +2768,11 @@ int task_kill_pid(u32 pid) {
     u32 tpid = tasks[target].pid;
     adopt_children(target);
     tasks[target].state = TASK_DONE;
-    tasks[target].reap_pending = 0;
+    tasks[target].reap_pending = tasks[target].parent_pid != 0;
+    tasks[target].frames_freed = 0;
     wake_parent(target);
     task_free_frames(target);
+    tasks[target].frames_freed = 1;
     extern void gui_canvas_release_owner(u32 pid);
     extern void gui_prompt_console(int cid);
     gui_canvas_release_owner(tpid);
@@ -3010,6 +3030,7 @@ static int task_wait_block(u32 want_pid, int nohang, u32 frame) {
         u32 status = tasks[child].exit_code;
         tasks[child].state = TASK_FREE;
         tasks[child].reap_pending = 0;
+        tasks[child].frames_freed = 0;
         task_free_frames(child);
         SYS_RET(frame) = status;
         return 0;
@@ -3708,6 +3729,8 @@ static void ramfile_free_from(struct ramfile *r, int first) {
 static int ramfile_rw(struct ramfile *r, u32 off, u8 *buf, u32 len, int wr) {
     if (!r || off + len < off || off + len > RAMFILE_MAX_PAGES * 0x1000u)
         return -1;
+    if (wr && fs_snapshot_busy)
+        return -1;
     u32 done = 0;
     while (done < len) {
         u32 pos = off + done;
@@ -3741,6 +3764,8 @@ static int ramfile_rw(struct ramfile *r, u32 off, u8 *buf, u32 len, int wr) {
 }
 
 static int ramfile_create(const char *name) {
+    if (fs_snapshot_busy)
+        return -1;
     int idx = -1;
     for (int i = 0; i < MAX_RAMFILES; i++) {
         if (!ramfiles[i].used) {
@@ -3755,11 +3780,15 @@ static int ramfile_create(const char *name) {
     for (int p = 0; p < RAMFILE_MAX_PAGES; p++)
         ramfiles[idx].pages[p] = 0;
     for (int i = 0; i < 16; i++)
+        ramfiles[idx].name[i] = 0;
+    for (int i = 0; i < 15 && name[i]; i++)
         ramfiles[idx].name[i] = name[i];
     return idx;
 }
 
 static void ramfile_delete(int idx) {
+    if (fs_snapshot_busy)
+        return;
     if (idx < 0 || idx >= MAX_RAMFILES || !ramfiles[idx].used)
         return;
     ramfile_free_from(&ramfiles[idx], 0);
@@ -3897,6 +3926,65 @@ int prepare_pipe_scripts(void) {
         "    print(d)\n";
     return make_pipe_script("PPROD.PY", prod) &&
            make_pipe_script("PCONS.PY", cons);
+}
+
+int prepare_regress_scripts(void) {
+    const char *child =
+        "from minios import exit_status\n"
+        "exit_status(5)\n";
+    const char *reg =
+        "import os\n"
+        "from minios import spawn, wait, serial_write\n"
+        "def R(*a):\n"
+        "    s = 'REGRESS ' + ' '.join(str(x) for x in a)\n"
+        "    print(s)\n"
+        "    serial_write((s + '\\n').encode())\n"
+        "try:\n"
+        "    a = open('BIGA.TXT', 'w')\n"
+        "    a.write('A' * 33000)\n"
+        "    a.close()\n"
+        "    b = open('BIGB.TXT', 'w')\n"
+        "    b.write('B' * 33000)\n"
+        "    b.close()\n"
+        "    try:\n"
+        "        os.sync()\n"
+        "        R('SYNC_UNEXPECTED_OK')\n"
+        "    except Exception:\n"
+        "        R('SYNC_FAIL')\n"
+        "finally:\n"
+        "    try: os.unlink('BIGA.TXT')\n"
+        "    except Exception: pass\n"
+        "    try: os.unlink('BIGB.TXT')\n"
+        "    except Exception: pass\n"
+        "f = open('APP.TXT', 'w')\n"
+        "f.write('0')\n"
+        "f.close()\n"
+        "a = open('APP.TXT', 'a')\n"
+        "b = open('APP.TXT', 'a')\n"
+        "a.write('A')\n"
+        "b.write('B')\n"
+        "a.close()\n"
+        "b.close()\n"
+        "f = open('APP.TXT')\n"
+        "R('APPEND', f.read())\n"
+        "f.close()\n"
+        "f = open('SEEK.TXT', 'w')\n"
+        "f.write('12')\n"
+        "f.close()\n"
+        "a = open('SEEK.TXT', 'r+')\n"
+        "b = open('SEEK.TXT', 'a')\n"
+        "b.write('3')\n"
+        "b.close()\n"
+        "R('SEEKEND', a.seek(0, 2))\n"
+        "a.close()\n"
+        "p1 = spawn('CHILD5.PY')\n"
+        "p2 = spawn('CHILD5.PY')\n"
+        "R('CHILDREN', p1, p2)\n"
+        "s1 = wait(p1, 0)\n"
+        "s2 = wait(p2, 0)\n"
+        "R('STATUSES', s1, s2)\n";
+    return make_pipe_script("CHILD5.PY", child) &&
+           make_pipe_script("REGRESS.PY", reg);
 }
 
 int prepare_lockhold_script(void) {
@@ -4315,6 +4403,11 @@ fail:
 }
 
 static int savefs_sync(void) {
+    if (fs_snapshot_busy)
+        return 0;
+    fs_snapshot_busy = 1;
+    fs_sync_owner = current_task;
+
     struct savefs_header h;
     u8 *hp = (u8 *)&h;
     for (u32 i = 0; i < sizeof(h); i++)
@@ -4326,12 +4419,12 @@ static int savefs_sync(void) {
         if (!ramfiles[i].used)
             continue;
         if (count >= 16 || ramfiles[i].size > RAMFILE_MAX_PAGES * 0x1000u)
-            return 0;
+            goto fail;
         total += (ramfiles[i].size + 511u) / 512u;
         count++;
     }
     if (total > SAVE3_SECTORS)
-        return 0;
+        goto fail;
 
     int target = (savefs_active == 0) ? 1 : 0;
     u32 hdr_lba = target ? SAVE3_HEADER_B : SAVE3_HEADER_A;
@@ -4343,6 +4436,8 @@ static int savefs_sync(void) {
             continue;
         struct ramfile *r = &ramfiles[i];
         u32 sec = (r->size + 511u) / 512u;
+        if (lba + sec > data_lba + SAVE3_SECTORS)
+            goto fail;
         u32 crc = 0xFFFFFFFFu;
         for (u32 s = 0; s < sec; s++) {
             for (int j = 0; j < 512; j++)
@@ -4350,10 +4445,10 @@ static int savefs_sync(void) {
             u32 chunk = r->size - s * 512u;
             if (chunk > 512) chunk = 512;
             if (ramfile_rw(r, s * 512u, fs_sector, chunk, 0) != (int)chunk)
-                return 0;
+                goto fail;
             crc = crc32_bytes(crc, fs_sector, chunk);
             if (!fdc_write_sector(lba + s, fs_sector))
-                return 0;
+                goto fail;
         }
         for (int j = 0; j < 16; j++)
             h.entries[count].name[j] = r->name[j];
@@ -4371,9 +4466,16 @@ static int savefs_sync(void) {
     for (u32 j = 0; j < sizeof(h); j++)
         fs_sector[j] = hp[j];
     if (!fdc_write_sector(hdr_lba, fs_sector))
-        return 0;
+        goto fail;
     savefs_active = target;
+    fs_snapshot_busy = 0;
+    fs_sync_owner = -1;
     return 1;
+
+fail:
+    fs_snapshot_busy = 0;
+    fs_sync_owner = -1;
+    return 0;
 }
 
 static int savefs_restore(void) {
@@ -4584,6 +4686,7 @@ static int fd_read(int fd, u8 *buf, u32 len) {
 #define O_CREAT 1
 #define O_TRUNC 2
 #define O_WRITE 4
+#define O_APPEND 8
 
 static int fd_alloc_slot(void) {
     if (current_task < 0 || current_task >= task_cap || !tasks[current_task].fds)
@@ -4599,6 +4702,8 @@ static int fd_open_ex(const char *name, u32 flags) {
     if (current_task < 0 || current_task >= task_cap || !tasks[current_task].fds)
         return -1;
 
+    if (fs_snapshot_busy && (flags & (O_CREAT | O_TRUNC)))
+        return -1;
     int ri = ramfile_find(name);
     if (ri >= 0) {
         int f = fd_alloc_slot();
@@ -4608,6 +4713,7 @@ static int fd_open_ex(const char *name, u32 flags) {
         e->used = 1;
         e->kind = 1;
         e->writable = (flags & O_WRITE) ? 1 : 0;
+        e->append = (flags & O_APPEND) ? 1 : 0;
         e->ram_index = (u8)ri;
         e->start_lba = 0;
         e->size = ramfiles[ri].size;
@@ -4635,6 +4741,7 @@ static int fd_open_ex(const char *name, u32 flags) {
         e->used = 1;
         e->kind = 1;
         e->writable = 1;
+        e->append = (flags & O_APPEND) ? 1 : 0;
         e->ram_index = (u8)ri;
         e->start_lba = 0;
         e->size = 0;
@@ -4659,6 +4766,10 @@ static int fd_write(int fd, const u8 *buf, u32 len) {
     if (f->ram_index >= MAX_RAMFILES || !ramfiles[f->ram_index].used)
         return -1;
     struct ramfile *r = &ramfiles[f->ram_index];
+    if (fs_snapshot_busy)
+        return -1;
+    if (f->append)
+        f->offset = r->size;
     if (f->offset + len > RAMFILE_MAX_PAGES * 0x1000u)
         return -1;
     int wrote = ramfile_rw(r, f->offset, (u8 *)buf, len, 1);
@@ -4815,6 +4926,10 @@ static void pc_beep(u32 freq, u32 ms) {
     outb(0x61, (u8)(inb(0x61) & ~3));
 }
 
+static inline void brk_invlpg(u32 va) {
+    __asm__ __volatile__("invlpg (%0)" : : "r"(va) : "memory");
+}
+
 static u32 task_brk(u32 addr) {
     if (current_task < 0 || current_task >= task_cap)
         return 0xFFFFFFFFu;
@@ -4829,9 +4944,10 @@ static u32 task_brk(u32 addr) {
     if (pages < old_pages) {
         for (u32 i = pages; i < old_pages; i++) {
             u32 pte = tasks[current_task].upt[HEAP_PAGE_INDEX + i];
+            tasks[current_task].upt[HEAP_PAGE_INDEX + i] = 0;
+            brk_invlpg(HEAP_VIRT_BASE + i * 0x1000u);
             if (pte & 1)
                 frame_free_pages(pte & 0xFFFFF000u, 1);
-            tasks[current_task].upt[HEAP_PAGE_INDEX + i] = 0;
         }
         tasks[current_task].heap_pages = (u16)pages;
         tasks[current_task].heap_phys = 0;
@@ -4843,9 +4959,10 @@ static u32 task_brk(u32 addr) {
         if (!phys) {
             for (u32 j = old_pages; j < i; j++) {
                 u32 pte = tasks[current_task].upt[HEAP_PAGE_INDEX + j];
+                tasks[current_task].upt[HEAP_PAGE_INDEX + j] = 0;
+                brk_invlpg(HEAP_VIRT_BASE + j * 0x1000u);
                 if (pte & 1)
                     frame_free_pages(pte & 0xFFFFF000u, 1);
-                tasks[current_task].upt[HEAP_PAGE_INDEX + j] = 0;
             }
             tasks[current_task].heap_pages = old_pages;
             return 0xFFFFFFFFu;
@@ -4860,6 +4977,8 @@ static u32 task_brk(u32 addr) {
 }
 
 static int fd_unlink(const char *name) {
+    if (fs_snapshot_busy)
+        return -1;
     int ri = ramfile_find(name);
     if (ri < 0)
         return -1;
@@ -4877,8 +4996,15 @@ static int fd_seek(int fd, int offset, int whence) {
     int base = 0;
     if (whence == 0) base = 0;
     else if (whence == 1) base = (int)f->offset;
-    else if (whence == 2) base = (int)f->size;
-    else return -1;
+    else if (whence == 2) {
+        if (f->kind == 1 && f->ram_index < MAX_RAMFILES &&
+            ramfiles[f->ram_index].used) {
+            f->size = ramfiles[f->ram_index].size;
+            base = (int)f->size;
+        } else {
+            base = (int)f->size;
+        }
+    } else return -1;
     int next = base + offset;
     if (next < 0 || (u32)next > f->size)
         return -1;
@@ -5526,6 +5652,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

@@ -141,9 +141,9 @@ while True:
         try:
             import os
             os.sync()
-        except Exception:
-            pass
-        msg = "saved + synced " + name
+            msg = "saved + synced " + name
+        except Exception as e:
+            msg = "saved; sync failed: " + str(e)
     elif ch == "\x12":
         save(lines)
         mod = 0

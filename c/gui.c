@@ -1905,6 +1905,23 @@ static void run_command(struct console *c, char *line) {
             c = &consoles[self];
             focus_window(consoles[self].win_id);
         }
+    } else if (streq(line, "regress")) {
+        extern int prepare_regress_scripts(void);
+        int self = (int)(c - consoles);
+        if (!prepare_regress_scripts()) {
+            term_puts(c, "regress: scripts failed\n");
+        } else if (!gui_new_console()) {
+            c = &consoles[self];
+            term_puts(c, "regress: console failed\n");
+        } else {
+            int nc = console_count - 1;
+            if (!launch_python(&consoles[nc], "REGRESS.PY"))
+                term_puts(c, "regress: launch failed\n");
+            else
+                term_puts(c, "regress: started\n");
+            c = &consoles[self];
+            focus_window(consoles[self].win_id);
+        }
     } else if (streq(line, "lockrace")) {
         extern int prepare_cpu_scripts(void);
         extern int prepare_lockhold_script(void);

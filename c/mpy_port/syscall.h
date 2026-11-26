@@ -51,6 +51,7 @@ struct minios_taskinfo {
 #define MINIOS_O_CREAT   1u
 #define MINIOS_O_TRUNC   2u
 #define MINIOS_O_WRITE   4u
+#define MINIOS_O_APPEND  8u
 
 struct minios_stat {
     uint32_t size;

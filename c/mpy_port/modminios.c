@@ -317,6 +317,12 @@ static mp_obj_t minios_spawn(mp_obj_t name_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(minios_spawn_obj, minios_spawn);
 
+static mp_obj_t minios_exit_status(mp_obj_t code_in) {
+    sys_exit_status((uint32_t)mp_obj_get_int(code_in));
+    return mp_const_none;
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(minios_exit_status_obj, minios_exit_status);
+
 static mp_obj_t minios_signal_ignore(mp_obj_t sig_in) {
     return mp_obj_new_int(minios_syscall2(SYS_SIGNAL, 0,
                                           (uint32_t)mp_obj_get_int(sig_in)));
@@ -489,6 +495,7 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_fdc_test), MP_ROM_PTR(&minios_fdc_test_obj) },
     { MP_ROM_QSTR(MP_QSTR_fdc_lock_test), MP_ROM_PTR(&minios_fdc_lock_test_obj) },
     { MP_ROM_QSTR(MP_QSTR_spawn), MP_ROM_PTR(&minios_spawn_obj) },
+    { MP_ROM_QSTR(MP_QSTR_exit_status), MP_ROM_PTR(&minios_exit_status_obj) },
     { MP_ROM_QSTR(MP_QSTR_signal_ignore), MP_ROM_PTR(&minios_signal_ignore_obj) },
     { MP_ROM_QSTR(MP_QSTR_signal_pending), MP_ROM_PTR(&minios_signal_pending_obj) },
     { MP_ROM_QSTR(MP_QSTR_wait), MP_ROM_PTR(&minios_wait_obj) },
