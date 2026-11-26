@@ -1649,7 +1649,9 @@ static int task_guard_pte(u8 *base, int present) {
         return 0;
     direct_pt[idx / 1024u][idx % 1024u] =
         present ? (DIRECT_PHYS_START + idx * 0x1000u) | 0x003 : 0;
-    set_cr3((u32)sched_safe_pd);
+    u32 cr3;
+    __asm__ __volatile__("mov %%cr3, %0; mov %0, %%cr3"
+                         : "=&r"(cr3) : : "memory");
     return 1;
 }
 
