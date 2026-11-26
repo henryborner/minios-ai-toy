@@ -4574,7 +4574,7 @@ void kmain(void) {
             }
         }
 
-        if (event || gui_dirty_pending() || (u32)(ticks - last_draw) >= 10) {
+        if (event || gui_dirty_pending() || (u32)(ticks - last_draw) >= 50) {
             gui_redraw();
             last_draw = ticks;
         }
