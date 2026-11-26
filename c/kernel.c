@@ -3242,6 +3242,8 @@ static void pipe_release_task(int slot) {
 static int pipe_block_op(int id, int write, u8 *buf, u32 len) {
     if (id < 0 || id >= NPIPES)
         return -1;
+    if (len == 0)
+        return 0;
     for (;;) {
         u32 flags = irq_save_flags();
         int n = write ? pipe_write(id, buf, len)
@@ -3264,6 +3266,37 @@ static int pipe_block_op(int id, int write, u8 *buf, u32 len) {
         tasks[current_task].wait_pipe = 0;
         tasks[current_task].wait_pipe_write = 0;
     }
+}
+
+int kernel_pipe_abort(int id) {
+    if (id < 0 || id >= NPIPES)
+        return 0;
+    pipes[id].open_w = 0;
+    pipes[id].open_r = 0;
+    wake_pipe_tasks(id);
+    return 1;
+}
+
+int kernel_pipe_bind_console(int console, int id, int write) {
+    if (id < 0 || id >= NPIPES || console < 0)
+        return 0;
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
+            continue;
+        if ((int)tasks[t].console_id != console)
+            continue;
+        if (write)
+            tasks[t].pipe_w_id = (u8)(id + 1);
+        else
+            tasks[t].pipe_r_id = (u8)(id + 1);
+        return 1;
+    }
+    if (write)
+        pipes[id].open_w = 0;
+    else
+        pipes[id].open_r = 0;
+    wake_pipe_tasks(id);
+    return 0;
 }
 
 static int ramfile_find(const char *name) {

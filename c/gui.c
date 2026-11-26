@@ -1369,7 +1369,7 @@ static int starts_with(const char *s, const char *p) {
     return 1;
 }
 
-static void launch_python(struct console *c, const char *rest) {
+static int launch_python(struct console *c, const char *rest) {
     extern int run_user_module_args(const char *name, int argc,
                                     const char *const *argv);
     char buf[128];
@@ -1402,8 +1402,11 @@ static void launch_python(struct console *c, const char *rest) {
         buf[bi++] = 0;
     }
 
-    if (!run_user_module_args("MPY.BIN", argc, argv))
+    if (!run_user_module_args("MPY.BIN", argc, argv)) {
         term_puts(c, "Python launch failed.\n");
+        return 0;
+    }
+    return 1;
 }
 
 void gui_request_py(const char *name) {
@@ -1603,21 +1606,35 @@ static int gui_new_console(void) {
 static int launch_pipe_pair(struct console *c, const char *producer,
                             const char *consumer) {
     extern int kernel_pipe_reset(int id);
+    extern int kernel_pipe_abort(int id);
+    extern int kernel_pipe_bind_console(int console, int id, int write);
     int self = (int)(c - consoles);
     if (kernel_pipe_reset(0) < 0)
         return 0;
     const char *names[2] = { producer, consumer };
+    int cons[2] = { -1, -1 };
     for (int i = 0; i < 2; i++) {
         if (!gui_new_console()) {
             c = &consoles[self];
+            kernel_pipe_abort(0);
             return 0;
         }
         int nc = console_count - 1;
-        launch_python(&consoles[nc], names[i]);
+        if (!launch_python(&consoles[nc], names[i])) {
+            c = &consoles[self];
+            kernel_pipe_abort(0);
+            return 0;
+        }
+        cons[i] = nc;
         c = &consoles[self];
         focus_window(consoles[self].win_id);
     }
     c = &consoles[self];
+    if (!kernel_pipe_bind_console(cons[0], 0, 1) ||
+        !kernel_pipe_bind_console(cons[1], 0, 0)) {
+        kernel_pipe_abort(0);
+        return 0;
+    }
     term_puts(c, "pipeline: started on pipe 0\n");
     return 1;
 }
@@ -1688,10 +1705,13 @@ static void run_command(struct console *c, char *line) {
         }
         lp = trim_cmd(lp + 3);
         rp = trim_cmd(rp + 3);
+        int self = (int)(c - consoles);
         if (!*lp || !*rp)
             term_puts(c, "pipeline: missing script\n");
-        else if (!launch_pipe_pair(c, lp, rp))
+        else if (!launch_pipe_pair(c, lp, rp)) {
+            c = &consoles[self];
             term_puts(c, "pipeline: launch failed\n");
+        }
         return;
     }
 
@@ -1827,26 +1847,12 @@ static void run_command(struct console *c, char *line) {
         }
     } else if (streq(line, "pipedemo")) {
         extern int prepare_pipe_scripts(void);
-        extern int kernel_pipe_reset(int id);
         int self = (int)(c - consoles);
         if (!prepare_pipe_scripts()) {
             term_puts(c, "pipedemo: scripts failed\n");
-        } else if (kernel_pipe_reset(0) < 0) {
-            term_puts(c, "pipedemo: pipe reset failed\n");
-        } else {
-            const char *names[2] = { "PPROD.PY", "PCONS.PY" };
-            for (int i = 0; i < 2; i++) {
-                if (!gui_new_console()) {
-                    c = &consoles[self];
-                    term_puts(c, "pipedemo: no free console\n");
-                    return;
-                }
-                int nc = console_count - 1;
-                launch_python(&consoles[nc], names[i]);
-                c = &consoles[self];
-                focus_window(consoles[self].win_id);
-            }
-            term_puts(c, "pipedemo: producer/consumer started on pipe 0\n");
+        } else if (!launch_pipe_pair(c, "PPROD.PY", "PCONS.PY")) {
+            c = &consoles[self];
+            term_puts(c, "pipedemo: launch failed\n");
         }
     } else if (streq(line, "longjob")) {
         extern int prepare_long_script(void);
