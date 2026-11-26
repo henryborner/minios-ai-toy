@@ -2519,6 +2519,34 @@ static int taskbar_label(int id, char *buf) {
     return n;
 }
 
+static void title_icon(int kind, int bx, int by, int maximized) {
+    int x = bx + 3;
+    int y = by + 5;
+    if (kind == 0) {
+        if (!maximized) {
+            fill_rect(x, y, 6, 1, 0);
+            fill_rect(x, y + 5, 6, 1, 0);
+            fill_rect(x, y + 1, 1, 4, 0);
+            fill_rect(x + 5, y + 1, 1, 4, 0);
+        } else {
+            fill_rect(x + 2, y, 4, 1, 0);
+            fill_rect(x + 2, y + 1, 1, 3, 0);
+            fill_rect(x + 5, y + 1, 1, 3, 0);
+            fill_rect(x, y + 3, 4, 1, 0);
+            fill_rect(x, y + 4, 1, 2, 0);
+            fill_rect(x + 3, y + 4, 1, 2, 0);
+            fill_rect(x, y + 5, 4, 1, 0);
+        }
+    } else if (kind == 1) {
+        fill_rect(x, y + 4, 6, 1, 0);
+    } else {
+        for (int i = 0; i < 6; i++) {
+            fill_rect(x + i, y + i, 1, 1, 0);
+            fill_rect(x + 5 - i, y + i, 1, 1, 0);
+        }
+    }
+}
+
 static int taskbar_dynamic_hit(int mx, int my) {
     if (my < TASKBAR_Y)
         return -1;
@@ -2587,21 +2615,21 @@ static void window_frame(int id) {
         sunken_box(w->x + w->w - 42, w->y + 2, 12, 12);
     else
         raise_box_col(w->x + w->w - 42, w->y + 2, 12, 12, 7);
-    draw_char(w->x + w->w - 39, w->y + 4, w->maximized ? 'o' : 'M', 0, 1);
+    title_icon(0, w->x + w->w - 42, w->y + 2, w->maximized);
 
     int min_hit = HIT_MIN_BASE + id;
     if (is_pressed(min_hit))
         sunken_box(w->x + w->w - 28, w->y + 2, 12, 12);
     else
         raise_box_col(w->x + w->w - 28, w->y + 2, 12, 12, 7);
-    draw_char(w->x + w->w - 26, w->y + 5, '_', 0, 1);
+    title_icon(1, w->x + w->w - 28, w->y + 2, 0);
 
     int close_hit = HIT_CLOSE_BASE + id;
     if (is_pressed(close_hit))
         sunken_box(w->x + w->w - 14, w->y + 2, 12, 12);
     else
         raise_box_col(w->x + w->w - 14, w->y + 2, 12, 12, 7);
-    draw_char(w->x + w->w - 12, w->y + 4, 'x', 0, 1);
+    title_icon(2, w->x + w->w - 14, w->y + 2, 0);
     fill_rect(w->x + 1, w->y + TITLE_H, w->w - 2, w->h - TITLE_H - 1, 15);
     for (int i = 0; i < 4; i++)
         fill_rect(w->x + w->w - 3 - i, w->y + w->h - 3 - i, 2, 2, 8);
