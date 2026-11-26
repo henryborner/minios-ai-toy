@@ -36,6 +36,7 @@
 #define SYS_GETCHAR_NB   31
 #define SYS_TASK_INFO    32
 #define SYS_PIPE         33
+#define SYS_SIGNAL       34
 
 struct minios_taskinfo {
     uint32_t pid;

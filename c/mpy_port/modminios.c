@@ -297,6 +297,19 @@ static mp_obj_t minios_spawn(mp_obj_t name_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(minios_spawn_obj, minios_spawn);
 
+static mp_obj_t minios_signal_ignore(mp_obj_t sig_in) {
+    return mp_obj_new_int(minios_syscall2(SYS_SIGNAL, 0,
+                                          (uint32_t)mp_obj_get_int(sig_in)));
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(minios_signal_ignore_obj,
+                                 minios_signal_ignore);
+
+static mp_obj_t minios_signal_pending(void) {
+    return mp_obj_new_int((int)minios_syscall1(SYS_SIGNAL, 1));
+}
+static MP_DEFINE_CONST_FUN_OBJ_0(minios_signal_pending_obj,
+                                 minios_signal_pending);
+
 static mp_obj_t minios_wait(mp_obj_t pid_in, mp_obj_t nohang_in) {
     return mp_obj_new_int(sys_wait(mp_obj_get_int(pid_in),
                                    mp_obj_get_int(nohang_in)));
@@ -453,6 +466,8 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_sysinfo), MP_ROM_PTR(&minios_sysinfo_obj) },
     { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
     { MP_ROM_QSTR(MP_QSTR_spawn), MP_ROM_PTR(&minios_spawn_obj) },
+    { MP_ROM_QSTR(MP_QSTR_signal_ignore), MP_ROM_PTR(&minios_signal_ignore_obj) },
+    { MP_ROM_QSTR(MP_QSTR_signal_pending), MP_ROM_PTR(&minios_signal_pending_obj) },
     { MP_ROM_QSTR(MP_QSTR_wait), MP_ROM_PTR(&minios_wait_obj) },
     { MP_ROM_QSTR(MP_QSTR_getchar), MP_ROM_PTR(&minios_getchar_obj) },
     { MP_ROM_QSTR(MP_QSTR_write), MP_ROM_PTR(&minios_write_obj) },
