@@ -52,7 +52,7 @@ gc ok 8388608 65 66
 - BRK64 退出后 free 精确回到 30571
 - 20 轮同 Console `calc 2**10`：首次 MPY 缓存占 52 页，30571→30519；
   再 5 轮仍为 30519，无逐轮泄漏
-- 5 次 `memfail 100` + `exec BRK.BIN`：均 `BRK64 FAIL`，
+- 20 次 `memfail 100` + `exec BRK.BIN`：20/20 均为 `BRK64 FAIL`，
   free 30571→30571，brk 中途失败回滚有效
 - host tests PASS
 - smoke PASS（640×480 + 320×200 + REGRESS）
@@ -62,7 +62,7 @@ gc ok 8388608 65 66
 - 用户上限仍是 84 MiB，不是 1 GiB。
 - 私有 code 区仍连续物理；heap/stack 已非连续。
 - 未实现 MPY split-heap；8 MiB 活对象依赖 10 MiB 单 region。
-- 失败回滚已用 5 次注入验证，但还未做连续 20 轮失败压力。
+- 失败回滚已用连续 20 轮注入验证。
 
 ## 当前构建
 
