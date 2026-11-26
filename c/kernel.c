@@ -1640,13 +1640,28 @@ static void task_set_name(int slot, const char *name) {
     tasks[slot].name[i] = 0;
 }
 
+static int task_guard_pte(u8 *base, int present) {
+    u32 v = (u32)base;
+    if (v < DIRECT_BASE)
+        return 0;
+    u32 idx = (v - DIRECT_BASE) >> 12;
+    if (idx >= 3u * 1024u)
+        return 0;
+    direct_pt[idx / 1024u][idx % 1024u] =
+        present ? (DIRECT_PHYS_START + idx * 0x1000u) | 0x003 : 0;
+    set_cr3((u32)sched_safe_pd);
+    return 1;
+}
+
 static int task_alloc_runtime(int slot, int kpages) {
-    tasks[slot].kstack = (u8 *)kernel_alloc_pages_zero((u32)kpages);
-    tasks[slot].kstack_pages = (u16)kpages;
+    tasks[slot].kstack = (u8 *)kernel_alloc_pages_zero((u32)(kpages + 1));
+    tasks[slot].kstack_pages = (u16)(kpages + 1);
     tasks[slot].fds = (struct fd_entry *)kernel_alloc_pages_zero(1);
     if (!tasks[slot].kstack || !tasks[slot].fds ||
         !task_fill_pd(slot))
         return 0;
+    /* Lowest page is a guard: present=0 in the shared direct map. */
+    task_guard_pte(tasks[slot].kstack, 0);
     for (int f = 0; f < MAX_FDS; f++)
         tasks[slot].fds[f].used = 0;
     return 1;
@@ -1991,8 +2006,10 @@ static void task_free_frames(int slot) {
             kernel_free_pages_ptr(tasks[slot].pd, 1);
         if (tasks[slot].upt)
             kernel_free_pages_ptr(tasks[slot].upt, 1);
-        if (tasks[slot].kstack)
+        if (tasks[slot].kstack) {
+            task_guard_pte(tasks[slot].kstack, 1);
             kernel_free_pages_ptr(tasks[slot].kstack, tasks[slot].kstack_pages);
+        }
         if (tasks[slot].fds)
             kernel_free_pages_ptr(tasks[slot].fds, 1);
         tasks[slot].pd = 0;
@@ -2211,10 +2228,10 @@ static void crash_disk_dump(u32 vector) {
     for (int i = 0; i < 4; i++)
         sector[4 + i] = (u8)(vector >> (i * 8));
     u32 n = crash_log_len;
-    if (n > 496) n = 496;
+    u32 first = n > 496 ? 496 : n;
     for (int i = 0; i < 4; i++)
         sector[8 + i] = (u8)(n >> (i * 8));
-    for (u32 i = 0; i < n; i++)
+    for (u32 i = 0; i < first; i++)
         sector[16 + i] = (u8)crash_log[i];
     scheduler_active = 0;
     runtime_busy = 0;
@@ -2223,11 +2240,11 @@ static void crash_disk_dump(u32 vector) {
     __asm__ __volatile__("sti");
     serial_puts("BSOD disk dump LBA=2820\r\n");
     int ok = fdc_write_sector(CRASH_HEADER_LBA, sector);
-    if (ok && n > 480) {
+    if (ok && n > 496) {
         for (int i = 0; i < 512; i++)
             sector[i] = 0;
-        for (u32 i = 480; i < n; i++)
-            sector[i - 480] = (u8)crash_log[i];
+        for (u32 i = 496; i < n; i++)
+            sector[i - 496] = (u8)crash_log[i];
         ok = fdc_write_sector(CRASH_DATA_LBA, sector);
     }
     __asm__ __volatile__("cli");
@@ -2284,6 +2301,10 @@ static void bsod_show(u32 vector, u32 *frame) {
     const char *h = "0123456789ABCDEF";
     for (int i = 28; i >= 0; i -= 4)
         serial_putc((char)h[(vector >> i) & 15]);
+    serial_puts("\r\n");
+    if (crash_log_len < sizeof(crash_log))
+        crash_log[crash_log_len] = 0;
+    serial_puts(crash_log);
     serial_puts("\r\n");
     crash_disk_dump(vector);
     for (;;) {
