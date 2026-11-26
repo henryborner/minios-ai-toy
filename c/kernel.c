@@ -1254,6 +1254,7 @@ struct task {
     u32 sig_ignored;
     u8 wait_kbd;
     u8 wait_fdc;
+    u8 wait_fdc_lock;
     u8 wait_pipe_write;
     u8 pipe_w_id;
     u8 pipe_r_id;
@@ -1280,6 +1281,66 @@ static void wake_fdc_tasks(void) {
 
 void kernel_fdc_wake(void) {
     wake_fdc_tasks();
+}
+
+static int fdc_lock_owner = -1;
+static int fdc_lock_depth;
+
+static void wake_fdc_lock_waiter(void) {
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state == TASK_BLOCKED && tasks[t].wait_fdc_lock) {
+            tasks[t].wait_fdc_lock = 0;
+            tasks[t].state = TASK_READY;
+            break;
+        }
+    }
+}
+
+int kernel_fdc_lock(void) {
+    if (current_task < 0 || current_task >= task_cap)
+        return 0;
+    for (;;) {
+        u32 flags = irq_save_flags();
+        if (fdc_lock_owner < 0 || fdc_lock_owner == current_task) {
+            fdc_lock_owner = current_task;
+            fdc_lock_depth++;
+            irq_restore_flags(flags);
+            return 1;
+        }
+        if (current_task == 0) {
+            irq_restore_flags(flags);
+            __asm__ __volatile__("sti");
+            __asm__ __volatile__("pause");
+            continue;
+        }
+        tasks[current_task].wait_fdc_lock = 1;
+        tasks[current_task].state = TASK_BLOCKED;
+        irq_restore_flags(flags);
+        sched_yield();
+    }
+}
+
+void kernel_fdc_unlock(void) {
+    u32 flags = irq_save_flags();
+    if (fdc_lock_owner == current_task) {
+        if (fdc_lock_depth > 0)
+            fdc_lock_depth--;
+        if (fdc_lock_depth == 0) {
+            fdc_lock_owner = -1;
+            wake_fdc_lock_waiter();
+        }
+    }
+    irq_restore_flags(flags);
+}
+
+void kernel_fdc_release_owner(int slot) {
+    u32 flags = irq_save_flags();
+    if (fdc_lock_owner == slot) {
+        fdc_lock_owner = -1;
+        fdc_lock_depth = 0;
+        wake_fdc_lock_waiter();
+    }
+    irq_restore_flags(flags);
 }
 
 int kernel_fdc_wait(int ms) {
@@ -1567,6 +1628,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].sig_ignored = 0;
         tasks[t].wait_kbd = 0;
         tasks[t].wait_fdc = 0;
+        tasks[t].wait_fdc_lock = 0;
         tasks[t].kesp = 0;
         tasks[t].tf = 0;
         tasks[t].shared_ro = 0;
@@ -1799,6 +1861,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].sig_ignored = 0;
     tasks[slot].wait_kbd = 0;
     tasks[slot].wait_fdc = 0;
+    tasks[slot].wait_fdc_lock = 0;
     fpu_task_default(tasks[slot].fpu);
     task_set_name(slot, name);
     return slot;
@@ -1944,6 +2007,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].sig_ignored = 0;
     tasks[slot].wait_kbd = 0;
     tasks[slot].wait_fdc = 0;
+    tasks[slot].wait_fdc_lock = 0;
     fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
         tasks[slot].fds[f].used = 0;
@@ -2062,6 +2126,7 @@ static void __attribute__((unused)) switch_task(int next) {
 static void task_free_frames(int slot) {
     if (slot == current_task)
         return;
+    kernel_fdc_release_owner(slot);
     pipe_release_task(slot);
     if (tasks[slot].shared_ro) {
         if (shared_ro_refs)
@@ -2549,6 +2614,7 @@ int task_signal_pid(u32 pid, u8 sig) {
         tasks[t].sleep_until = 0;
         tasks[t].wait_kbd = 0;
         tasks[t].wait_fdc = 0;
+        tasks[t].wait_fdc_lock = 0;
         tasks[t].waiting_pid = WAIT_NONE;
         tasks[t].wait_pipe = 0;
         tasks[t].wait_pipe_write = 0;
@@ -2691,6 +2757,9 @@ int task_bg_pid(u32 pid) {
                     tasks[t].state = TASK_READY;
                 }
             }
+        } else if (tasks[t].wait_fdc_lock) {
+            tasks[t].wait_fdc_lock = 0;
+            tasks[t].state = TASK_READY;
         } else if (tasks[t].wait_fdc) {
             tasks[t].wait_fdc = 0;
             tasks[t].sleep_until = 0;
@@ -5322,6 +5391,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

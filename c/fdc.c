@@ -213,7 +213,19 @@ static int fdc_read_track(u8 cyl, u8 head) {
     return 1;
 }
 
+extern int kernel_fdc_lock(void);
+extern void kernel_fdc_unlock(void);
+
 int fdc_read_sector(u32 lba, u8 *dst) {
+    if (!kernel_fdc_lock())
+        return 0;
+    extern int fdc_read_sector_locked(u32 lba, u8 *dst);
+    int r = fdc_read_sector_locked(lba, dst);
+    kernel_fdc_unlock();
+    return r;
+}
+
+int fdc_read_sector_locked(u32 lba, u8 *dst) {
     if (lba >= 2880)
         return 0;
     if (!fdc_init())
@@ -271,6 +283,15 @@ int fdc_read_sector(u32 lba, u8 *dst) {
 }
 
 int fdc_write_sector(u32 lba, const u8 *src) {
+    if (!kernel_fdc_lock())
+        return 0;
+    extern int fdc_write_sector_locked(u32 lba, const u8 *src);
+    int r = fdc_write_sector_locked(lba, src);
+    kernel_fdc_unlock();
+    return r;
+}
+
+int fdc_write_sector_locked(u32 lba, const u8 *src) {
     if (lba >= 2880)
         return 0;
     if (!fdc_init())
