@@ -39,13 +39,23 @@ void fdc_on_irq(void) {
     fdc_irq_seen = 1;
 }
 
+void fdc_invalidate(void) {
+    cache_valid = 0;
+}
+
 static void delay_ms(int ms) {
     u32 start = ticks;
     u32 wait = (u32)(ms / 10 + 1);
     while ((u32)(ticks - start) < wait) {}
 }
 
+extern int kernel_fdc_wait(int ms);
+
 static int wait_irq(int ms) {
+    if (fdc_irq_seen)
+        return 1;
+    if (kernel_fdc_wait(ms))
+        return fdc_irq_seen;
     u32 start = ticks;
     u32 wait = (u32)(ms / 10 + 1);
     while ((u32)(ticks - start) < wait) {

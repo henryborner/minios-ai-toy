@@ -124,6 +124,11 @@ static inline uint32_t sys_ticks_ms(void) {
     return minios_syscall0(SYS_TICKS_MS);
 }
 
+static inline int sys_read_file(const char *name, void *buf, uint32_t max) {
+    return (int)(int32_t)minios_syscall3(SYS_READ_FILE, (uint32_t)name,
+                                         (uint32_t)buf, max);
+}
+
 static inline int sys_spawn(const char *name) {
     return (int)(int32_t)minios_syscall1(SYS_SPAWN, (uint32_t)name);
 }

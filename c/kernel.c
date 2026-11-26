@@ -40,6 +40,8 @@ int task_stop_pid(u32 pid);
 int task_bg_pid(u32 pid);
 int task_kill_pid(u32 pid);
 static void task_signal_console(int cid, u8 sig);
+static void wake_fdc_tasks(void);
+static void sched_yield(void);
 static volatile u8 scheduler_active;
 u32 heap_used;
 
@@ -480,6 +482,7 @@ void irq1_handler(void) {
 
 void irq6_handler(void) {
     fdc_on_irq();
+    wake_fdc_tasks();
     outb(0x20, 0x20);
 }
 
@@ -1250,6 +1253,7 @@ struct task {
     u8 sig_pending;
     u32 sig_ignored;
     u8 wait_kbd;
+    u8 wait_fdc;
     u8 wait_pipe_write;
     u8 pipe_w_id;
     u8 pipe_r_id;
@@ -1263,6 +1267,34 @@ static int current_task;
 static u32 quantum_ticks;
 static u8 task0_kstack[8192] __attribute__((aligned(16)));
 static u32 shared_ro_phys, shared_ro_pages, shared_ro_image, shared_ro_refs;
+
+static void wake_fdc_tasks(void) {
+    for (int t = 1; t < task_cap; t++) {
+        if (tasks[t].state == TASK_BLOCKED && tasks[t].wait_fdc) {
+            tasks[t].wait_fdc = 0;
+            tasks[t].sleep_until = 0;
+            tasks[t].state = TASK_READY;
+        }
+    }
+}
+
+int kernel_fdc_wait(int ms) {
+    if (!scheduler_active || current_task <= 0 || current_task >= task_cap)
+        return 0;
+    u32 flags = irq_save_flags();
+    if (!(flags & 0x200u)) {
+        irq_restore_flags(flags);
+        return 0;
+    }
+    tasks[current_task].wait_fdc = 1;
+    tasks[current_task].sleep_until = ticks + (u32)(ms / 10 + 1);
+    tasks[current_task].state = TASK_BLOCKED;
+    irq_restore_flags(flags);
+    sched_yield();
+    tasks[current_task].wait_fdc = 0;
+    tasks[current_task].sleep_until = 0;
+    return 1;
+}
 
 static void wake_kbd_tasks(int c) {
     for (int t = 1; t < task_cap; t++) {
@@ -1530,6 +1562,7 @@ static void __attribute__((unused)) task_clear_all(void) {
         tasks[t].sig_pending = 0;
         tasks[t].sig_ignored = 0;
         tasks[t].wait_kbd = 0;
+        tasks[t].wait_fdc = 0;
         tasks[t].kesp = 0;
         tasks[t].tf = 0;
         tasks[t].shared_ro = 0;
@@ -1761,6 +1794,7 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     tasks[slot].sig_pending = 0;
     tasks[slot].sig_ignored = 0;
     tasks[slot].wait_kbd = 0;
+    tasks[slot].wait_fdc = 0;
     fpu_task_default(tasks[slot].fpu);
     task_set_name(slot, name);
     return slot;
@@ -1905,6 +1939,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     tasks[slot].sig_pending = 0;
     tasks[slot].sig_ignored = 0;
     tasks[slot].wait_kbd = 0;
+    tasks[slot].wait_fdc = 0;
     fpu_task_default(tasks[slot].fpu);
     for (int f = 0; f < MAX_FDS; f++)
         tasks[slot].fds[f].used = 0;
@@ -2140,6 +2175,7 @@ static void sched_timer_tick(u32 *frame) {
         if (tasks[t].state == TASK_BLOCKED && tasks[t].sleep_until != 0 &&
             (int)(ticks - tasks[t].sleep_until) >= 0) {
             tasks[t].sleep_until = 0;
+            tasks[t].wait_fdc = 0;
             tasks[t].state = TASK_READY;
         }
     }
@@ -2492,6 +2528,7 @@ int task_signal_pid(u32 pid, u8 sig) {
     if (sig & SIGINT) {
         tasks[t].sleep_until = 0;
         tasks[t].wait_kbd = 0;
+        tasks[t].wait_fdc = 0;
         tasks[t].waiting_pid = WAIT_NONE;
         tasks[t].wait_pipe = 0;
         tasks[t].wait_pipe_write = 0;
@@ -2634,6 +2671,10 @@ int task_bg_pid(u32 pid) {
                     tasks[t].state = TASK_READY;
                 }
             }
+        } else if (tasks[t].wait_fdc) {
+            tasks[t].wait_fdc = 0;
+            tasks[t].sleep_until = 0;
+            tasks[t].state = TASK_READY;
         } else if (tasks[t].wait_kbd != 0) {
             int cid = (int)tasks[t].wait_kbd - 1;
             if (cid >= 0 && cid < kbd_console_count &&
@@ -3677,6 +3718,14 @@ int prepare_pipe_scripts(void) {
         "    print(d)\n";
     return make_pipe_script("PPROD.PY", prod) &&
            make_pipe_script("PCONS.PY", cons);
+}
+
+int prepare_disk_script(void) {
+    return make_pipe_script("DISKREAD.PY",
+        "from minios import read_file\n"
+        "print('disk start')\n"
+        "d = read_file('HELLO.BIN')\n"
+        "print('disk len', len(d))\n");
 }
 
 int prepare_proc_scripts(void) {
@@ -5238,6 +5287,7 @@ void kmain(void) {
         __asm__ __volatile__("hlt");
     }
 }
+
 
 
 

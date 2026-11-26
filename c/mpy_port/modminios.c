@@ -291,6 +291,16 @@ static mp_obj_t minios_pipe_close_read(mp_obj_t id_in) {
 }
 static MP_DEFINE_CONST_FUN_OBJ_1(minios_pipe_close_read_obj, minios_pipe_close_read);
 
+static mp_obj_t minios_read_file(mp_obj_t name_in) {
+    const char *name = mp_obj_str_get_str(name_in);
+    uint8_t buf[4096];
+    int n = sys_read_file(name, buf, sizeof(buf));
+    if (n < 0)
+        n = 0;
+    return mp_obj_new_bytes(buf, (size_t)n);
+}
+static MP_DEFINE_CONST_FUN_OBJ_1(minios_read_file_obj, minios_read_file);
+
 static mp_obj_t minios_spawn(mp_obj_t name_in) {
     const char *name = mp_obj_str_get_str(name_in);
     return mp_obj_new_int(sys_spawn(name));
@@ -465,6 +475,7 @@ static const mp_rom_map_elem_t minios_module_globals_table[] = {
     { MP_ROM_QSTR(MP_QSTR_event), MP_ROM_PTR(&minios_event_obj) },
     { MP_ROM_QSTR(MP_QSTR_sysinfo), MP_ROM_PTR(&minios_sysinfo_obj) },
     { MP_ROM_QSTR(MP_QSTR_video), MP_ROM_PTR(&minios_video_obj) },
+    { MP_ROM_QSTR(MP_QSTR_read_file), MP_ROM_PTR(&minios_read_file_obj) },
     { MP_ROM_QSTR(MP_QSTR_spawn), MP_ROM_PTR(&minios_spawn_obj) },
     { MP_ROM_QSTR(MP_QSTR_signal_ignore), MP_ROM_PTR(&minios_signal_ignore_obj) },
     { MP_ROM_QSTR(MP_QSTR_signal_pending), MP_ROM_PTR(&minios_signal_pending_obj) },
