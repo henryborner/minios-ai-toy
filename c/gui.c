@@ -2053,14 +2053,35 @@ static void run_command(struct console *c, char *line) {
     } else if (starts_with(line, "kill ")) {
         extern int task_signal_pid(u32 pid, u8 sig);
         u32 pid = 0;
+        int sig = 2;
         const char *p = line + 5;
+        if (*p == '-') {
+            p++;
+            if (starts_with(p, "STOP")) { sig = 4; p += 4; }
+            else if (starts_with(p, "CONT")) { sig = 8; p += 4; }
+            else if (starts_with(p, "INT")) { sig = 1; p += 3; }
+            else if (starts_with(p, "TERM")) { sig = 2; p += 4; }
+            else {
+                term_puts(c, "usage: kill [-STOP|-CONT|-INT|-TERM] PID\n");
+                return;
+            }
+            while (*p == ' ')
+                p++;
+        }
         while (*p >= '0' && *p <= '9') {
             pid = pid * 10 + (u32)(*p - '0');
             p++;
         }
-        int r = task_signal_pid(pid, 2);
-        if (r == 1) term_puts(c, "terminated.\n");
-        else term_puts(c, "no such task.\n");
+        int r = task_signal_pid(pid, (u8)sig);
+        if (r != 1) {
+            term_puts(c, "no such task.\n");
+        } else if (sig == 4) {
+            term_puts(c, "stopped pid "); term_u32(c, pid); term_puts(c, "\n");
+        } else if (sig == 8) {
+            term_puts(c, "continued pid "); term_u32(c, pid); term_puts(c, "\n");
+        } else {
+            term_puts(c, "terminated pid "); term_u32(c, pid); term_puts(c, "\n");
+        }
     } else if (streq(line, "big512")) {
         extern int run_user_module(const char *name);
         term_puts(c, "Large UMP1 payload test...\n");

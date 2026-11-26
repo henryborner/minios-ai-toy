@@ -2473,8 +2473,9 @@ int task_signal_pid(u32 pid, u8 sig) {
         }
     } else if (sig & SIGCONT) {
         if (tasks[t].state == TASK_STOPPED) {
+            u8 prev = tasks[t].stop_prev_state;
             tasks[t].stop_prev_state = 0;
-            tasks[t].state = TASK_READY;
+            tasks[t].state = prev == TASK_BLOCKED ? TASK_BLOCKED : TASK_READY;
         }
         tasks[t].sig_pending &= (u8)~SIGSTOP;
     }
@@ -2768,6 +2769,7 @@ static int task_wait_block(u32 want_pid, int nohang, u32 frame) {
     if (tasks[child].state == TASK_DONE) {
         u32 status = tasks[child].exit_code;
         tasks[child].state = TASK_FREE;
+        task_free_frames(child);
         SYS_RET(frame) = status;
         return 0;
     }
