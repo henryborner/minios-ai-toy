@@ -29,6 +29,8 @@ volatile int mouse_y = 100;
 volatile int mouse_buttons = 0;
 static u32 irq_save_flags(void);
 static void irq_restore_flags(u32 flags);
+int kernel_fdc_lock(void);
+void kernel_fdc_unlock(void);
 #define SIGINT       1u
 #define SIGTERM      2u
 #define SIGSTOP      4u
@@ -962,7 +964,7 @@ static int fs_load_dir(void) {
     return 1;
 }
 
-static int fs_load_file(const char *name, u8 *dst, u32 max, u32 *out_size) {
+static int fs_load_file_locked(const char *name, u8 *dst, u32 max, u32 *out_size) {
     if (!fs_load_dir())
         return 0;
     struct fs_header *h = (struct fs_header *)fs_dir;
@@ -989,6 +991,14 @@ static int fs_load_file(const char *name, u8 *dst, u32 max, u32 *out_size) {
         return 1;
     }
     return 0;
+}
+
+static int fs_load_file(const char *name, u8 *dst, u32 max, u32 *out_size) {
+    if (!kernel_fdc_lock())
+        return 0;
+    int r = fs_load_file_locked(name, dst, max, out_size);
+    kernel_fdc_unlock();
+    return r;
 }
 
 void list_disk_files(void) {
@@ -1039,7 +1049,7 @@ struct minios_api {
     void (*write)(const char *s, u32 len);
 };
 
-static int fs_load_file_to(const char *name, u8 *dst, u32 max, u32 *out_size) {
+static int fs_load_file_to_locked(const char *name, u8 *dst, u32 max, u32 *out_size) {
     if (!fs_load_dir())
         return 0;
     struct fs_header *h = (struct fs_header *)fs_dir;
@@ -1066,6 +1076,14 @@ static int fs_load_file_to(const char *name, u8 *dst, u32 max, u32 *out_size) {
         return 1;
     }
     return 0;
+}
+
+static int fs_load_file_to(const char *name, u8 *dst, u32 max, u32 *out_size) {
+    if (!kernel_fdc_lock())
+        return 0;
+    int r = fs_load_file_to_locked(name, dst, max, out_size);
+    kernel_fdc_unlock();
+    return r;
 }
 
 static void module_puts(const char *s) {
