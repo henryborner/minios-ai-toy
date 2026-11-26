@@ -38,6 +38,7 @@ static void irq_restore_flags(u32 flags);
 #define SIG_TERM_MASK SIGTERM
 int task_stop_pid(u32 pid);
 int task_bg_pid(u32 pid);
+int task_kill_pid(u32 pid);
 static void task_signal_console(int cid, u8 sig);
 static volatile u8 scheduler_active;
 u32 heap_used;
@@ -2462,6 +2463,13 @@ int task_signal_pid(u32 pid, u8 sig) {
     int t = find_pid(pid);
     if (t <= 0 || t >= task_cap)
         return 0;
+    if (sig & SIGKILL)
+        return task_kill_pid(pid) ? 1 : 0;
+    if (sig & SIGTERM) {
+        if (tasks[t].sig_ignored & SIGTERM)
+            return 1;
+        return task_kill_pid(pid) ? 1 : 0;
+    }
     if (sig & SIGSTOP)
         return task_stop_pid(pid) ? 1 : 0;
     if (sig & SIGCONT) {
@@ -2491,7 +2499,7 @@ int task_signal_pid(u32 pid, u8 sig) {
         return 1;
     }
     tasks[t].sig_pending |= sig;
-    if (sig & (SIGINT | SIGTERM)) {
+    if (sig & SIGINT) {
         tasks[t].sleep_until = 0;
         tasks[t].wait_kbd = 0;
         tasks[t].waiting_pid = WAIT_NONE;
@@ -2499,8 +2507,6 @@ int task_signal_pid(u32 pid, u8 sig) {
         tasks[t].wait_pipe_write = 0;
         tasks[t].state = TASK_READY;
     }
-    if (sig & SIGTERM)
-        tasks[t].kill_pending = 1;
     irq_restore_flags(flags);
     return 1;
 }
