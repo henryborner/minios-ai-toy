@@ -1251,6 +1251,7 @@ struct task {
 };
 
 static struct task *tasks;
+static int last_created_slot = -1;
 static int task_cap;
 static int current_task;
 static u32 quantum_ticks;
@@ -1899,6 +1900,7 @@ static int task_create_big(const char *name, u32 image, u32 bss, u32 entry) {
     for (int f = 0; f < MAX_FDS; f++)
         tasks[slot].fds[f].used = 0;
     task_set_name(slot, name);
+    last_created_slot = slot;
     return slot;
 }
 
@@ -2648,9 +2650,31 @@ int task_bg_pid(u32 pid) {
     return 1;
 }
 
+static int run_user_module_ex(const char *name, int argc,
+                              const char *const *argv);
+
+static int name_is_py(const char *name) {
+    int n = 0;
+    while (name[n]) n++;
+    return n >= 3 && name[n - 3] == '.' &&
+           (name[n - 2] == 'P' || name[n - 2] == 'p') &&
+           (name[n - 1] == 'Y' || name[n - 1] == 'y');
+}
+
 static int task_spawn_user(const char *name) {
     if (!scheduler_active || current_task < 0 || current_task >= task_cap)
         return 0;
+    if (name_is_py(name)) {
+        const char *argv[2] = { "py", name };
+        if (!run_user_module_ex("MPY.BIN", 2, argv))
+            return 0;
+        int child = last_created_slot;
+        if (child <= 0 || child >= task_cap)
+            return 0;
+        tasks[child].parent_pid = tasks[current_task].pid;
+        tasks[child].console_id = tasks[current_task].console_id;
+        return (int)tasks[child].pid;
+    }
     u32 size = 0;
     __asm__ __volatile__("sti");
     int ok = fs_load_file_to(name, fs_program, FS_MAX_FILE, &size);
@@ -3630,6 +3654,34 @@ int prepare_pipe_scripts(void) {
         "    print(d)\n";
     return make_pipe_script("PPROD.PY", prod) &&
            make_pipe_script("PCONS.PY", cons);
+}
+
+int prepare_proc_scripts(void) {
+    const char *child =
+        "import time\n"
+        "time.sleep_ms(600)\n"
+        "print('child done')\n";
+    const char *parent =
+        "import time\n"
+        "from minios import spawn, wait\n"
+        "p = spawn('CHILD.PY')\n"
+        "print('spawn', p)\n"
+        "print('nohang', wait(p, 1))\n"
+        "time.sleep_ms(200)\n"
+        "print('wait', wait(p, 0))\n";
+    const char *orphan =
+        "import time\n"
+        "print('orphan start')\n"
+        "time.sleep_ms(800)\n"
+        "print('orphan done')\n";
+    const char *parento =
+        "from minios import spawn\n"
+        "p = spawn('ORPHAN.PY')\n"
+        "print('parent spawned', p)\n";
+    return make_pipe_script("CHILD.PY", child) &&
+           make_pipe_script("PARENT.PY", parent) &&
+           make_pipe_script("ORPHAN.PY", orphan) &&
+           make_pipe_script("PARENTO.PY", parento);
 }
 
 int prepare_full_scripts(void) {

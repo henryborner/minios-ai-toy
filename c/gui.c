@@ -1847,6 +1847,22 @@ static void run_command(struct console *c, char *line) {
                     term_puts(c, "pyn failed\n");
             }
         }
+    } else if (streq(line, "proctest")) {
+        extern int prepare_proc_scripts(void);
+        if (!prepare_proc_scripts())
+            term_puts(c, "proctest: scripts failed\n");
+        else if (!launch_python(c, "PARENT.PY"))
+            term_puts(c, "proctest: launch failed\n");
+        else
+            term_puts(c, "proctest: parent/child started\n");
+    } else if (streq(line, "orphantest")) {
+        extern int prepare_proc_scripts(void);
+        if (!prepare_proc_scripts())
+            term_puts(c, "orphantest: scripts failed\n");
+        else if (!launch_python(c, "PARENTO.PY"))
+            term_puts(c, "orphantest: launch failed\n");
+        else
+            term_puts(c, "orphantest: parent started\n");
     } else if (streq(line, "cputest")) {
         extern int prepare_cpu_scripts(void);
         int self = (int)(c - consoles);
