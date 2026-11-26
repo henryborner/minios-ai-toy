@@ -62,6 +62,9 @@
 /* Per-window ranges are spaced so a growable window table cannot collide. */
 #define HIT_CLOSE_BASE 10000
 #define HIT_LIST_BASE 20000
+#define TITLE_H 16
+#define BODY_DY (TITLE_H - 11)
+#define TEXT_DY (TITLE_H + 3)
 #define HIT_TITLE_BASE 30000
 #define HIT_BODY_BASE 40000
 #define HIT_SCROLL_BASE 50000
@@ -317,7 +320,7 @@ static void mark_canvas_rect(void) {
         return;
     }
     struct window *w = &wins[canvas_active->win_id];
-    mark_rect(w->x + 2, w->y + 12, canvas_w, canvas_h);
+    mark_rect(w->x + 2, w->y + TITLE_H, canvas_w, canvas_h);
 }
 
 static void mark_console_output(struct console *c, int start_row, int start_col,
@@ -348,18 +351,18 @@ static void mark_console_output(struct console *c, int start_row, int start_col,
         if (a < 0) a = 0;
         if (b > cols) b = cols;
         if (b > a)
-            mark_rect(c->x + 4 + a * 8, c->y + 14 + r0 * 9,
+            mark_rect(c->x + 4 + a * 8, c->y + TEXT_DY + r0 * 9,
                       (b - a) * 8, 9);
         return;
     }
     if (start_col < cols)
-        mark_rect(c->x + 4 + start_col * 8, c->y + 14 + r0 * 9,
+        mark_rect(c->x + 4 + start_col * 8, c->y + TEXT_DY + r0 * 9,
                   (cols - start_col) * 8, 9);
     if (r1 > r0 + 1)
-        mark_rect(c->x + 4, c->y + 14 + (r0 + 1) * 9,
+        mark_rect(c->x + 4, c->y + TEXT_DY + (r0 + 1) * 9,
                   cols * 8, (r1 - r0 - 1) * 9);
     if (c->col > 0)
-        mark_rect(c->x + 4, c->y + 14 + r1 * 9, c->col * 8, 9);
+        mark_rect(c->x + 4, c->y + TEXT_DY + r1 * 9, c->col * 8, 9);
 }
 
 static void mark_cursor_rect(void) {
@@ -373,7 +376,7 @@ static void mark_cursor_rect(void) {
     int row = c->cur - start;
     if (row < 0 || row >= c->rows)
         return;
-    mark_rect(c->x + 4 + c->col * 8, c->y + 14 + row * 9, 8, 9);
+    mark_rect(c->x + 4 + c->col * 8, c->y + TEXT_DY + row * 9, 8, 9);
 }
 
 static void mark_clock_rect(void) {
@@ -1001,7 +1004,7 @@ static void scroll_metrics(struct console *c, int *bx, int *by, int *bh,
     int travel = track_h - t;
     int p = max > 0 ? travel * (max - c->scroll) / max : 0;
     *bx = c->x + c->w - 8;
-    *by = c->y + 14;
+    *by = c->y + TEXT_DY;
     *bh = track_h;
     *thumb = t;
     *pos = p;
@@ -2576,30 +2579,30 @@ static void window_frame(int id) {
     fill_rect(w->x + 3, w->y + 3, w->w, w->h, 8);
     fill_rect(w->x, w->y, w->w, w->h, 0);
     fill_rect(w->x + 1, w->y + 1, w->w - 2, w->h - 2, 7);
-    fill_rect(w->x + 1, w->y + 1, w->w - 2, 10, active ? 1 : 8);
-    text_clip(w->x + 4, w->y + 2, w->title, 15, w->x + w->w - 46);
+    fill_rect(w->x + 1, w->y + 1, w->w - 2, TITLE_H - 1, active ? 1 : 8);
+    text_clip(w->x + 4, w->y + 4, w->title, 15, w->x + w->w - 46);
 
     int max_hit = HIT_MAX_BASE + id;
     if (is_pressed(max_hit))
-        sunken_box(w->x + w->w - 42, w->y + 2, 12, 8);
+        sunken_box(w->x + w->w - 42, w->y + 2, 12, 12);
     else
-        raise_box_col(w->x + w->w - 42, w->y + 2, 12, 8, 7);
-    draw_char(w->x + w->w - 39, w->y + 2, w->maximized ? 'o' : 'M', 0, 1);
+        raise_box_col(w->x + w->w - 42, w->y + 2, 12, 12, 7);
+    draw_char(w->x + w->w - 39, w->y + 4, w->maximized ? 'o' : 'M', 0, 1);
 
     int min_hit = HIT_MIN_BASE + id;
     if (is_pressed(min_hit))
-        sunken_box(w->x + w->w - 28, w->y + 2, 12, 8);
+        sunken_box(w->x + w->w - 28, w->y + 2, 12, 12);
     else
-        raise_box_col(w->x + w->w - 28, w->y + 2, 12, 8, 7);
-    draw_char(w->x + w->w - 26, w->y + 3, '_', 0, 1);
+        raise_box_col(w->x + w->w - 28, w->y + 2, 12, 12, 7);
+    draw_char(w->x + w->w - 26, w->y + 5, '_', 0, 1);
 
     int close_hit = HIT_CLOSE_BASE + id;
     if (is_pressed(close_hit))
-        sunken_box(w->x + w->w - 14, w->y + 2, 12, 8);
+        sunken_box(w->x + w->w - 14, w->y + 2, 12, 12);
     else
-        raise_box_col(w->x + w->w - 14, w->y + 2, 12, 8, 7);
-    draw_char(w->x + w->w - 12, w->y + 2, 'x', 0, 1);
-    fill_rect(w->x + 1, w->y + 11, w->w - 2, w->h - 12, 15);
+        raise_box_col(w->x + w->w - 14, w->y + 2, 12, 12, 7);
+    draw_char(w->x + w->w - 12, w->y + 4, 'x', 0, 1);
+    fill_rect(w->x + 1, w->y + TITLE_H, w->w - 2, w->h - TITLE_H - 1, 15);
     for (int i = 0; i < 4; i++)
         fill_rect(w->x + w->w - 3 - i, w->y + w->h - 3 - i, 2, 2, 8);
 }
@@ -2607,8 +2610,9 @@ static void window_frame(int id) {
 static void draw_console(int ci) {
     struct console *c = &consoles[ci];
     window_frame(c->win_id);
-    clip_set(c->x + 1, c->y + 11, c->w - 2, c->h - 12);
-    fill_rect(c->x + 1, c->y + 11, c->w - 2, c->h - 12, term_default_attr >> 4);
+    clip_set(c->x + 1, c->y + TITLE_H, c->w - 2, c->h - TITLE_H - 1);
+    fill_rect(c->x + 1, c->y + TITLE_H, c->w - 2, c->h - TITLE_H - 1,
+              term_default_attr >> 4);
     int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
     int slo = sel_r0 < sel_r1 ? sel_r0 : sel_r1;
     int shi = sel_r0 < sel_r1 ? sel_r1 : sel_r0;
@@ -2618,7 +2622,7 @@ static void draw_console(int ci) {
         int idx = start + r;
         if (idx < 0 || idx >= c->n)
             continue;
-        int cy = c->y + 14 + r * 9;
+        int cy = c->y + TEXT_DY + r * 9;
         if (cy + 9 < clip_y0 || cy >= clip_y1)
             continue;
         for (int col = 0; col < c->cols; col++) {
@@ -2638,33 +2642,33 @@ static void draw_console(int ci) {
     if (focus_win == c->win_id && c->scroll == 0 && ((ticks / 50) & 1)) {
         int row = c->cur - start;
         if (row >= 0 && row < c->rows)
-            fill_rect(c->x + 4 + c->col * 8, c->y + 14 + row * 9, 1, 8, 0);
+            fill_rect(c->x + 4 + c->col * 8, c->y + TEXT_DY + row * 9, 1, 8, 0);
     }
 }
 
 static void draw_files(void) {
     struct window *w = &wins[WIN_FILES];
     window_frame(WIN_FILES);
-    clip_set(w->x + 1, w->y + 11, w->w - 2, w->h - 12);
+    clip_set(w->x + 1, w->y + TITLE_H, w->w - 2, w->h - TITLE_H - 1);
     int x = w->x, y = w->y;
     extern int kernel_readdir_gui(u32 index, char *name, u32 *size, u32 *kind);
     const char *btns[4] = { "Open", "Hex", "Del", "Sync" };
     int bx = x + 6;
     for (int i = 0; i < 4; i++) {
         int bw = (i == 1 || i == 2) ? 30 : 38;
-        fill_rect(bx, y + 14, bw, 12, 7);
-        fill_rect(bx + 1, y + 15, bw - 2, 1, 15);
-        fill_rect(bx + 1, y + 25, bw - 2, 1, 8);
-        text(bx + 4, y + 16, btns[i], 0);
+        fill_rect(bx, y + 19, bw, 12, 7);
+        fill_rect(bx + 1, y + 20, bw - 2, 1, 15);
+        fill_rect(bx + 1, y + 30, bw - 2, 1, 8);
+        text(bx + 4, y + 21, btns[i], 0);
         bx += bw + 4;
     }
-    int rows = (w->h - 36) / 9;
+    int rows = (w->h - 41) / 9;
     for (int r = 0; r < rows; r++) {
         char name[17];
         u32 size = 0, kind = 0;
         if (!kernel_readdir_gui((u32)(files_scroll + r), name, &size, &kind))
             break;
-        int ry = y + 30 + r * 9;
+        int ry = y + 35 + r * 9;
         if (r == files_sel)
             fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
         int c = (r == files_sel) ? 0 : ((kind == 2) ? 10 : 3);
@@ -2708,27 +2712,27 @@ static void files_open_selected(void) {
 static void draw_system(void) {
     struct window *w = &wins[WIN_SYS];
     window_frame(WIN_SYS);
-    clip_set(w->x + 1, w->y + 11, w->w - 2, w->h - 12);
+    clip_set(w->x + 1, w->y + TITLE_H, w->w - 2, w->h - TITLE_H - 1);
     int x = w->x, y = w->y;
     const char *tabs[3] = { "Overview", "Tasks", "Memory" };
     int tw = (w->w >= 300) ? 76 : 72;
     for (int i = 0; i < 3; i++) {
         int tx = x + 6 + i * (tw + 4);
-        fill_rect(tx, y + 13, tw, 13, sys_tab == i ? 1 : 8);
-        fill_rect(tx, y + 13, tw, 1, 15);
-        text(tx + 5, y + 15, tabs[i], 15);
+        fill_rect(tx, y + 18, tw, 13, sys_tab == i ? 1 : 8);
+        fill_rect(tx, y + 18, tw, 1, 15);
+        text(tx + 5, y + 20, tabs[i], 15);
     }
     if (sys_tab == 0) {
-        text(x + 6, y + 30, "MiniOS 2.0 - System Info", 1);
-        text(x + 6, y + 41, "CPU:", 0); text(x + 46, y + 41, cpu, 0);
-        text(x + 6, y + 50, "Heap:", 0); num_text(x + 46, y + 50, heap_used, 0);
-        text(x + 6, y + 59,
+        text(x + 6, y + 35, "MiniOS 2.0 - System Info", 1);
+        text(x + 6, y + 46, "CPU:", 0); text(x + 46, y + 46, cpu, 0);
+        text(x + 6, y + 55, "Heap:", 0); num_text(x + 46, y + 55, heap_used, 0);
+        text(x + 6, y + 64,
              vbe_active ? "Video: VBE 640x480x256 LFB" : "Video: VGA 320x200x256", 0);
-        text(x + 6, y + 68, "Boot: 1.44MB floppy", 0);
-        text(x + 6, y + 76, "Uptime:", 0);
-        text(x + 70, y + 76, uptime_str, 0);
+        text(x + 6, y + 73, "Boot: 1.44MB floppy", 0);
+        text(x + 6, y + 81, "Uptime:", 0);
+        text(x + 70, y + 81, uptime_str, 0);
     } else if (sys_tab == 1) {
-        text(x + 6, y + 30, "PID CON ST PGS NAME", 8);
+        text(x + 6, y + 35, "PID CON ST PGS NAME", 8);
         extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
         for (int i = 0; i < 8; i++) {
             u32 pid, state, pages;
@@ -2736,7 +2740,7 @@ static void draw_system(void) {
             char name[16];
             if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
                 break;
-            int ry = y + 40 + i * 9;
+            int ry = y + 45 + i * 9;
             if (i == sys_task_sel) fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
             num_text(x + 6, ry, pid, 0);
             num_text(x + 40, ry, (u32)con, 0);
@@ -2750,18 +2754,18 @@ static void draw_system(void) {
     } else {
         extern u32 kernel_free_frames(void);
         extern u32 kernel_total_frames(void);
-        text(x + 6, y + 34, "Frame pool:", 0);
-        num_text(x + 94, y + 34, kernel_free_frames(), 0);
-        text(x + 130, y + 34, "/", 0);
-        num_text(x + 140, y + 34, kernel_total_frames(), 0);
+        text(x + 6, y + 39, "Frame pool:", 0);
+        num_text(x + 94, y + 39, kernel_free_frames(), 0);
+        text(x + 130, y + 39, "/", 0);
+        num_text(x + 140, y + 39, kernel_total_frames(), 0);
         int bw = w->w - 16;
-        fill_rect(x + 6, y + 48, bw, 12, 0);
+        fill_rect(x + 6, y + 53, bw, 12, 0);
         u32 ft = kernel_total_frames();
         u32 used = ft ? (ft - kernel_free_frames()) * (u32)(bw - 2) / ft : 0;
-        fill_rect(x + 7, y + 49, used, 10, 2);
-        text(x + 6, y + 70, "Kernel heap:", 0);
-        num_text(x + 110, y + 70, heap_used, 0);
-        text(x + 6, y + 82, "RAMFS lives in the frame pool.", 8);
+        fill_rect(x + 7, y + 54, used, 10, 2);
+        text(x + 6, y + 75, "Kernel heap:", 0);
+        num_text(x + 110, y + 75, heap_used, 0);
+        text(x + 6, y + 87, "RAMFS lives in the frame pool.", 8);
     }
 }
 
@@ -2772,9 +2776,9 @@ static void draw_canvas(int id) {
     canvas_active = &canvases[slot];
     struct window *w = &wins[id];
     window_frame(id);
-    clip_set(w->x + 2, w->y + 12, canvas_w, canvas_h);
+    clip_set(w->x + 2, w->y + TITLE_H, canvas_w, canvas_h);
     int cx = w->x + 2;
-    int cy = w->y + 12;
+    int cy = w->y + TITLE_H;
     if (!canvas_buf) {
         fill_rect(cx, cy, canvas_w, canvas_h, 0);
         return;
@@ -2809,17 +2813,17 @@ static void draw_canvas(int id) {
 static void draw_about(void) {
     struct window *w = &wins[WIN_ABOUT];
     window_frame(WIN_ABOUT);
-    clip_set(w->x + 1, w->y + 11, w->w - 2, w->h - 12);
+    clip_set(w->x + 1, w->y + TITLE_H, w->w - 2, w->h - TITLE_H - 1);
     int x = w->x, y = w->y;
-    text2(x + 56, y + 16, "MiniOS", 1);
-    text(x + 12, y + 42, "C + MicroPython in 1.44MB", 0);
-    text(x + 28, y + 53, "32-bit Ring 3 desktop", 0);
-    text(x + 12, y + 64, "(c) 2026 MiniOS Project", 8);
+    text2(x + 56, y + 21, "MiniOS", 1);
+    text(x + 12, y + 47, "C + MicroPython in 1.44MB", 0);
+    text(x + 28, y + 58, "32-bit Ring 3 desktop", 0);
+    text(x + 12, y + 69, "(c) 2026 MiniOS Project", 8);
     if (is_pressed(HIT_OK))
-        sunken_box(x + 84, y + 80, 40, 14);
+        sunken_box(x + 84, y + 85, 40, 14);
     else
-        raise_box_col(x + 84, y + 80, 40, 14, 7);
-    text(x + 96, y + 83, "OK", 0);
+        raise_box_col(x + 84, y + 85, 40, 14, 7);
+    text(x + 96, y + 88, "OK", 0);
 }
 
 static void draw_menu(void) {
@@ -3250,7 +3254,7 @@ void gui_canvas_open(const char *title) {
     wins[id].x = (scr_w >= 640) ? 120 + slot * 24 : 50 + slot * 8;
     wins[id].y = (scr_w >= 640) ? 34 + slot * 22 : 30 + slot * 6;
     wins[id].w = canvas_w + 4;
-    wins[id].h = canvas_h + 14;
+    wins[id].h = canvas_h + TITLE_H + 2;
     int i = 0;
     if (title) {
         while (i < 31 && title[i]) {
@@ -3434,11 +3438,11 @@ int gui_cursor_only_motion(int x, int y, int buttons) {
         if (cid < 0 || !wins[cid].visible)
             continue;
         canvas_active = &canvases[ci];
-        if (inside(x, y, wins[cid].x + 2, wins[cid].y + 12,
+        if (inside(x, y, wins[cid].x + 2, wins[cid].y + TITLE_H,
                    canvas_w, canvas_h)) {
             canvas_push_event(GUI_EV_MOUSE_MOVE,
                               x - (wins[cid].x + 2),
-                              y - (wins[cid].y + 12), 0, 0);
+                              y - (wins[cid].y + TITLE_H), 0, 0);
         }
     }
     int shape = 0;
@@ -3645,35 +3649,35 @@ static int hit_test(int x, int y) {
             continue;
         int iy = 34;
         (void)iy;
-        if (inside(x, y, w->x + w->w - 46, w->y + 1, 13, 10))
+        if (inside(x, y, w->x + w->w - 42, w->y + 2, 12, 12))
             return HIT_MAX_BASE + id;
-        if (inside(x, y, w->x + w->w - 32, w->y + 1, 13, 10))
+        if (inside(x, y, w->x + w->w - 28, w->y + 2, 12, 12))
             return HIT_MIN_BASE + id;
-        if (inside(x, y, w->x + w->w - 20, w->y, 20, 12))
+        if (inside(x, y, w->x + w->w - 14, w->y + 2, 12, 12))
             return HIT_CLOSE_BASE + id;
-        if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 77, 48, 19))
+        if (id == WIN_ABOUT && inside(x, y, w->x + 80, w->y + 82, 48, 20))
             return HIT_OK;
         if (id == WIN_FILES) {
             int bx = w->x + 6;
             for (int b = 0; b < 4; b++) {
                 int bw = (b == 1 || b == 2) ? 30 : 38;
-                if (inside(x, y, bx, w->y + 14, bw, 12))
+                if (inside(x, y, bx, w->y + 19, bw, 12))
                     return HIT_FILES_BTN_BASE + b;
                 bx += bw + 4;
             }
             int rows = (w->h - 36) / 9;
             for (int r = 0; r < rows; r++)
-                if (inside(x, y, w->x + 2, w->y + 29 + r * 9, w->w - 4, 9))
+                if (inside(x, y, w->x + 2, w->y + 34 + r * 9, w->w - 4, 9))
                     return HIT_FILES_ROW_BASE + r;
         }
         if (id == WIN_SYS) {
             int tw = (w->w >= 300) ? 76 : 72;
             for (int t = 0; t < 3; t++)
-                if (inside(x, y, w->x + 6 + t * (tw + 4), w->y + 13, tw, 13))
+                if (inside(x, y, w->x + 6 + t * (tw + 4), w->y + 18, tw, 13))
                     return HIT_SYS_TAB_BASE + t;
             if (sys_tab == 1) {
                 for (int r = 0; r < 8; r++)
-                    if (inside(x, y, w->x + 2, w->y + 39 + r * 9, w->w - 4, 9))
+                    if (inside(x, y, w->x + 2, w->y + 44 + r * 9, w->w - 4, 9))
                         return HIT_SYS_ROW_BASE + r;
                 if (inside(x, y, w->x + w->w - 74, w->y + w->h - 18, 68, 12))
                     return HIT_SYS_KILL;
@@ -3700,7 +3704,7 @@ static int hit_test(int x, int y) {
                 return HIT_RESIZE_BASE + id * 9 + d;
             }
         }
-        if (inside(x, y, w->x + 1, w->y + 1, w->w - 2, 10))
+        if (inside(x, y, w->x + 1, w->y + 1, w->w - 2, TITLE_H - 2))
             return HIT_TITLE_BASE + id;
         int sci = console_index_for_window(id);
         if (sci >= 0 && scrollbar_hit(&consoles[sci], x, y))
@@ -3740,13 +3744,13 @@ void gui_toggle_maximize(int id) {
     } else if (canvas_slot_for_window(id) >= 0) {
         canvas_active = &canvases[canvas_slot_for_window(id)];
         canvas_w = w->w - 4;
-        canvas_h = w->h - 14;
+        canvas_h = w->h - TITLE_H - 2;
         if (canvas_w < 160) canvas_w = 160;
         if (canvas_h < 110) canvas_h = 110;
         if (canvas_w > CANVAS_MAX_W) canvas_w = CANVAS_MAX_W;
         if (canvas_h > CANVAS_MAX_H) canvas_h = CANVAS_MAX_H;
         w->w = canvas_w + 4;
-        w->h = canvas_h + 14;
+        w->h = canvas_h + TITLE_H + 2;
     }
     focus_window(id);
     gui_dirty = 1;
@@ -3834,7 +3838,7 @@ static void resize_move(int x, int y) {
         c->w = w->w;
         c->h = w->h;
         int cols = (w->w - 16) / 8;
-        int rows = (w->h - 18) / 9;
+        int rows = (w->h - TITLE_H - 3) / 9;
         if (cols < 24) cols = 24;
         if (cols > 76) cols = 76;
         if (rows < 6) rows = 6;
@@ -3844,13 +3848,13 @@ static void resize_move(int x, int y) {
     } else if (canvas_slot_for_window(resize_win) >= 0) {
         canvas_active = &canvases[canvas_slot_for_window(resize_win)];
         canvas_w = w->w - 4;
-        canvas_h = w->h - 14;
+        canvas_h = w->h - TITLE_H - 2;
         if (canvas_w < 160) canvas_w = 160;
         if (canvas_w > CANVAS_MAX_W) canvas_w = CANVAS_MAX_W;
         if (canvas_h < 110) canvas_h = 110;
         if (canvas_h > CANVAS_MAX_H) canvas_h = CANVAS_MAX_H;
         w->w = canvas_w + 4;
-        w->h = canvas_h + 14;
+        w->h = canvas_h + TITLE_H + 2;
         canvas_push_event(GUI_EV_RESIZE, 0, 0, 0, 0);
         canvas_queue[(u8)((canvas_qhead + 31) & 31)].width = (u32)canvas_w;
         canvas_queue[(u8)((canvas_qhead + 31) & 31)].height = (u32)canvas_h;
@@ -3871,7 +3875,7 @@ static void sync_console_layout(int id) {
     c->w = w->w;
     c->h = w->h;
     int cols = (w->w - 16) / 8;
-    int rows = (w->h - 18) / 9;
+    int rows = (w->h - TITLE_H - 3) / 9;
     if (cols < 24) cols = 24;
     if (cols > 76) cols = 76;
     if (rows < 6) rows = 6;
@@ -4209,10 +4213,10 @@ void gui_mouse_event(int x, int y, int buttons) {
         if (cid < 0 || !wins[cid].visible)
             continue;
         canvas_active = &canvases[ci];
-        if (inside(x, y, wins[cid].x + 2, wins[cid].y + 12,
+        if (inside(x, y, wins[cid].x + 2, wins[cid].y + TITLE_H,
                    canvas_w, canvas_h)) {
             int evx = x - (wins[cid].x + 2);
-            int evy = y - (wins[cid].y + 12);
+            int evy = y - (wins[cid].y + TITLE_H);
             if (press)
                 canvas_push_event(GUI_EV_MOUSE_DOWN, evx, evy, (u32)buttons, 0);
             else if (release)
@@ -4263,7 +4267,7 @@ void gui_mouse_event(int x, int y, int buttons) {
             if (ctx_ci >= 0) {
                 struct console *c = &consoles[ctx_ci];
                 int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
-                int rr = (y - (c->y + 14)) / 9;
+                int rr = (y - (c->y + TEXT_DY)) / 9;
                 int cc = (x - (c->x + 4)) / 8;
                 if (rr < 0) rr = 0;
                 if (rr >= c->rows) rr = c->rows - 1;
@@ -4282,7 +4286,7 @@ void gui_mouse_event(int x, int y, int buttons) {
     if ((buttons & 1) && sel_id >= 0) {
         struct console *c = &consoles[sel_id];
         int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
-        int rr = (y - (c->y + 14)) / 9;
+        int rr = (y - (c->y + TEXT_DY)) / 9;
         int cc = (x - (c->x + 4)) / 8;
         if (rr < 0) rr = 0;
         if (rr >= c->rows) rr = c->rows - 1;
@@ -4572,6 +4576,9 @@ void gui_init(void) {
     drag_win = -1;
     last_buttons = 0;
 }
+
+
+
 
 
 
