@@ -4562,6 +4562,8 @@ void kmain(void) {
 
     for (;;) {
         int event = 0;
+        int key_event = 0;
+        int full_event = 0;
         task_reap_done();
         if (autoexec_pending && (int)(ticks - autoexec_at) >= 0) {
             autoexec_pending = 0;
@@ -4577,6 +4579,7 @@ void kmain(void) {
             gui_special_pending = 0;
             gui_special(special);
             event = 1;
+            full_event = 1;
         }
 
         int cid = gui_focused_console();
@@ -4588,6 +4591,7 @@ void kmain(void) {
                 kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
                 gui_key((char)ch);
                 event = 1;
+                key_event = 1;
             }
         }
 
@@ -4596,6 +4600,7 @@ void kmain(void) {
             if (!gui_cursor_only_motion(mouse_x, mouse_y, mouse_buttons)) {
                 gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
                 event = 1;
+                full_event = 1;
             }
         }
 
@@ -4605,7 +4610,9 @@ void kmain(void) {
             last_clock = ticks / 100;
             gui_mark_clock_dirty();
         }
-        if (event)
+        if (key_event)
+            gui_mark_focus_console_dirty();
+        if (full_event)
             gui_mark_dirty();
         if (event || gui_dirty_pending()) {
             gui_redraw();

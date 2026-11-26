@@ -3379,8 +3379,19 @@ void gui_redraw(void) {
     clip_full();
     update_clock(0);
     make_uptime();
-    draw_desktop();
-    draw_taskbar();
+    int covered = 0;
+    if (compose_active && win_live > 0) {
+        int top = zorder[win_live - 1];
+        struct window *tw = &wins[top];
+        covered = tw->visible &&
+                  compose_x0 >= tw->x + 1 && compose_y0 >= tw->y + 1 &&
+                  compose_x1 <= tw->x + tw->w - 1 &&
+                  compose_y1 <= tw->y + tw->h - 1;
+    }
+    if (!covered)
+        draw_desktop();
+    if (!compose_active || compose_y1 > TASKBAR_Y)
+        draw_taskbar();
     for (int i = 0; i < win_live; i++) {
         int id = zorder[i];
         struct window *w = &wins[id];
@@ -3430,6 +3441,14 @@ void gui_mark_dirty(void) {
 
 void gui_mark_cursor_dirty(void) {
     mark_cursor_rect();
+}
+
+void gui_mark_focus_console_dirty(void) {
+    int ci = console_index_for_window(focus_win);
+    if (ci >= 0)
+        mark_console_rect(&consoles[ci]);
+    else
+        gui_dirty = 1;
 }
 
 void gui_mark_clock_dirty(void) {

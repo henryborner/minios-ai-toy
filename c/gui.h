@@ -30,6 +30,7 @@ int gui_dirty_pending(void);
 void gui_mark_dirty(void);
 void gui_mark_cursor_dirty(void);
 void gui_mark_clock_dirty(void);
+void gui_mark_focus_console_dirty(void);
 void gui_flush(void);
 
 struct gui_canvas_cmd {
