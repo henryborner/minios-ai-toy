@@ -1328,6 +1328,36 @@ static void hist_load(struct console *c, int pos) {
     cmd_render(c);
 }
 
+static char *gui_u32w(char *p, u32 v, int width) {
+    char b[12];
+    int n = 0;
+    if (v == 0)
+        b[n++] = '0';
+    while (v) {
+        b[n++] = (char)('0' + v % 10);
+        v /= 10;
+    }
+    int digits = n;
+    while (n)
+        *p++ = b[--n];
+    while (digits < width) {
+        *p++ = ' ';
+        digits++;
+    }
+    return p;
+}
+
+static char *gui_strw(char *p, const char *s, int width) {
+    int n = 0;
+    while (s[n]) {
+        *p++ = s[n++];
+        width--;
+    }
+    while (width-- > 0)
+        *p++ = ' ';
+    return p;
+}
+
 static void term_u32(struct console *c, u32 v) {
     char b[12];
     int i = 0;
@@ -1745,31 +1775,30 @@ static void run_command(struct console *c, char *line) {
         u32 pid, state, pages;
         int con;
         char name[16];
-        term_puts(c, "PID CON STATE PAGES CPU NAME\n");
-        serial_puts("JOBS\r\nPID CON STATE PAGES CPU NAME\r\n");
+        char linebuf[96];
+        term_puts(c, "PID  CON  STATE  PAGES  CPU    NAME\n");
+        serial_puts("JOBS\r\nPID  CON  STATE  PAGES  CPU    NAME\r\n");
         for (int i = 0; ; i++) {
             if (!kernel_task_snapshot(i, &pid, &con, &state, &pages, name))
                 break;
-            term_u32(c, pid);
-            term_puts(c, "   ");
-            term_u32(c, (u32)con);
-            term_puts(c, "   ");
-            term_puts(c, state == 2 ? "R" : (state == 4 ? "B" :
-                              (state == 5 ? "T" : "S")));
-            term_puts(c, "     ");
-            term_u32(c, pages);
-            term_puts(c, "  ");
-            term_u32(c, kernel_task_cpu(pid));
-            term_puts(c, "  ");
-            term_puts(c, name);
+            char *p = linebuf;
+            p = gui_u32w(p, pid, 3);
+            *p++ = ' '; *p++ = ' ';
+            p = gui_u32w(p, (u32)con, 3);
+            *p++ = ' '; *p++ = ' ';
+            p = gui_strw(p, state == 2 ? "R" : (state == 4 ? "B" :
+                              (state == 5 ? "T" : "S")), 5);
+            *p++ = ' '; *p++ = ' ';
+            p = gui_u32w(p, pages, 5);
+            *p++ = ' '; *p++ = ' ';
+            p = gui_u32w(p, kernel_task_cpu(pid), 5);
+            *p++ = ' '; *p++ = ' ';
+            p = gui_strw(p, name, 15);
+            *p = 0;
+            term_puts(c, linebuf);
             term_puts(c, "\n");
-            serial_u32(pid); serial_puts(" ");
-            serial_u32((u32)con); serial_puts(" ");
-            serial_puts(state == 2 ? "R " : (state == 4 ? "B " :
-                        (state == 5 ? "T " : "S ")));
-            serial_u32(pages); serial_puts(" ");
-            serial_u32(kernel_task_cpu(pid)); serial_puts(" ");
-            serial_puts(name); serial_puts("\r\n");
+            serial_puts(linebuf);
+            serial_puts("\r\n");
         }
     } else if (starts_with(line, "stop ") || starts_with(line, "bg ")) {
         extern int task_stop_pid(u32 pid);
@@ -1857,6 +1886,35 @@ static void run_command(struct console *c, char *line) {
             term_puts(c, "diskread: launch failed\n");
         else
             term_puts(c, "diskread: started\n");
+    } else if (streq(line, "diskreadbg")) {
+        extern int prepare_disk_script(void);
+        extern void fdc_invalidate(void);
+        int self = (int)(c - consoles);
+        fdc_invalidate();
+        if (!prepare_disk_script()) {
+            term_puts(c, "diskreadbg: script failed\n");
+        } else if (!gui_new_console()) {
+            c = &consoles[self];
+            term_puts(c, "diskreadbg: console failed\n");
+        } else {
+            int nc = console_count - 1;
+            if (!launch_python(&consoles[nc], "DISKREAD.PY"))
+                term_puts(c, "diskreadbg: launch failed\n");
+            else
+                term_puts(c, "diskreadbg: started\n");
+            c = &consoles[self];
+            focus_window(consoles[self].win_id);
+        }
+    } else if (streq(line, "fdchold")) {
+        extern void fdc_set_hold(int);
+        fdc_set_hold(1);
+        term_puts(c, "fdc: irq6 held\n");
+    } else if (streq(line, "fdcrelease")) {
+        extern void fdc_release_hold(void);
+        extern void kernel_fdc_wake(void);
+        fdc_release_hold();
+        kernel_fdc_wake();
+        term_puts(c, "fdc: irq6 released\n");
     } else if (streq(line, "proctest")) {
         extern int prepare_proc_scripts(void);
         if (!prepare_proc_scripts())

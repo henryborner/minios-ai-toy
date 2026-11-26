@@ -18,6 +18,7 @@ extern volatile u32 ticks;
 #define FDC_TRACK_SECS 18u
 
 static volatile u8 fdc_irq_seen;
+static volatile u8 fdc_hold_irq;
 static u8 fdc_ready;
 static u8 cur_cyl;
 static u8 cur_head;
@@ -36,6 +37,19 @@ static inline void outb(u16 port, u8 v) {
 }
 
 void fdc_on_irq(void) {
+    if (fdc_hold_irq)
+        return;
+    fdc_irq_seen = 1;
+}
+
+void fdc_set_hold(int hold) {
+    fdc_hold_irq = hold ? 1 : 0;
+    if (hold)
+        fdc_irq_seen = 0;
+}
+
+void fdc_release_hold(void) {
+    fdc_hold_irq = 0;
     fdc_irq_seen = 1;
 }
 

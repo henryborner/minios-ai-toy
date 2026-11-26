@@ -1278,6 +1278,10 @@ static void wake_fdc_tasks(void) {
     }
 }
 
+void kernel_fdc_wake(void) {
+    wake_fdc_tasks();
+}
+
 int kernel_fdc_wait(int ms) {
     if (!scheduler_active || current_task <= 0 || current_task >= task_cap)
         return 0;
@@ -2416,7 +2420,13 @@ void exception_handler(u32 *frame) {
     bsod_show(vector, frame);
 }
 
-static char *ps_u32(char *p, u32 v) {
+static char *ps_str(char *p, const char *s) {
+    while (*s)
+        *p++ = *s++;
+    return p;
+}
+
+static char *ps_u32w(char *p, u32 v, int width) {
     char b[12];
     int n = 0;
     if (v == 0)
@@ -2425,43 +2435,53 @@ static char *ps_u32(char *p, u32 v) {
         b[n++] = (char)('0' + v % 10);
         v /= 10;
     }
+    int digits = n;
     while (n)
         *p++ = b[--n];
+    while (digits < width) {
+        *p++ = ' ';
+        digits++;
+    }
     return p;
 }
 
-static char *ps_str(char *p, const char *s) {
-    while (*s)
-        *p++ = *s++;
+static char *ps_strw(char *p, const char *s, int width) {
+    int n = 0;
+    while (s[n]) {
+        *p++ = s[n++];
+        width--;
+    }
+    while (width-- > 0)
+        *p++ = ' ';
     return p;
 }
 
 void task_ps(void) {
-    gui_sys_print("PID PPID CON STATE PAGES CPU NAME\n");
-    serial_puts("PS\r\nPID PPID CON STATE PAGES CPU NAME\r\n");
+    gui_sys_print("PID  PPID  CON  STATE  PAGES  CPU    NAME\n");
+    serial_puts("PS\r\nPID  PPID  CON  STATE  PAGES  CPU    NAME\r\n");
     for (int t = 0; t < task_cap; t++) {
         if (tasks[t].state == TASK_FREE || tasks[t].state == TASK_DONE)
             continue;
         char line[96];
         char *p = line;
-        p = ps_u32(p, tasks[t].pid);
-        *p++ = ' ';
-        p = ps_u32(p, tasks[t].parent_pid);
-        *p++ = ' ';
-        p = ps_u32(p, (u32)tasks[t].console_id + 1);
-        *p++ = ' ';
+        p = ps_u32w(p, tasks[t].pid, 3);
+        *p++ = ' '; *p++ = ' ';
+        p = ps_u32w(p, tasks[t].parent_pid, 4);
+        *p++ = ' '; *p++ = ' ';
+        p = ps_u32w(p, (u32)tasks[t].console_id + 1, 3);
+        *p++ = ' '; *p++ = ' ';
         const char *state = "?";
         if (tasks[t].state == TASK_READY) state = "READY";
         else if (tasks[t].state == TASK_RUNNING) state = "RUN";
         else if (tasks[t].state == TASK_BLOCKED) state = "BLOCK";
         else if (tasks[t].state == TASK_STOPPED) state = "STOP";
-        p = ps_str(p, state);
-        *p++ = ' ';
-        p = ps_u32(p, (u32)tasks[t].code_pages + tasks[t].stack_pages +
-                         tasks[t].heap_pages);
-        *p++ = ' ';
-        p = ps_u32(p, tasks[t].cpu_ticks);
-        *p++ = ' ';
+        p = ps_strw(p, state, 5);
+        *p++ = ' '; *p++ = ' ';
+        p = ps_u32w(p, (u32)tasks[t].code_pages + tasks[t].stack_pages +
+                         tasks[t].heap_pages, 5);
+        *p++ = ' '; *p++ = ' ';
+        p = ps_u32w(p, tasks[t].cpu_ticks, 5);
+        *p++ = ' '; *p++ = ' ';
         p = ps_str(p, tasks[t].name);
         *p = 0;
         gui_sys_print(line);
@@ -3722,8 +3742,10 @@ int prepare_pipe_scripts(void) {
 
 int prepare_disk_script(void) {
     return make_pipe_script("DISKREAD.PY",
+        "import time\n"
         "from minios import read_file\n"
         "print('disk start')\n"
+        "time.sleep_ms(5000)\n"
         "d = read_file('HELLO.BIN')\n"
         "print('disk len', len(d))\n");
 }
