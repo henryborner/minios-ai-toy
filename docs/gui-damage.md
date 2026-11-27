@@ -51,6 +51,12 @@ The `perf` command now reports redraws, full redraws, pixels, damage rectangles,
 mouse events, canvas presents, accumulated TSC cycles, and maximum frame
 cycles. A sample boot reports `cycles=16087 max=661760`.
 
+Cursor rendering now uses per-shape hotspots: the arrow keeps its tip at the
+pointer, while resize cursors are centered on the pointer. The left/right
+shape is drawn as a horizontal double arrow; the old mapping drew it vertically.
+Window resize hit borders were reduced to 2 px so the title bar remains mostly
+draggable.
+
 Rows at least 16 bytes and 4-byte aligned use `rep movsl`; short/unaligned
 tails keep the scalar fallback. `perf blit` measures four full-screen copies:
 `blit4=1768688 avg=442152` cycles in QEMU.

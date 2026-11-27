@@ -222,6 +222,9 @@ static char uptime_str[9];
 static struct damage pending_damage;
 static u8 redraw_busy;
 static int pointer_x, pointer_y, caret_on, memory_bar;
+static int cursor_hot_x, cursor_hot_y;
+static const int cursor_hot_x_table[5] = {0, 6, 6, 6, 6};
+static const int cursor_hot_y_table[5] = {0, 8, 9, 8, 8};
 
 static u32 perf_redraws, perf_full_redraws, perf_pixels, perf_damage_rects;
 static u32 perf_mouse_events, perf_canvas_presents;
@@ -3325,8 +3328,8 @@ static void draw_list(void) {
 
 
 static void cursor_set(int r, int c, u8 col) {
-    int px = pointer_x + c;
-    int py = pointer_y + r;
+    int px = pointer_x - cursor_hot_x + c;
+    int py = pointer_y - cursor_hot_y + r;
     if (compose_active &&
         (px < compose_x0 || py < compose_y0 ||
          px >= compose_x1 || py >= compose_y1))
@@ -3336,7 +3339,12 @@ static void cursor_set(int r, int c, u8 col) {
 }
 
 static void cursor_draw_art(void) {
-    if (cursor_shape == 0) {
+    int shape = cursor_shape;
+    if (shape < 0 || shape > 4)
+        shape = 0;
+    cursor_hot_x = cursor_hot_x_table[shape];
+    cursor_hot_y = cursor_hot_y_table[shape];
+    if (shape == 0) {
         for (int r = 0; r < 18; r++)
             for (int c = 0; c < 12; c++) {
                 char ch = cursor_art[r][c];
@@ -3345,7 +3353,7 @@ static void cursor_draw_art(void) {
             }
         return;
     }
-    if (cursor_shape == 1 || cursor_shape == 2) {
+    if (shape == 1) {
         for (int r = 3; r < 15; r++)
             cursor_set(r, 6, 15);
         for (int i = 0; i < 4; i++) {
@@ -3354,7 +3362,7 @@ static void cursor_draw_art(void) {
             cursor_set(14 - i, 6 - i, 15);
             cursor_set(14 - i, 6 + i, 15);
         }
-    } else if (cursor_shape == 3 || cursor_shape == 4) {
+    } else if (shape == 2) {
         for (int c = 2; c < 10; c++)
             cursor_set(9, c, 15);
         for (int i = 0; i < 4; i++) {
@@ -3366,7 +3374,7 @@ static void cursor_draw_art(void) {
     } else {
         for (int i = 0; i < 10; i++) {
             cursor_set(3 + i, 2 + i, 15);
-            if (cursor_shape == 6 || cursor_shape == 7)
+            if (shape == 4)
                 cursor_set(12 - i, 2 + i, 15);
         }
     }
@@ -4187,7 +4195,11 @@ static void gui_observe(void) {
     observe_clock();
 
     int shape = cursor_shape_at(pointer_x, pointer_y);
+    if (shape < 0 || shape > 4)
+        shape = 0;
     cursor_shape = shape;
+    cursor_hot_x = cursor_hot_x_table[shape];
+    cursor_hot_y = cursor_hot_y_table[shape];
 
     if (!observer_ready) {
         for (int i = 0; i < win_live; i++) {
@@ -4199,8 +4211,8 @@ static void gui_observe(void) {
         }
         prev_pointer_x = pointer_x;
         prev_pointer_y = pointer_y;
-        prev_cursor_x = pointer_x;
-        prev_cursor_y = pointer_y;
+        prev_cursor_x = pointer_x - cursor_hot_x;
+        prev_cursor_y = pointer_y - cursor_hot_y;
         prev_cursor_shape = shape;
         prev_cursor_valid = 1;
         prev_buttons = last_buttons;
@@ -4238,11 +4250,13 @@ static void gui_observe(void) {
                           pressed_hit != prev_pressed_hit;
     int input_changed = pointer_moved || pressed_changed;
 
+    int cursor_x = pointer_x - cursor_hot_x;
+    int cursor_y = pointer_y - cursor_hot_y;
     if (prev_cursor_valid &&
         (pointer_moved || shape != prev_cursor_shape))
         mark_rect(prev_cursor_x, prev_cursor_y, 12, 18);
     if (pointer_moved || shape != prev_cursor_shape || !prev_cursor_valid)
-        mark_rect(pointer_x, pointer_y, 12, 18);
+        mark_rect(cursor_x, cursor_y, 12, 18);
 
     int list_changed = 0;
     for (int i = 0; i < win_live; i++) {
@@ -4365,8 +4379,8 @@ static void gui_observe(void) {
 
     prev_pointer_x = pointer_x;
     prev_pointer_y = pointer_y;
-    prev_cursor_x = pointer_x;
-    prev_cursor_y = pointer_y;
+    prev_cursor_x = cursor_x;
+    prev_cursor_y = cursor_y;
     prev_cursor_shape = shape;
     prev_cursor_valid = 1;
     prev_buttons = last_buttons;
@@ -4500,7 +4514,7 @@ void gui_mark_dirty(void) {
 }
 
 void gui_mark_cursor_dirty(void) {
-    mark_rect(pointer_x, pointer_y, 12, 18);
+    mark_rect(pointer_x - cursor_hot_x, pointer_y - cursor_hot_y, 12, 18);
 }
 
 void gui_mark_focus_console_dirty(void) {
