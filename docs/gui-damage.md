@@ -58,6 +58,11 @@ Window resize hit borders were reduced to 2 px so the title bar remains mostly
 draggable. While `resize_win` is active the cursor shape is latched from
 `resize_dir`, so it no longer falls back to the arrow as the window moves.
 
+Automatic Aero-style edge snapping was removed: dragging to the desktop edge no
+longer previews or applies half-screen/maximized layouts. Double-clicking the
+title bar still maximizes/restores, and the context menu still provides
+tile/cascade.
+
 Rows at least 16 bytes and 4-byte aligned use `rep movsl`; short/unaligned
 tails keep the scalar fallback. `perf blit` measures four full-screen copies:
 `blit4=1768688 avg=442152` cycles in QEMU.

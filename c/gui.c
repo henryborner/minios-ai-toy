@@ -4713,12 +4713,6 @@ static void drag_move(int x, int y) {
     if (ny < 18) ny = 18;
     if (ny > TASKBAR_Y - 10) ny = TASKBAR_Y - 10;
     snap_mode = 0;
-    if (ny <= 19)
-        snap_mode = 3;
-    else if (nx <= 2)
-        snap_mode = 1;
-    else if (nx + w->w >= scr_w - 2)
-        snap_mode = 2;
     w->x = nx;
     w->y = ny;
     int ci = console_index_for_window(drag_win);
@@ -4819,7 +4813,7 @@ static void sync_console_layout(int id) {
     c->rows = rows;
 }
 
-static void snap_window(int id, int mode) {
+static void __attribute__((unused)) snap_window(int id, int mode) {
     struct window *w = &wins[id];
     if (!w->maximized) {
         w->saved_x = w->x;
@@ -5269,15 +5263,6 @@ void gui_mouse_event(int x, int y, int buttons) {
         }
         sel_id = -1;
         sel_active = 0;
-        if (drag_win >= 0) {
-            struct window *dw = &wins[drag_win];
-            if (dw->y <= 19)
-                snap_window(drag_win, 3);
-            else if (dw->x <= 2)
-                snap_window(drag_win, 1);
-            else if (dw->x + dw->w >= scr_w - 2)
-                snap_window(drag_win, 2);
-        }
         snap_mode = 0;
         if (pressed_hit != HIT_NONE && hit == pressed_hit)
             activate_hit(pressed_hit);
