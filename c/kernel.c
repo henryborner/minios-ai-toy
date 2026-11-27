@@ -134,6 +134,49 @@ static inline void io_wait(void) {
     outb(0x80, 0);
 }
 
+static inline void wrmsr(u32 msr, u32 lo, u32 hi) {
+    __asm__ __volatile__("wrmsr" : : "c"(msr), "a"(lo), "d"(hi));
+}
+
+static inline void rdmsr(u32 msr, u32 *lo, u32 *hi) {
+    __asm__ __volatile__("rdmsr" : "=a"(*lo), "=d"(*hi) : "c"(msr));
+}
+
+static int cpu_has_mtrr(void) {
+    u32 a = 1, b, c, d;
+    __asm__ __volatile__("cpuid" : "+a"(a), "=b"(b), "=c"(c), "=d"(d));
+    return (d & (1u << 12)) != 0;
+}
+
+/* Mark a 4 MiB-aligned physical span as write-combining if the CPU exposes
+   a free variable MTRR and WC support. */
+static int mtrr_wc_4m(u32 phys) {
+    if (!cpu_has_mtrr())
+        return 0;
+    u32 cap_lo, cap_hi;
+    rdmsr(0xFE, &cap_lo, &cap_hi);
+    if (!(cap_lo & (1u << 10)))
+        return 0;
+    int count = (int)(cap_lo & 0xFF);
+    if (count > 8)
+        count = 8;
+    for (int i = 0; i < count; i++) {
+        u32 base_lo, base_hi, mask_lo, mask_hi;
+        rdmsr(0x200u + (u32)i * 2u, &base_lo, &base_hi);
+        rdmsr(0x201u + (u32)i * 2u, &mask_lo, &mask_hi);
+        if (mask_lo & 0x800u)
+            continue;
+        base_lo = phys & 0xFFC00000u;
+        wrmsr(0x200u + (u32)i * 2u, base_lo | 6u, 0);
+        wrmsr(0x201u + (u32)i * 2u, 0xFFC00800u, 0);
+        u32 def_lo, def_hi;
+        rdmsr(0x2FF, &def_lo, &def_hi);
+        wrmsr(0x2FF, def_lo | 0x800u, def_hi);
+        return 1;
+    }
+    return 0;
+}
+
 /* COM1, 115200 8N1. */
 #define COM1 0x3F8
 static u8 serial_ready;
@@ -706,6 +749,7 @@ static u8 gdt_ready;
 #define VBE_VIRT_BASE 0xE0000000u
 #define VBE_PDE_INDEX (VBE_VIRT_BASE >> 22)
 static u32 vbe_pde_entry;
+int vbe_wc;
 
 struct vbe_boot_info {
     u8  magic[4];
@@ -2083,7 +2127,8 @@ static void vbe_init(void) {
             cr4 |= 0x00000010u; /* CR4.PSE for 4 MB supervisor LFB page */
             __asm__ __volatile__("mov %0, %%cr4" : : "r"(cr4));
 
-            vbe_pde_entry = map_base | 0x09Bu; /* Present|RW|PWT|PCD|PS */
+            vbe_wc = mtrr_wc_4m(map_base);
+            vbe_pde_entry = map_base | (vbe_wc ? 0x083u : 0x09Bu);
             sched_safe_pd[VBE_PDE_INDEX] = vbe_pde_entry;
             set_cr3((u32)sched_safe_pd);
 

@@ -2407,6 +2407,9 @@ static void run_command(struct console *c, char *line) {
         term_u32(c, perf_redraw_cycles);
         term_puts(c, " max=");
         term_u32(c, perf_max_cycles);
+        term_puts(c, " wc=");
+        extern int vbe_wc;
+        term_u32(c, (u32)vbe_wc);
         term_puts(c, "\n");
     } else if (streq(line, "perf reset")) {
         perf_reset();

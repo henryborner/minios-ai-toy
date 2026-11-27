@@ -53,9 +53,20 @@ cycles. A sample boot reports `cycles=16087 max=661760`.
 
 Rows at least 16 bytes and 4-byte aligned use `rep movsl`; short/unaligned
 tails keep the scalar fallback. `perf blit` measures four full-screen copies:
-`blit4=1768688 avg=442152` cycles in QEMU. The VBE PDE remains PCD/PWT; replacing
-that with MTRR write-combining is left as a hardware-specific follow-up because
-cache coherency with scanout must be proven.
+`blit4=1768688 avg=442152` cycles in QEMU.
+
+VBE now attempts a guarded variable-MTRR write-combining range for the 4 MiB
+LFB mapping. If CPUID/MTRRCAP/WC or a free variable MTRR is unavailable, the
+PDE keeps the old PCD/PWT bits and the boot path is unchanged.
+
+```text
+perf -> wc=0   default qemu32 CPU, PCD fallback
+perf -> wc=1   -cpu Nehalem, MTRR WC active
+```
+
+QEMU TCG does not model write-combining cache performance, so the WC cycle
+numbers are not a speed claim; correctness is covered by smoke and the two
+video-mode damage tests.
 
 Normal image and VBE/VGA damage tests still pass. The next remaining hot spot
 is clear/load and the remaining Python-side shape synthesis.
