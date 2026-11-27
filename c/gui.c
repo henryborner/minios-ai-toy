@@ -2383,6 +2383,20 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "keymap")) {
+        extern const char *kernel_keymap_name(void);
+        term_puts(c, "keymap ");
+        term_puts(c, kernel_keymap_name());
+        term_puts(c, "\n");
+    } else if (starts_with(line, "keymap ")) {
+        extern int kernel_keymap_set(const char *name);
+        if (!kernel_keymap_set(line + 7))
+            term_puts(c, "usage: keymap us|uk|dvorak|colemak\n");
+        else {
+            term_puts(c, "keymap ");
+            term_puts(c, line + 7);
+            term_puts(c, "\n");
+        }
     } else if (streq(line, "keydebug")) {
         extern int kernel_key_debug_toggle(void);
         int on = kernel_key_debug_toggle();

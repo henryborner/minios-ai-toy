@@ -350,8 +350,112 @@ static const char keymap[128] = {
     [0x28] = '\'', [0x29] = '`', [0x2B] = '\\',
     [0x2C] = 'z', [0x2D] = 'x', [0x2E] = 'c', [0x2F] = 'v', [0x30] = 'b',
     [0x31] = 'n', [0x32] = 'm', [0x33] = ',', [0x34] = '.', [0x35] = '/',
-    [0x39] = ' '
+    [0x39] = ' ', [0x56] = '\\'
 };
+
+static char shift_char(char ch);
+
+enum { KBD_US, KBD_UK, KBD_DVORAK, KBD_COLEMAK };
+static u8 kbd_layout = KBD_US;
+
+static const char *kbd_layout_name(void) {
+    if (kbd_layout == KBD_UK) return "uk";
+    if (kbd_layout == KBD_DVORAK) return "dvorak";
+    if (kbd_layout == KBD_COLEMAK) return "colemak";
+    return "us";
+}
+
+int kernel_keymap_set(const char *name) {
+    const char *want = name;
+    if (want[0] == 'u' && want[1] == 's' && want[2] == 0)
+        kbd_layout = KBD_US;
+    else if (want[0] == 'u' && want[1] == 'k' && want[2] == 0)
+        kbd_layout = KBD_UK;
+    else if (want[0] == 'd' && want[1] == 'v' && want[2] == 'o' &&
+             want[3] == 'r' && want[4] == 'a' && want[5] == 'k' &&
+             want[6] == 0)
+        kbd_layout = KBD_DVORAK;
+    else if (want[0] == 'c' && want[1] == 'o' && want[2] == 'l' &&
+             want[3] == 'e' && want[4] == 'm' && want[5] == 'a' &&
+             want[6] == 'k' && want[7] == 0)
+        kbd_layout = KBD_COLEMAK;
+    else
+        return 0;
+    if (key_debug)
+        serial_puts("KEYMAP set\r\n");
+    return 1;
+}
+
+const char *kernel_keymap_name(void) {
+    return kbd_layout_name();
+}
+
+static char kbd_base_char(u8 sc) {
+    if (kbd_layout == KBD_DVORAK) {
+        switch (sc) {
+            case 0x10: return '\''; case 0x11: return ','; case 0x12: return '.';
+            case 0x13: return 'p'; case 0x14: return 'y'; case 0x15: return 'f';
+            case 0x16: return 'g'; case 0x17: return 'c'; case 0x18: return 'r';
+            case 0x19: return 'l'; case 0x1A: return '/'; case 0x1B: return '=';
+            case 0x1E: return 'a'; case 0x1F: return 'o'; case 0x20: return 'e';
+            case 0x21: return 'u'; case 0x22: return 'i'; case 0x23: return 'd';
+            case 0x24: return 'h'; case 0x25: return 't'; case 0x26: return 'n';
+            case 0x27: return 's'; case 0x28: return '-';
+            case 0x2C: return ';'; case 0x2D: return 'q'; case 0x2E: return 'j';
+            case 0x2F: return 'k'; case 0x30: return 'x'; case 0x31: return 'b';
+            case 0x32: return 'm'; case 0x33: return 'w'; case 0x34: return 'v';
+            case 0x35: return 'z';
+            default: break;
+        }
+    } else if (kbd_layout == KBD_COLEMAK) {
+        switch (sc) {
+            case 0x10: return 'q'; case 0x11: return 'w'; case 0x12: return 'f';
+            case 0x13: return 'p'; case 0x14: return 'g'; case 0x15: return 'j';
+            case 0x16: return 'l'; case 0x17: return 'u'; case 0x18: return 'y';
+            case 0x19: return ';'; case 0x1A: return '['; case 0x1B: return ']';
+            case 0x1E: return 'a'; case 0x1F: return 'r'; case 0x20: return 's';
+            case 0x21: return 't'; case 0x22: return 'd'; case 0x23: return 'h';
+            case 0x24: return 'n'; case 0x25: return 'e'; case 0x26: return 'i';
+            case 0x27: return 'o'; case 0x28: return '\'';
+            case 0x2C: return 'z'; case 0x2D: return 'x'; case 0x2E: return 'c';
+            case 0x2F: return 'v'; case 0x30: return 'b'; case 0x31: return 'k';
+            case 0x32: return 'm'; case 0x33: return ','; case 0x34: return '.';
+            case 0x35: return '/';
+            default: break;
+        }
+    } else if (kbd_layout == KBD_UK) {
+        switch (sc) {
+            case 0x03: return '2'; case 0x04: return '3';
+            case 0x1A: return '['; case 0x1B: return ']';
+            case 0x27: return ';'; case 0x28: return '\'';
+            case 0x29: return '`'; case 0x2B: return '#';
+            case 0x56: return '\\';
+            default: break;
+        }
+    }
+    return keymap[sc];
+}
+
+static char kbd_shift_char(u8 sc) {
+    char base = kbd_base_char(sc);
+    if (base >= 'a' && base <= 'z')
+        return (char)(base - 32);
+    if (kbd_layout == KBD_UK) {
+        switch (sc) {
+            case 0x03: return '"';
+            case 0x04: return '#'; /* ASCII fallback for UK pound */
+            case 0x29: return '~'; /* ASCII fallback for UK not-sign */
+            case 0x28: return '@';
+            case 0x1A: return '{';
+            case 0x1B: return '}';
+            case 0x27: return ':';
+            case 0x2B: return '~';
+            case 0x56: return '|';
+            default: break;
+        }
+    }
+    return shift_char(base);
+}
 
 static void wake_kbd_tasks(int c);
 
@@ -528,6 +632,12 @@ static void keyboard_scancode(u8 sc) {
         alt_down = 1;
         return;
     }
+    if (ctrl_down && alt_down && sc >= 0x02 && sc <= 0x05) {
+        kbd_layout = (u8)(sc - 0x02);
+        if (key_debug)
+            serial_puts("KEYMAP set\r\n");
+        return;
+    }
     if (sc == 0x3A) {
         capslock_on = !capslock_on;
         keyboard_led_sync();
@@ -611,28 +721,29 @@ static void keyboard_scancode(u8 sc) {
     if (sc == 0x57) { gui_special_pending = 13; return; }
     if (sc == 0x58) { gui_special_pending = 14; return; }
 
-    char ch = keymap[sc];
-    if (!ch)
+    char base = kbd_base_char(sc);
+    if (!base)
         return;
+    char ch = base;
     if (ctrl_down) {
-        if (ch >= 'a' && ch <= 'z') {
-            kbd_push((u8)(ch - 'a' + 1));
+        if (base >= 'a' && base <= 'z') {
+            kbd_push((u8)(base - 'a' + 1));
             return;
         }
-        if (ch == '[') {
+        if (base == '[') {
             kbd_push(27);
             return;
         }
-        if (ch == '\\') {
+        if (base == '\\') {
             kbd_push(28);
             return;
         }
     }
-    if (ch >= 'a' && ch <= 'z') {
+    if (base >= 'a' && base <= 'z') {
         if (shift_down != capslock_on)
-            ch = (char)(ch - 32);
+            ch = (char)(base - 32);
     } else if (shift_down) {
-        ch = shift_char(ch);
+        ch = kbd_shift_char(sc);
     }
     kbd_push((u8)ch);
 }

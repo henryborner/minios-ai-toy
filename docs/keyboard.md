@@ -25,4 +25,24 @@ It starts hidden QEMU, enables the serial `keydebug` probe, verifies Shift,
 Caps, NumLock/LEDs, ScrollLock/LEDs, keypad digits/operators/Enter, navigation
 keys, F1/F12, PrintScreen, Pause, and that Pause does not change Num Lock.
 
-No international layout/AltGr mapping is implemented; the layout is US.
+## ASCII layouts
+
+`keymap` selects `us`, `uk`, `dvorak` or `colemak`; `Ctrl+Alt+1..4` selects
+the same layouts without depending on the current letter positions.
+
+```text
+keymap us
+keymap uk
+keymap dvorak
+keymap colemak
+```
+
+UK is ASCII-only: the two non-ASCII UK symbols use ASCII fallbacks (`£`→`#`,
+`¬`→`~`). Dvorak/Colemak remap letters; symbol positions follow US where no
+ASCII glyph exists.
+
+The headless test now switches US→Dvorak→Colemak→UK→US and verifies physical
+`r→p`, `e→f`, `3→#` and the return to US.
+
+No international Latin-1/CJK layout is implemented; the terminal font is
+8-bit ASCII.

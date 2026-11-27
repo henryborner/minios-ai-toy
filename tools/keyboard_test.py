@@ -185,6 +185,21 @@ def main() -> int:
         expect(h, tail, "pause", "KBD CH=F4")
         # Pause must not have toggled NumLock.
         expect(h, tail, "kp_7", "KBD CH=37")
+
+        h.key("ctrl-alt-3")
+        tail.wait("KEYMAP set")
+        expect(h, tail, "r", "KBD CH=70")
+        expect(h, tail, "shift_r-r", "KBD CH=50")
+        h.key("ctrl-alt-4")
+        tail.wait("KEYMAP set")
+        expect(h, tail, "e", "KBD CH=66")
+        h.key("ctrl-alt-2")
+        tail.wait("KEYMAP set")
+        expect(h, tail, "3", "KBD CH=33")
+        expect(h, tail, "shift-3", "KBD CH=23")
+        h.key("ctrl-alt-1")
+        tail.wait("KEYMAP set")
+        expect(h, tail, "e", "KBD CH=65")
         print("KEYBOARD TEST PASS")
         return 0
     finally:
