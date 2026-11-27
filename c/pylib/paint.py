@@ -135,9 +135,7 @@ def preview_shape():
     blit_tiles(tiles)
 
 
-def draw():
-    c.clear(0)
-    c.blit(0, 0, W, H, bytes(pix))
+def draw_ui():
     for label, y, _ in TOOLS:
         c.text(3, y, label, 0)
     for i, col in enumerate(COLORS):
@@ -148,6 +146,12 @@ def draw():
     c.text(80, PALY - 12, "color", 0)
     c.rect(120, PALY - 12, 12, 8, color)
     c.present()
+
+
+def draw():
+    c.clear(0)
+    c.blit(0, 0, W, H, bytes(pix))
+    draw_ui()
 
 
 def load():
@@ -215,7 +219,7 @@ while running:
                 draw()
             elif k in (ord("p"), ord("P")):
                 tool = "P"
-                draw()
+                draw_ui()
             continue
         if typ == 5:
             running = False
@@ -225,7 +229,7 @@ while running:
                 idx = (x - 2) // PW
                 if 0 <= idx < 16:
                     color = COLORS[idx]
-                    draw()
+                    draw_ui()
                     continue
             if x < 22:
                 for label, ty, _ in TOOLS:
@@ -236,7 +240,7 @@ while running:
                             running = False
                         elif label in ("P", "L", "R", "C", "F"):
                             tool = label
-                            draw()
+                            draw_ui()
                         break
                 continue
             if tool == "F":
@@ -272,3 +276,4 @@ while running:
     time.sleep_ms(20)
 
 c.close()
+
