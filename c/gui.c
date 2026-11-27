@@ -2466,6 +2466,10 @@ static void run_command(struct console *c, char *line) {
             term_puts(c, "memtest: FAIL\n");
         else
             term_puts(c, "memtest: PASS\n");
+    } else if (streq(line, "sysinfo tasks")) {
+        sys_tab = 1;
+        focus_window(WIN_SYS);
+        term_puts(c, "System tasks opened.\n");
     } else if (streq(line, "sysinfo")) {
         focus_window(WIN_SYS);
         term_puts(c, "System window opened.\n");
@@ -3188,8 +3192,8 @@ static void draw_system(void) {
             num_text(x + 76, ry, pages, 0);
             text(x + 100, ry, name, 0);
         }
-        fill_rect(x + w->w - 74, y + w->h - 18, 68, 12, 7);
-        text(x + w->w - 62, y + w->h - 16, "Kill Task", 0);
+        fill_rect(x + w->w - 90, y + w->h - 18, 84, 12, 7);
+        text(x + w->w - 84, y + w->h - 16, "Kill Task", 0);
     } else {
         extern u32 kernel_free_frames(void);
         extern u32 kernel_total_frames(void);
@@ -4616,7 +4620,7 @@ static int hit_test(int x, int y) {
                 for (int r = 0; r < 8; r++)
                     if (inside(x, y, w->x + 2, w->y + 44 + r * 9, w->w - 4, 9))
                         return HIT_SYS_ROW_BASE + r;
-                if (inside(x, y, w->x + w->w - 74, w->y + w->h - 18, 68, 12))
+                if (inside(x, y, w->x + w->w - 90, w->y + w->h - 18, 84, 12))
                     return HIT_SYS_KILL;
             }
         }
