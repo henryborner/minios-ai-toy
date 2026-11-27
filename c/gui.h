@@ -13,7 +13,6 @@ void gui_special(int key);
 void gui_mouse_event(int x, int y, int buttons);
 void gui_mouse_wheel(int dz);
 void gui_theme(int dark);
-int gui_cursor_only_motion(int x, int y, int buttons);
 void gui_sys_print(const char *s);
 void gui_sys_write(const char *s, u32 len);
 void gui_sys_print_console(int console, const char *s);

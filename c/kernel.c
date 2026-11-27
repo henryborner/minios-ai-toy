@@ -569,6 +569,7 @@ static volatile u8 runtime_busy;
 
 static void gui_poll_runtime(void) {
     static u32 last_frame;
+    static u32 last_blink;
     int changed = 0;
     if (gui_special_pending) {
         u8 special = gui_special_pending;
@@ -578,10 +579,8 @@ static void gui_poll_runtime(void) {
     }
     if (mouse_event) {
         mouse_event = 0;
-        if (!gui_cursor_only_motion(mouse_x, mouse_y, mouse_buttons)) {
-            gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
-            changed = 1;
-        }
+        gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
+        changed = 1;
     }
 
     int cid = gui_focused_console();
@@ -598,9 +597,14 @@ static void gui_poll_runtime(void) {
         }
     }
 
-    if (changed)
-        gui_mark_dirty();
-    if (gui_dirty_pending() && (u32)(ticks - last_frame) >= 2) {
+    u32 blink = ticks / 50;
+    int periodic = blink != last_blink;
+    if (periodic)
+        last_blink = blink;
+    if (changed || periodic) {
+        gui_redraw();
+        last_frame = ticks;
+    } else if (gui_dirty_pending() && (u32)(ticks - last_frame) >= 2) {
         gui_redraw();
         last_frame = ticks;
     }
@@ -6070,13 +6074,10 @@ void kmain(void) {
     u32 autoexec_at = ticks + 300;
     gui_redraw();
 
-    u32 last_draw = ticks;
-    u32 last_clock = ticks / 100;
+    u32 last_blink = ticks / 50;
 
     for (;;) {
         int event = 0;
-        int key_event = 0;
-        int full_event = 0;
         task_reap_done();
         if (autoexec_pending && (int)(ticks - autoexec_at) >= 0) {
             autoexec_pending = 0;
@@ -6092,7 +6093,6 @@ void kmain(void) {
             gui_special_pending = 0;
             gui_special(special);
             event = 1;
-            full_event = 1;
         }
 
         int cid = gui_focused_console();
@@ -6104,33 +6104,21 @@ void kmain(void) {
                 kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
                 gui_key((char)ch);
                 event = 1;
-                key_event = 1;
             }
         }
 
         if (mouse_event) {
             mouse_event = 0;
-            if (!gui_cursor_only_motion(mouse_x, mouse_y, mouse_buttons)) {
-                gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
-                event = 1;
-                full_event = 1;
-            }
+            gui_mouse_event(mouse_x, mouse_y, mouse_buttons);
+            event = 1;
         }
 
-        if ((u32)(ticks - last_draw) >= 50)
-            gui_mark_cursor_dirty();
-        if (ticks / 100 != last_clock) {
-            last_clock = ticks / 100;
-            gui_mark_clock_dirty();
-        }
-        if (key_event)
-            gui_mark_focus_console_dirty();
-        if (full_event)
-            gui_mark_dirty();
-        if (event || gui_dirty_pending()) {
+        u32 blink = ticks / 50;
+        int periodic = blink != last_blink;
+        if (periodic)
+            last_blink = blink;
+        if (event || periodic || gui_dirty_pending())
             gui_redraw();
-            last_draw = ticks;
-        }
         if (next_ready() >= 0)
             sched_yield();
 

@@ -1,4 +1,5 @@
 #include "gui.h"
+#include "gui_damage.h"
 
 #define TASKBAR_Y (scr_h - 14)
 
@@ -98,6 +99,9 @@ struct console {
 };
 
 struct window {
+    struct rect previous_bounds;
+    u8 previous_minimized, previous_maximized, previous_visible;
+    int previous_z;
     int x, y, w, h;
     int saved_x, saved_y, saved_w, saved_h;
     u8 visible;
@@ -107,6 +111,7 @@ struct window {
 };
 
 struct canvas_state {
+    struct damage unpublished;
     u8 *buf, *back, *target;
     int w, h;
     int open, batch, key_capture;
@@ -214,9 +219,32 @@ static char clock_hm[6];
 static char clock_hms[9];
 static char date_str[11];
 static char uptime_str[9];
-static volatile u8 gui_dirty = 1;
-static int dirty_rect_active;
-static int dirty_x0, dirty_y0, dirty_x1, dirty_y1;
+static struct damage pending_damage;
+static u8 redraw_busy;
+static int pointer_x, pointer_y, caret_on, memory_bar;
+
+/* Last composed GUI state, used by the independent observer. */
+static int observer_ready;
+static int prev_pointer_x, prev_pointer_y;
+static int prev_cursor_valid;
+static int prev_cursor_x, prev_cursor_y, prev_cursor_shape;
+static int prev_buttons, prev_pressed_hit;
+static int prev_focus_win = -1;
+static int prev_icon_sel = -1;
+static int prev_menu_open, prev_list_open, prev_ctx_open;
+static int prev_list_sel;
+static int prev_list_y, prev_list_h, prev_win_live;
+static int prev_ctx_x, prev_ctx_y, prev_ctx_count;
+static int prev_snap_mode;
+static int prev_desktop_theme;
+static int prev_clock_ok;
+static char prev_clock[6];
+static u32 prev_panel_tick;
+static int prev_sys_tab = -1, prev_sys_sel = -1;
+static int prev_files_sel = -1, prev_files_scroll;
+static int prev_caret_valid, prev_caret_x, prev_caret_y;
+static u8 prev_caret_on;
+
 static int compose_active;
 static int compose_x0, compose_y0, compose_x1, compose_y1;
 static u32 rtc_last_tick;
@@ -229,9 +257,6 @@ static const char cursor_art[18][13] = {
     "XWWWXWX.....", "XWWX.XWX....", "XWX..XWX....", "XX....XWX...",
     "X.....XWX...", "......XXX..."
 };
-static u8 cursor_bg[18][12];
-static int cursor_px = -1, cursor_py = -1;
-static u8 cursor_bg_valid;
 static int cursor_shape;
 
 static inline u8 inb(u16 port) {
@@ -286,97 +311,61 @@ static int rect_intersects(int ax, int ay, int aw, int ah,
     return ax < bx + bw && ax + aw > bx && ay < by + bh && ay + ah > by;
 }
 
+/* Damage may be posted from a syscall, Task 0 or an interrupt. Only the
+ * bounded queue transfer needs exclusion; drawing runs with the caller's IF. */
+static u32 damage_lock(void) {
+    u32 flags;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags) : : "memory");
+    return flags;
+}
+
+static void damage_unlock(u32 flags) {
+    __asm__ __volatile__("push %0; popf" : : "r"(flags) : "memory", "cc");
+}
+
+static void mark_bounds(struct rect r) {
+    u32 flags = damage_lock();
+    damage_add(&pending_damage, r, scr_w, scr_h);
+    damage_unlock(flags);
+}
+
 static void mark_rect(int x, int y, int w, int h) {
-    if (w <= 0 || h <= 0 || gui_dirty)
-        return;
-    if (x < 0) { w += x; x = 0; }
-    if (y < 0) { h += y; y = 0; }
-    if (x + w > scr_w) w = scr_w - x;
-    if (y + h > scr_h) h = scr_h - y;
-    if (w <= 0 || h <= 0)
-        return;
-    if (!dirty_rect_active) {
-        dirty_x0 = x; dirty_y0 = y;
-        dirty_x1 = x + w; dirty_y1 = y + h;
-        dirty_rect_active = 1;
-    } else {
-        if (x < dirty_x0) dirty_x0 = x;
-        if (y < dirty_y0) dirty_y0 = y;
-        if (x + w > dirty_x1) dirty_x1 = x + w;
-        if (y + h > dirty_y1) dirty_y1 = y + h;
-    }
+    mark_bounds((struct rect){x, y, x + w, y + h});
+}
+
+static struct rect window_bounds(int id) {
+    if (id < 0 || id >= win_live || !wins[id].visible)
+        return (struct rect){0};
+    const struct window *w = &wins[id];
+    return (struct rect){w->x, w->y, w->x + w->w + 3, w->y + w->h + 3};
+}
+
+static void mark_window(int id) {
+    mark_bounds(window_bounds(id));
+}
+
+static void mark_taskbar(void) {
+    mark_rect(0, TASKBAR_Y, scr_w, scr_h - TASKBAR_Y);
+}
+
+static int first_console_row(const struct console *c) {
+    return max_i(0, c->n - c->rows - c->scroll);
 }
 
 static void mark_console_rect(struct console *c) {
-    if (!c)
-        return;
-    struct window *w = &wins[c->win_id];
-    mark_rect(w->x, w->y, w->w, w->h);
+    if (c && c->win_id >= 0 && c->win_id < win_live &&
+        wins[c->win_id].visible)
+        mark_rect(c->x, c->y + TITLE_H, c->w, c->h - TITLE_H);
 }
 
-static void mark_canvas_rect(void) {
-    if (!canvas_open || !canvas_active || canvas_active->win_id < 0) {
-        gui_dirty = 1;
+static void mark_cells(struct console *c, int row, int first, int end) {
+    if (!c || c->win_id < 0 || c->win_id >= win_live ||
+        !wins[c->win_id].visible)
         return;
-    }
-    struct window *w = &wins[canvas_active->win_id];
-    mark_rect(w->x + 2, w->y + TITLE_H, canvas_w, canvas_h);
-}
-
-static void mark_console_output(struct console *c, int start_row, int start_col,
-                                int start_n, int start_scroll) {
-    if (!c)
-        return;
-    if (c->scroll != start_scroll || start_row >= TERM_ROWS - 1 ||
-        (c->n == 1 && start_row > 0) ||
-        (c->n != start_n && c->n > c->rows)) {
-        mark_console_rect(c);
-        return;
-    }
-    int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
-    int r0 = start_row - start;
-    int r1 = c->cur - start;
-    if (r0 > r1) {
-        int t = r0; r0 = r1; r1 = t;
-    }
-    if (r0 < 0) r0 = 0;
-    if (r1 >= c->rows) r1 = c->rows - 1;
-    if (r1 < r0)
-        return;
-    int cols = c->cols;
-    if (cols > TERM_COLS) cols = TERM_COLS;
-    if (r0 == r1) {
-        int a = start_col, b = c->col;
-        if (a > b) { int t = a; a = b; b = t; }
-        if (a < 0) a = 0;
-        if (b > cols) b = cols;
-        if (b > a)
-            mark_rect(c->x + 4 + a * 8, c->y + TEXT_DY + r0 * 9,
-                      (b - a) * 8, 9);
-        return;
-    }
-    if (start_col < cols)
-        mark_rect(c->x + 4 + start_col * 8, c->y + TEXT_DY + r0 * 9,
-                  (cols - start_col) * 8, 9);
-    if (r1 > r0 + 1)
-        mark_rect(c->x + 4, c->y + TEXT_DY + (r0 + 1) * 9,
-                  cols * 8, (r1 - r0 - 1) * 9);
-    if (c->col > 0)
-        mark_rect(c->x + 4, c->y + TEXT_DY + r1 * 9, c->col * 8, 9);
-}
-
-static void mark_cursor_rect(void) {
-    int ci = console_index_for_window(focus_win);
-    if (ci < 0)
-        return;
-    struct console *c = &consoles[ci];
-    if (c->scroll != 0)
-        return;
-    int start = c->n > c->rows ? c->n - c->rows : 0;
-    int row = c->cur - start;
-    if (row < 0 || row >= c->rows)
-        return;
-    mark_rect(c->x + 4 + c->col * 8, c->y + TEXT_DY + row * 9, 8, 9);
+    int visible = row - first_console_row(c);
+    if (visible >= 0 && visible < c->rows)
+        mark_rect(c->x + 4 + first * 8, c->y + TEXT_DY + visible * 9,
+                  (min_i(c->cols, end) - first) * 8, 9);
 }
 
 static void mark_clock_rect(void) {
@@ -492,7 +481,7 @@ static void text2(int x, int y, const char *s, u8 color) {
 static int inside(int x, int y, int rx, int ry, int rw, int rh);
 
 static u8 is_pressed(int hit) {
-    return pressed_hit == hit && (mouse_buttons & 1);
+    return pressed_hit == hit && (last_buttons & 1);
 }
 
 static void raise_box_col(int x, int y, int w, int h, u8 face) {
@@ -511,22 +500,6 @@ static void sunken_box(int x, int y, int w, int h) {
     fill_rect(x + 1, y + 1, 1, h - 2, 8);
     fill_rect(x + 1, y + h - 2, w - 2, 1, 15);
     fill_rect(x + w - 2, y + 1, 1, h - 2, 15);
-}
-
-static void blit(void) {
-    if (vbe_active && vbe_lfb) {
-        for (int y = 0; y < scr_h; y++) {
-            volatile u32 *dst = (volatile u32 *)(vbe_lfb + (u32)y * vbe_pitch);
-            const u32 *src = (const u32 *)(fb + (u32)y * (u32)scr_w);
-            for (int i = 0; i < scr_w / 4; i++)
-                dst[i] = src[i];
-        }
-        return;
-    }
-    u32 *dst = (u32 *)0x000A0000;
-    const u32 *src = (const u32 *)fb;
-    for (int i = 0; i < (scr_w * scr_h) / 4; i++)
-        dst[i] = src[i];
 }
 
 static void blit_rect(int x, int y, int w, int h) {
@@ -641,6 +614,9 @@ static void bring_front(int id) {
             break;
         }
     }
+    if (pos == win_live - 1)
+        return;
+    mark_window(id);
     for (int i = pos; i < win_live - 1; i++)
         zorder[i] = zorder[i + 1];
     zorder[win_live - 1] = id;
@@ -936,6 +912,7 @@ static int line_len(struct console *c, int index) {
 }
 
 static void term_clear(struct console *c) {
+    mark_console_rect(c);
     for (int r = 0; r < TERM_ROWS; r++)
         for (int col = 0; col < TERM_COLS; col++) {
             c->term[r][col] = 0;
@@ -953,6 +930,10 @@ static void term_clear(struct console *c) {
 
 static void term_newline(struct console *c) {
     int was_scrolled = c->scroll > 0;
+    if (c->n >= c->rows)
+        mark_console_rect(c);
+    else
+        mark_cells(c, c->n, 0, c->cols);
     if (c->n < TERM_ROWS) {
         for (int col = 0; col < TERM_COLS; col++) {
             c->term[c->n][col] = 0;
@@ -986,12 +967,15 @@ static void term_newline(struct console *c) {
 }
 
 static void term_scroll_by(struct console *c, int delta) {
+    int old = c->scroll;
     int max = c->n > c->rows ? c->n - c->rows : 0;
     c->scroll += delta;
     if (c->scroll < 0)
         c->scroll = 0;
     if (c->scroll > max)
         c->scroll = max;
+    if (old != c->scroll)
+        mark_console_rect(c);
 }
 
 static void scroll_metrics(struct console *c, int *bx, int *by, int *bh,
@@ -1023,6 +1007,7 @@ static int scrollbar_hit(struct console *c, int x, int y) {
 static void scrollbar_set_from_y(struct console *c, int y) {
     if (c->n <= c->rows)
         return;
+    int old = c->scroll;
     int bx, by, bh, thumb, pos;
     scroll_metrics(c, &bx, &by, &bh, &thumb, &pos);
     (void)bx;
@@ -1035,6 +1020,8 @@ static void scrollbar_set_from_y(struct console *c, int y) {
     c->scroll = max - (travel > 0 ? (rel * max + travel / 2) / travel : 0);
     if (c->scroll < 0) c->scroll = 0;
     if (c->scroll > max) c->scroll = max;
+    if (old != c->scroll)
+        mark_console_rect(c);
 }
 
 static void scrollbar_draw(struct console *c) {
@@ -1097,6 +1084,7 @@ static int term_ansi_final(struct console *c, char ch) {
     } else if (ch == 'H') {
         c->col = 0;
     } else if (ch == 'K') {
+        mark_cells(c, c->cur, c->col, c->cols);
         for (int i = c->col; i < TERM_COLS; i++) {
             c->term[c->cur][i] = 0;
             term_attr_put(c, c->cur, i, c->cur_attr);
@@ -1144,6 +1132,7 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     if (ch == '\b') {
         int len = line_len(c, c->cur);
         if (c->col > 0) {
+            mark_cells(c, c->cur, c->col - 1, len);
             for (int i = c->col - 1; i < len - 1; i++) {
                 c->term[c->cur][i] = c->term[c->cur][i + 1];
                 if (c->attrs)
@@ -1166,6 +1155,8 @@ static void term_putc_mode(struct console *c, char ch, int insert) {
     if (c->col >= c->cols)
         term_newline(c);
     int len = line_len(c, c->cur);
+    mark_cells(c, c->cur, min_i(c->col, len),
+               insert && c->col < len ? len + 1 : c->col + 1);
     if (insert && c->col < len && len < TERM_COLS - 2) {
         for (int i = len; i > c->col; i--) {
             c->term[c->cur][i] = c->term[c->cur][i - 1];
@@ -1216,7 +1207,8 @@ void gui_theme(int dark) {
                 consoles[i].cur_attr = now;
         }
     }
-    gui_dirty = 1;
+    for (int i = 0; i < console_count; i++)
+        mark_console_rect(&consoles[i]);
 }
 
 static void term_prompt(struct console *c) {
@@ -1231,6 +1223,7 @@ static void term_prompt(struct console *c) {
 }
 
 static void cmd_render(struct console *c) {
+    int old_start = first_console_row(c);
     int w = c->cols;
     int newrows = (5 + c->cmd_len + w - 1) / w;
     int rows = newrows > c->cmd_rows ? newrows : c->cmd_rows;
@@ -1285,6 +1278,11 @@ static void cmd_render(struct console *c) {
     if (c->cur >= c->n)
         c->n = c->cur + 1;
     c->scroll = 0;
+    if (old_start != first_console_row(c))
+        mark_console_rect(c);
+    else
+        for (int r = 0; r < rows; r++)
+            mark_cells(c, c->cmd_start + r, 0, w);
 }
 
 static void hist_add(struct console *c) {
@@ -1683,7 +1681,7 @@ static int gui_new_console(void) {
     wins[c->win_id].title = c->title;
     last_console = id;
     focus_window(c->win_id);
-    gui_dirty = 1;
+    mark_window(c->win_id);
     return 1;
 }
 
@@ -2633,6 +2631,8 @@ static void run_command(struct console *c, char *line) {
 
 static void term_key(struct console *c, char ch) {
     u8 key = (u8)ch;
+    if (c->scroll)
+        mark_console_rect(c);
     c->scroll = 0;
     if (key == '\n') {
         c->cmd_buf[c->cmd_len] = 0;
@@ -2807,13 +2807,14 @@ int gui_selftest(void) {
         gui_canvas_close();
     }
     focus_window(WIN_C0);
-    gui_dirty = 1;
     return 1;
 }
 
 void gui_desktop_theme(int t) {
-    desktop_theme = t;
-    gui_dirty = 1;
+    if (desktop_theme != t) {
+        desktop_theme = t;
+        mark_rect(0, 0, scr_w, TASKBAR_Y);
+    }
 }
 
 static void draw_desktop(void) {
@@ -2826,17 +2827,12 @@ static void draw_desktop(void) {
         text(8, 5, "MiniOS 2.0", 15);
         text(188, 5, "F4 windows", 11);
     }
-    extern u32 kernel_free_frames(void);
-    extern u32 kernel_total_frames(void);
-    u32 ff = kernel_free_frames();
-    u32 ft = kernel_total_frames();
     int bw = 40;
     int bx = scr_w - bw - 4;
     fill_rect(bx, 4, bw, 7, 0);
-    if (ft) {
-        int used = (int)(((ft - ff) * (u32)(bw - 2)) / ft);
+    {
         fill_rect(bx + 1, 5, bw - 2, 5, 8);
-        fill_rect(bx + 1, 5, used, 5, 2);
+        fill_rect(bx + 1, 5, memory_bar, 5, 2);
     }
     fill_rect(0, 17, scr_w, 1, 2);
     draw_icons();
@@ -3023,7 +3019,7 @@ static void draw_console(int ci) {
         }
     }
     scrollbar_draw(c);
-    if (focus_win == c->win_id && c->scroll == 0 && ((ticks / 50) & 1)) {
+    if (focus_win == c->win_id && c->scroll == 0 && caret_on) {
         int row = c->cur - start;
         if (row >= 0 && row < c->rows)
             fill_rect(c->x + 4 + c->col * 8, c->y + TEXT_DY + row * 9, 1, 8, 0);
@@ -3157,24 +3153,25 @@ static void draw_canvas(int id) {
     int slot = canvas_slot_for_window(id);
     if (slot < 0)
         return;
-    canvas_active = &canvases[slot];
+    const struct canvas_state *cs = &canvases[slot];
     struct window *w = &wins[id];
     window_frame(id);
-    clip_set(w->x + 2, w->y + TITLE_H, canvas_w, canvas_h);
+    clip_set(w->x + 2, w->y + TITLE_H, min_i(cs->w, w->w - 4),
+             min_i(cs->h, w->h - TITLE_H - 2));
     int cx = w->x + 2;
     int cy = w->y + TITLE_H;
-    if (!canvas_buf) {
-        fill_rect(cx, cy, canvas_w, canvas_h, 0);
+    if (!cs->buf) {
+        fill_rect(cx, cy, cs->w, cs->h, 0);
         return;
     }
-    int sx0 = 0, sx1 = canvas_w;
-    int sy0 = 0, sy1 = canvas_h;
+    int sx0 = 0, sx1 = cs->w;
+    int sy0 = 0, sy1 = cs->h;
     if (cx < clip_x0) sx0 = clip_x0 - cx;
     if (cy < clip_y0) sy0 = clip_y0 - cy;
-    if (cx + canvas_w > clip_x1) sx1 = clip_x1 - cx;
-    if (cy + canvas_h > clip_y1) sy1 = clip_y1 - cy;
-    if (sx1 > canvas_w) sx1 = canvas_w;
-    if (sy1 > canvas_h) sy1 = canvas_h;
+    if (cx + cs->w > clip_x1) sx1 = clip_x1 - cx;
+    if (cy + cs->h > clip_y1) sy1 = clip_y1 - cy;
+    if (sx1 > cs->w) sx1 = cs->w;
+    if (sy1 > cs->h) sy1 = cs->h;
     if (sx0 < 0) sx0 = 0;
     if (sy0 < 0) sy0 = 0;
     int span = sx1 - sx0;
@@ -3182,7 +3179,7 @@ static void draw_canvas(int id) {
         for (int y = sy0; y < sy1; y++) {
             int py = cy + y;
             u8 *dst = fb + py * scr_w + cx + sx0;
-            const u8 *src = canvas_buf + y * CANVAS_MAX_W + sx0;
+            const u8 *src = cs->buf + y * CANVAS_MAX_W + sx0;
             int i = 0;
             for (; i + 4 <= span; i += 4)
                 *(u32 *)(dst + i) = *(const u32 *)(src + i);
@@ -3223,7 +3220,7 @@ static void draw_menu(void) {
     };
     for (int i = 0; i < MENU_ITEMS; i++) {
         int iy = MENU_Y + 2 + i * MENU_ITEM_H;
-        int hov = inside(mouse_x, mouse_y, MENU_X + 2, iy, MENU_W - 4, MENU_ITEM_H);
+        int hov = inside(pointer_x, pointer_y, MENU_X + 2, iy, MENU_W - 4, MENU_ITEM_H);
         int hit = HIT_MENU_BASE + i;
         if (is_pressed(hit)) {
             fill_rect(MENU_X + 2, iy, MENU_W - 4, MENU_ITEM_H, 2);
@@ -3269,24 +3266,11 @@ static void draw_list(void) {
     clip_full();
 }
 
-static void cursor_capture(void) {
-    for (int r = 0; r < 18; r++) {
-        for (int c = 0; c < 12; c++) {
-            int px = mouse_x + c;
-            int py = mouse_y + r;
-            cursor_bg[r][c] = ((unsigned)px < (unsigned)scr_w &&
-                               (unsigned)py < (unsigned)scr_h)
-                                  ? fb[py * scr_w + px] : 0;
-        }
-    }
-    cursor_px = mouse_x;
-    cursor_py = mouse_y;
-    cursor_bg_valid = 1;
-}
+
 
 static void cursor_set(int r, int c, u8 col) {
-    int px = mouse_x + c;
-    int py = mouse_y + r;
+    int px = pointer_x + c;
+    int py = pointer_y + r;
     if (compose_active &&
         (px < compose_x0 || py < compose_y0 ||
          px >= compose_x1 || py >= compose_y1))
@@ -3297,20 +3281,12 @@ static void cursor_set(int r, int c, u8 col) {
 
 static void cursor_draw_art(void) {
     if (cursor_shape == 0) {
-        for (int r = 0; r < 18; r++) {
-            int py = mouse_y + r;
-            if ((unsigned)py >= (unsigned)scr_h)
-                continue;
+        for (int r = 0; r < 18; r++)
             for (int c = 0; c < 12; c++) {
-                int px = mouse_x + c;
-                if ((unsigned)px >= (unsigned)scr_w)
-                    continue;
                 char ch = cursor_art[r][c];
-                if (ch == '.')
-                    continue;
-                fb[py * scr_w + px] = (ch == 'X') ? 0 : 15;
+                if (ch != '.')
+                    cursor_set(r, c, ch == 'X' ? 0 : 15);
             }
-        }
         return;
     }
     if (cursor_shape == 1 || cursor_shape == 2) {
@@ -3340,30 +3316,7 @@ static void cursor_draw_art(void) {
     }
 }
 
-static void cursor_restore_fb(void) {
-    if (!cursor_bg_valid)
-        return;
-    for (int r = 0; r < 18; r++) {
-        int py = cursor_py + r;
-        if ((unsigned)py >= (unsigned)scr_h)
-            continue;
-        for (int c = 0; c < 12; c++) {
-            int px = cursor_px + c;
-            if ((unsigned)px >= (unsigned)scr_w)
-                continue;
-            fb[py * scr_w + px] = cursor_bg[r][c];
-        }
-    }
-    cursor_bg_valid = 0;
-}
 
-static void cursor_restore(void) {
-    if (!cursor_bg_valid)
-        return;
-    int x = cursor_px, y = cursor_py;
-    cursor_restore_fb();
-    blit_rect(x, y, 12, 18);
-}
 
 static const char *ctx_label(int i) {
     if (ctx_target >= 0) {
@@ -3484,7 +3437,6 @@ static void activate_context(int idx) {
         gui_theme(0);
         gui_desktop_theme(2);
     }
-    gui_dirty = 1;
 }
 
 static void draw_context(void) {
@@ -3501,7 +3453,7 @@ static void draw_context(void) {
         if (is_pressed(hit)) {
             fill_rect(ctx_x + 2, iy, w - 4, 12, 2);
             text(ctx_x + 8, iy + 2, ctx_label(i), 15);
-        } else if (inside(mouse_x, mouse_y, ctx_x + 2, iy, w - 4, 12)) {
+        } else if (inside(pointer_x, pointer_y, ctx_x + 2, iy, w - 4, 12)) {
             fill_rect(ctx_x + 2, iy, w - 4, 12, 1);
             text(ctx_x + 8, iy + 2, ctx_label(i), 15);
         } else {
@@ -3512,11 +3464,71 @@ static void draw_context(void) {
 
 static void canvas_pixel(int x, int y, u8 color);
 
+/* Canvas coordinates are half-open and always clipped before being queued. */
+static void canvas_damage_rect(struct canvas_state *cs,
+                               int x, int y, int w, int h) {
+    if (!cs || w <= 0 || h <= 0)
+        return;
+    long long x1 = (long long)x + w;
+    long long y1 = (long long)y + h;
+    if (x < 0) x = 0;
+    if (y < 0) y = 0;
+    if (x1 > cs->w) x1 = cs->w;
+    if (y1 > cs->h) y1 = cs->h;
+    if (x >= x1 || y >= y1 || x >= cs->w || y >= cs->h)
+        return;
+    damage_add(&cs->unpublished,
+               (struct rect){x, y, (int)x1, (int)y1}, cs->w, cs->h);
+}
+
+static struct rect canvas_visible_bounds(struct canvas_state *cs) {
+    if (!cs || cs->win_id < 0 || cs->win_id >= win_live || !wins[cs->win_id].visible)
+        return (struct rect){0};
+    struct window *w = &wins[cs->win_id];
+    int cw = min_i(cs->w, w->w - 4);
+    int ch = min_i(cs->h, w->h - TITLE_H - 2);
+    if (cw <= 0 || ch <= 0)
+        return (struct rect){0};
+    return (struct rect){w->x + 2, w->y + TITLE_H,
+                         w->x + 2 + cw, w->y + TITLE_H + ch};
+}
+
+static void canvas_mark_screen(struct canvas_state *cs, struct rect r) {
+    if (!cs)
+        return;
+    r = rect_clip(r, cs->w, cs->h);
+    if (r.x0 >= r.x1 || r.y0 >= r.y1)
+        return;
+    struct rect vis = canvas_visible_bounds(cs);
+    if (vis.x0 >= vis.x1 || vis.y0 >= vis.y1)
+        return;
+    int x0 = vis.x0 + r.x0;
+    int y0 = vis.y0 + r.y0;
+    int x1 = vis.x0 + r.x1;
+    int y1 = vis.y0 + r.y1;
+    if (x0 < vis.x0) x0 = vis.x0;
+    if (y0 < vis.y0) y0 = vis.y0;
+    if (x1 > vis.x1) x1 = vis.x1;
+    if (y1 > vis.y1) y1 = vis.y1;
+    if (x0 < x1 && y0 < y1)
+        mark_bounds((struct rect){x0, y0, x1, y1});
+}
+
+static void canvas_publish_now(struct canvas_state *cs) {
+    if (!cs)
+        return;
+    struct damage d = cs->unpublished;
+    cs->unpublished.count = 0;
+    for (int i = 0; i < d.count; i++)
+        canvas_mark_screen(cs, d.rects[i]);
+}
+
 static void canvas_circle(int cx, int cy, int r, u8 color, int fill) {
     if (!canvas_target || r < 0)
         return;
     if (r > canvas_w + canvas_h)
         r = canvas_w + canvas_h;
+    canvas_damage_rect(canvas_active, cx - r, cy - r, r * 2 + 1, r * 2 + 1);
     int x = r;
     for (int yy = 0; yy <= r; yy++) {
         while (x > 0 && x * x + yy * yy > r * r)
@@ -3581,14 +3593,77 @@ int gui_canvas_h(void) {
 }
 
 static void canvas_rect(int x, int y, int w, int h, u8 color) {
-    if (w <= 0 || h <= 0)
+    if (!canvas_target || w <= 0 || h <= 0)
         return;
-    for (int yy = y; yy < y + h; yy++)
-        for (int xx = x; xx < x + w; xx++)
+    long long x1 = (long long)x + w;
+    long long y1 = (long long)y + h;
+    int x0 = x < 0 ? 0 : x;
+    int y0 = y < 0 ? 0 : y;
+    if (x1 > canvas_w) x1 = canvas_w;
+    if (y1 > canvas_h) y1 = canvas_h;
+    if (x0 >= x1 || y0 >= y1)
+        return;
+    for (int yy = y0; yy < y1; yy++)
+        for (int xx = x0; xx < x1; xx++)
             canvas_pixel(xx, yy, color);
+    canvas_damage_rect(canvas_active, x0, y0, (int)(x1 - x0), (int)(y1 - y0));
+}
+
+static int canvas_line_clip(int *x0, int *y0, int *x1, int *y1) {
+    enum { L = 1, R = 2, T = 4, B = 8 };
+    int maxx = canvas_w - 1;
+    int maxy = canvas_h - 1;
+    if (maxx < 0 || maxy < 0)
+        return 0;
+    #define OUTCODE(px, py) \
+        (((px) < 0) ? L : (((px) > maxx) ? R : 0)) | \
+        (((py) < 0) ? T : (((py) > maxy) ? B : 0))
+    int c0 = OUTCODE(*x0, *y0);
+    int c1 = OUTCODE(*x1, *y1);
+    for (int guard = 0; guard < 16; guard++) {
+        if (!(c0 | c1))
+            return 1;
+        if (c0 & c1)
+            return 0;
+        int c = c0 ? c0 : c1;
+        int nx, ny;
+        if (c & T) {
+            ny = 0;
+            nx = *x0 + ((*x1 - *x0) * (0 - *y0)) / (*y1 - *y0);
+        } else if (c & B) {
+            ny = maxy;
+            nx = *x0 + ((*x1 - *x0) * (maxy - *y0)) / (*y1 - *y0);
+        } else if (c & R) {
+            nx = maxx;
+            ny = *y0 + ((*y1 - *y0) * (maxx - *x0)) / (*x1 - *x0);
+        } else {
+            nx = 0;
+            ny = *y0 + ((*y1 - *y0) * (0 - *x0)) / (*x1 - *x0);
+        }
+        if (nx < 0) nx = 0;
+        if (nx > maxx) nx = maxx;
+        if (ny < 0) ny = 0;
+        if (ny > maxy) ny = maxy;
+        if (c == c0) {
+            *x0 = (int)nx;
+            *y0 = (int)ny;
+            c0 = OUTCODE(*x0, *y0);
+        } else {
+            *x1 = (int)nx;
+            *y1 = (int)ny;
+            c1 = OUTCODE(*x1, *y1);
+        }
+    }
+    return 0;
+    #undef OUTCODE
 }
 
 static void canvas_line(int x0, int y0, int x1, int y1, u8 color) {
+    if (!canvas_target)
+        return;
+    if (!canvas_line_clip(&x0, &y0, &x1, &y1))
+        return;
+    int lx0 = x0, ly0 = y0;
     int dx = x1 > x0 ? x1 - x0 : x0 - x1;
     int sx = x0 < x1 ? 1 : -1;
     int dy = y1 > y0 ? y0 - y1 : y1 - y0;
@@ -3602,6 +3677,9 @@ static void canvas_line(int x0, int y0, int x1, int y1, u8 color) {
         if (e2 >= dy) { err += dy; x0 += sx; }
         if (e2 <= dx) { err += dx; y0 += sy; }
     }
+    canvas_damage_rect(canvas_active, min_i(lx0, x1), min_i(ly0, y1),
+                       (lx0 > x1 ? lx0 - x1 : x1 - lx0) + 1,
+                       (ly0 > y1 ? ly0 - y1 : y1 - ly0) + 1);
 }
 
 void gui_canvas_open(const char *title) {
@@ -3654,8 +3732,12 @@ void gui_canvas_open(const char *title) {
     canvas_key_capture = 0;
     canvas_target = canvas_buf;
     canvas_qhead = canvas_qtail = 0;
+    canvas_active->unpublished.count = 0;
     focus_window(id);
-    gui_dirty = 1;
+    mark_window(id);
+    mark_taskbar();
+    if (list_open)
+        mark_rect(LIST_X, list_y(), LIST_W + 3, list_height() + 3);
 }
 
 void gui_canvas_release_owner(u32 pid) {
@@ -3674,10 +3756,10 @@ void gui_canvas_release_owner(u32 pid) {
             kernel_free_pages_ptr(canvas_back, pages);
         canvas_buf = canvas_back = canvas_target = 0;
         canvas_qhead = canvas_qtail = 0;
+        canvases[i].unpublished.count = 0;
         canvases[i].owner_pid = 0;
     }
     canvas_active = &canvases[0];
-    gui_dirty = 1;
 }
 
 void gui_canvas_close(void) {
@@ -3699,32 +3781,70 @@ void gui_canvas_close(void) {
         kernel_free_pages_ptr(canvas_back, pages);
     canvas_buf = canvas_back = canvas_target = 0;
     canvas_qhead = canvas_qtail = 0;
+    canvas_active->unpublished.count = 0;
     canvas_active->owner_pid = 0;
-    gui_dirty = 1;
 }
 
 void gui_canvas_batch(int on) {
     if (canvas_current_slot() < 0)
         return;
+    struct canvas_state *cs = canvas_active;
     if (on && canvas_buf && canvas_back) {
         for (int y = 0; y < canvas_h; y++)
             for (int x = 0; x < canvas_w; x++)
                 canvas_back[y * CANVAS_MAX_W + x] = canvas_buf[y * CANVAS_MAX_W + x];
+        cs->unpublished.count = 0;
     }
     canvas_batch = on;
     canvas_target = (on && canvas_back) ? canvas_back : canvas_buf;
+    if (!on)
+        cs->unpublished.count = 0;
 }
 
 void gui_canvas_present(void) {
     if (canvas_current_slot() < 0)
         return;
-    if (canvas_batch && canvas_buf && canvas_back) {
-        for (int y = 0; y < canvas_h; y++)
-            for (int x = 0; x < canvas_w; x++)
-                canvas_buf[y * CANVAS_MAX_W + x] = canvas_back[y * CANVAS_MAX_W + x];
+    struct canvas_state *cs = canvas_active;
+    if (cs->unpublished.count == 0) {
+        canvas_target = canvas_batch ? canvas_back : canvas_buf;
+        return;
     }
+
+    struct damage pending = cs->unpublished;
+    cs->unpublished.count = 0;
+    struct damage screen;
+    screen.count = 0;
+
+    if (canvas_batch && canvas_buf && canvas_back) {
+        /* Only actual changed spans leave the back buffer. This keeps a
+         * clear-and-redraw game frame from republishing identical rows. */
+        for (int i = 0; i < pending.count; i++) {
+            struct rect r = rect_clip(pending.rects[i], canvas_w, canvas_h);
+            for (int y = r.y0; y < r.y1; y++) {
+                u8 *src = canvas_back + y * CANVAS_MAX_W + r.x0;
+                u8 *dst = canvas_buf + y * CANVAS_MAX_W + r.x0;
+                int span = r.x1 - r.x0;
+                int same = 1;
+                for (int x = 0; x < span; x++)
+                    if (src[x] != dst[x]) {
+                        same = 0;
+                        break;
+                    }
+                if (same)
+                    continue;
+                for (int x = 0; x < span; x++)
+                    dst[x] = src[x];
+                damage_add(&screen, (struct rect){r.x0, y, r.x1, y + 1},
+                           canvas_w, canvas_h);
+            }
+        }
+    } else {
+        screen = pending;
+    }
+
+    for (int i = 0; i < screen.count; i++)
+        canvas_mark_screen(cs, screen.rects[i]);
     canvas_target = canvas_batch ? canvas_back : canvas_buf;
-    mark_canvas_rect();
 }
 
 int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
@@ -3732,12 +3852,18 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
         return -1;
     if (!cmd || !canvas_buf)
         return -1;
+    struct canvas_state *cs = canvas_active;
     if (cmd->op == 0) {
         for (int yy = 0; yy < canvas_h; yy++)
             for (int xx = 0; xx < canvas_w; xx++)
                 canvas_target[yy * CANVAS_MAX_W + xx] = (u8)cmd->color;
+        canvas_damage_rect(cs, 0, 0, canvas_w, canvas_h);
     } else if (cmd->op == 1) {
-        canvas_pixel((int)cmd->x, (int)cmd->y, (u8)cmd->color);
+        int px = (int)cmd->x, py = (int)cmd->y;
+        canvas_pixel(px, py, (u8)cmd->color);
+        if ((unsigned)px < (unsigned)canvas_w &&
+            (unsigned)py < (unsigned)canvas_h)
+            canvas_damage_rect(cs, px, py, 1, 1);
     } else if (cmd->op == 2) {
         canvas_rect((int)cmd->x, (int)cmd->y, (int)cmd->w, (int)cmd->h,
                     (u8)cmd->color);
@@ -3757,6 +3883,8 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
                         canvas_pixel(px + c, py + r, (u8)cmd->color);
             px += 8;
         }
+        canvas_damage_rect(cs, (int)cmd->x, (int)cmd->y,
+                           (int)cmd->len * 8, 8);
     } else if (cmd->op == 5) {
         canvas_rect((int)cmd->x, (int)cmd->y, (int)cmd->w, 1, (u8)cmd->color);
         canvas_rect((int)cmd->x, (int)cmd->y + (int)cmd->h - 1, (int)cmd->w, 1, (u8)cmd->color);
@@ -3781,19 +3909,40 @@ int gui_canvas_cmd(const struct gui_canvas_cmd *cmd) {
     } else if (cmd->op == 7) {
         if (cmd->w > CANVAS_MAX_W || cmd->h > CANVAS_MAX_H)
             return -1;
-        if (!cmd->text || cmd->len < cmd->w * cmd->h)
+        if (!cmd->text ||
+            (cmd->h && cmd->w > 0xFFFFFFFFu / cmd->h) ||
+            cmd->len < cmd->w * cmd->h)
             return -1;
-        for (u32 yy = 0; yy < cmd->h; yy++)
-            for (u32 xx = 0; xx < cmd->w; xx++) {
-                u8 c = (u8)cmd->text[yy * cmd->w + xx];
-                if (c)
-                    canvas_pixel((int)cmd->x + (int)xx, (int)cmd->y + (int)yy, c);
+        int bx = (int)cmd->x, by = (int)cmd->y;
+        int sx0 = bx < 0 ? -bx : 0;
+        int sy0 = by < 0 ? -by : 0;
+        int sx1 = (int)cmd->w;
+        int sy1 = (int)cmd->h;
+        if (sx1 > canvas_w - bx) sx1 = canvas_w - bx;
+        if (sy1 > canvas_h - by) sy1 = canvas_h - by;
+        if (sx1 < 0) sx1 = 0;
+        if (sy1 < 0) sy1 = 0;
+        for (int yy = sy0; yy < sy1; yy++) {
+            int run = -1;
+            for (int xx = sx0; xx < sx1; xx++) {
+                u8 c = (u8)cmd->text[(u32)yy * cmd->w + (u32)xx];
+                if (c) {
+                    canvas_pixel(bx + xx, by + yy, c);
+                    if (run < 0)
+                        run = xx;
+                } else if (run >= 0) {
+                    canvas_damage_rect(cs, bx + run, by + yy, xx - run, 1);
+                    run = -1;
+                }
             }
+            if (run >= 0)
+                canvas_damage_rect(cs, bx + run, by + yy, sx1 - run, 1);
+        }
     } else {
         return -1;
     }
     if (!canvas_batch)
-        mark_canvas_rect();
+        canvas_publish_now(cs);
     return 0;
 }
 
@@ -3807,49 +3956,7 @@ int gui_canvas_event(struct gui_canvas_event *out) {
     return 1;
 }
 
-static void draw_cursor(void) {
-    cursor_capture();
-    cursor_draw_art();
-}
 
-int gui_cursor_only_motion(int x, int y, int buttons) {
-    if ((buttons & 7) || (last_buttons & 7) ||
-        menu_open || list_open || ctx_open ||
-        drag_win >= 0 || resize_win >= 0 || scroll_drag >= 0)
-        return 0;
-    for (int ci = 0; ci < canvas_live; ci++) {
-        int cid = canvases[ci].win_id;
-        if (cid < 0 || !wins[cid].visible)
-            continue;
-        canvas_active = &canvases[ci];
-        if (inside(x, y, wins[cid].x + 2, wins[cid].y + TITLE_H,
-                   canvas_w, canvas_h)) {
-            canvas_push_event(GUI_EV_MOUSE_MOVE,
-                              x - (wins[cid].x + 2),
-                              y - (wins[cid].y + TITLE_H), 0, 0);
-        }
-    }
-    int shape = 0;
-    int hit = hit_test(x, y);
-    if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + win_live * 9) {
-        int d = (hit - HIT_RESIZE_BASE) % 9;
-        if (d == 1 || d == 2) shape = 1;
-        else if (d == 3 || d == 4) shape = 2;
-        else if (d == 5 || d == 6) shape = 3;
-        else if (d == 7 || d == 8) shape = 4;
-    }
-    if (cursor_bg_valid && x == cursor_px && y == cursor_py &&
-        shape == cursor_shape)
-        return 1;
-
-    cursor_restore();
-    cursor_shape = shape;
-    mouse_x = x;
-    mouse_y = y;
-    draw_cursor();
-    blit_rect(mouse_x, mouse_y, 12, 18);
-    return 1;
-}
 
 void gui_alloc_fb(void) {
     extern void *kernel_alloc_pages_zero(u32 pages);
@@ -3875,56 +3982,386 @@ void gui_alloc_fb(void) {
     }
 }
 
-void gui_redraw(void) {
-    static u8 redraw_busy;
-    if (redraw_busy || !fb)
+static int rect_nonempty(struct rect r) {
+    return r.x0 < r.x1 && r.y0 < r.y1;
+}
+
+static int window_zpos(int id) {
+    for (int i = 0; i < win_live; i++)
+        if (zorder[i] == id)
+            return i;
+    return -1;
+}
+
+static void mark_icon_area(int i) {
+    if (i >= 0 && i < 6)
+        mark_rect(6, 32 + i * 34, 92, 30);
+}
+
+static int is_taskbar_hit(int hit) {
+    return hit == HIT_START || hit == HIT_TB_SYS || hit == HIT_TB_WIN ||
+           (hit >= HIT_TB_WINDOW_BASE && hit < HIT_TB_WINDOW_BASE + win_live);
+}
+
+static void mark_pressed_button(int hit, int buttons) {
+    if (!(buttons & 1))
         return;
-    if (!gui_dirty && !dirty_rect_active)
-        return;
-    redraw_busy = 1;
-    int full = gui_dirty || !dirty_rect_active;
-    if (full) {
-        compose_active = 0;
-    } else {
-        compose_active = 1;
-        compose_x0 = dirty_x0;
-        compose_y0 = dirty_y0;
-        compose_x1 = dirty_x1;
-        compose_y1 = dirty_y1;
+    int id = -1;
+    if (hit >= HIT_MIN_BASE && hit < HIT_MIN_BASE + win_live)
+        id = hit - HIT_MIN_BASE;
+    else if (hit >= HIT_MAX_BASE && hit < HIT_MAX_BASE + win_live)
+        id = hit - HIT_MAX_BASE;
+    else if (hit >= HIT_CLOSE_BASE && hit < HIT_CLOSE_BASE + win_live)
+        id = hit - HIT_CLOSE_BASE;
+    if (id >= 0 && id < win_live && wins[id].visible) {
+        mark_rect(wins[id].x + wins[id].w - 42, wins[id].y + 2, 40, 12);
+    } else if (hit == HIT_OK && WIN_ABOUT < win_live &&
+               wins[WIN_ABOUT].visible) {
+        mark_rect(wins[WIN_ABOUT].x + 84, wins[WIN_ABOUT].y + 85, 40, 14);
     }
-    int cursor_overlap = !compose_active ||
-        rect_intersects(compose_x0, compose_y0,
-                        compose_x1 - compose_x0, compose_y1 - compose_y0,
-                        cursor_px, cursor_py, 12, 18);
-    if (cursor_bg_valid && cursor_overlap)
-        cursor_restore_fb();
-    gui_dirty = 0;
-    dirty_rect_active = 0;
-    clip_full();
+}
+
+static int cursor_shape_at(int x, int y) {
+    int shape = 0;
+    int hit = hit_test(x, y);
+    if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + win_live * 9) {
+        int d = (hit - HIT_RESIZE_BASE) % 9;
+        if (d == 1 || d == 2) shape = 1;
+        else if (d == 3 || d == 4) shape = 2;
+        else if (d == 5 || d == 6) shape = 3;
+        else if (d == 7 || d == 8) shape = 4;
+    }
+    return shape;
+}
+
+static void mark_snap_edges(int mode) {
+    if (!mode)
+        return;
+    int x = 0, y = 18, w = scr_w, h = TASKBAR_Y - 18;
+    if (mode == 1) {
+        w = scr_w / 2;
+    } else if (mode == 2) {
+        x = scr_w / 2;
+        w = scr_w - scr_w / 2;
+    }
+    if (w <= 0 || h <= 0)
+        return;
+    mark_rect(x, y, w, 2);
+    mark_rect(x, y + h - 2, w, 2);
+    mark_rect(x, y, 2, h);
+    mark_rect(x + w - 2, y, 2, h);
+}
+
+static void mark_menu_area(void) {
+    mark_rect(MENU_X, MENU_Y, MENU_W + 3, MENU_H + 3);
+}
+
+static void mark_list_area(int y, int h) {
+    if (h > 0)
+        mark_rect(LIST_X, y, LIST_W + 3, h + 3);
+}
+
+static void mark_context_area(int x, int y, int count) {
+    if (count > 0)
+        mark_rect(x, y, 128 + 3, count * 12 + 4 + 3);
+}
+
+static void observe_memory(void) {
+    extern u32 kernel_free_frames(void);
+    extern u32 kernel_total_frames(void);
+    int bw = 40;
+    u32 ft = kernel_total_frames();
+    u32 ff = kernel_free_frames();
+    int bar = ft ? (int)(((ft - ff) * (u32)(bw - 2)) / ft) : 0;
+    if (bar != memory_bar) {
+        memory_bar = bar;
+        mark_rect(scr_w - bw - 4, 4, bw, 7);
+    }
+}
+
+static void observe_clock(void) {
     update_clock(0);
-    make_uptime();
+    int same = prev_clock_ok;
+    for (int i = 0; i < 6; i++)
+        if (clock_hm[i] != prev_clock[i]) {
+            same = 0;
+            break;
+        }
+    if (!same) {
+        mark_clock_rect();
+        for (int i = 0; i < 6; i++)
+            prev_clock[i] = clock_hm[i];
+        prev_clock_ok = 1;
+    }
+}
+
+static void observe_caret(void) {
+    int valid = 0;
+    int cx = 0, cy = 0;
+    struct console *c = console_for_window(focus_win);
+    if (c && c->win_id >= 0 && c->win_id < win_live && wins[c->win_id].visible &&
+        c->scroll == 0) {
+        int first = first_console_row(c);
+        int row = c->cur - first;
+        if (row >= 0 && row < c->rows && c->col >= 0 && c->col < c->cols) {
+            cx = c->x + 4 + c->col * 8;
+            cy = c->y + TEXT_DY + row * 9;
+            valid = 1;
+        }
+    }
+    int on = valid && ((ticks / 50) & 1);
+    if (prev_caret_valid && prev_caret_on &&
+        (!valid || !on || cx != prev_caret_x || cy != prev_caret_y))
+        mark_rect(prev_caret_x, prev_caret_y, 8, 9);
+    if (on && (!prev_caret_valid || !prev_caret_on ||
+               cx != prev_caret_x || cy != prev_caret_y))
+        mark_rect(cx, cy, 8, 9);
+    caret_on = on;
+    prev_caret_valid = valid;
+    prev_caret_on = (u8)on;
+    prev_caret_x = cx;
+    prev_caret_y = cy;
+}
+
+/* Compare every observable piece of desktop state with the last composition.
+ * Only differences enqueue damage; idle calls therefore do no drawing. */
+static void gui_observe(void) {
+    observe_memory();
+    observe_clock();
+
+    int shape = cursor_shape_at(pointer_x, pointer_y);
+    cursor_shape = shape;
+
+    if (!observer_ready) {
+        for (int i = 0; i < win_live; i++) {
+            wins[i].previous_bounds = window_bounds(i);
+            wins[i].previous_visible = wins[i].visible;
+            wins[i].previous_minimized = wins[i].minimized;
+            wins[i].previous_maximized = wins[i].maximized;
+            wins[i].previous_z = window_zpos(i);
+        }
+        prev_pointer_x = pointer_x;
+        prev_pointer_y = pointer_y;
+        prev_cursor_x = pointer_x;
+        prev_cursor_y = pointer_y;
+        prev_cursor_shape = shape;
+        prev_cursor_valid = 1;
+        prev_buttons = last_buttons;
+        prev_pressed_hit = pressed_hit;
+        prev_focus_win = focus_win;
+        prev_icon_sel = icon_sel;
+        prev_menu_open = menu_open;
+        prev_list_open = list_open;
+        prev_list_sel = list_sel;
+        prev_list_y = list_y();
+        prev_list_h = list_height();
+        prev_win_live = win_live;
+        prev_ctx_open = ctx_open;
+        prev_ctx_x = ctx_x;
+        prev_ctx_y = ctx_y;
+        prev_ctx_count = ctx_count;
+        prev_snap_mode = snap_mode;
+        prev_desktop_theme = desktop_theme;
+        prev_sys_tab = sys_tab;
+        prev_sys_sel = sys_task_sel;
+        prev_files_sel = files_sel;
+        prev_files_scroll = files_scroll;
+        prev_panel_tick = ticks / 100;
+        prev_caret_valid = 0;
+        prev_caret_on = 0;
+        caret_on = 0;
+        observer_ready = 1;
+        mark_rect(0, 0, scr_w, scr_h);
+        return;
+    }
+
+    int pointer_moved = pointer_x != prev_pointer_x ||
+                        pointer_y != prev_pointer_y;
+    int pressed_changed = last_buttons != prev_buttons ||
+                          pressed_hit != prev_pressed_hit;
+    int input_changed = pointer_moved || pressed_changed;
+
+    if (prev_cursor_valid &&
+        (pointer_moved || shape != prev_cursor_shape))
+        mark_rect(prev_cursor_x, prev_cursor_y, 12, 18);
+    if (pointer_moved || shape != prev_cursor_shape || !prev_cursor_valid)
+        mark_rect(pointer_x, pointer_y, 12, 18);
+
+    int list_changed = 0;
+    for (int i = 0; i < win_live; i++) {
+        struct window *w = &wins[i];
+        struct rect now = window_bounds(i);
+        int z = window_zpos(i);
+        int vis_changed = w->visible != w->previous_visible;
+        int min_changed = w->minimized != w->previous_minimized;
+        int changed = vis_changed || min_changed ||
+                      (w->maximized != w->previous_maximized) ||
+                      !rect_equal(now, w->previous_bounds);
+        if (changed) {
+            if (w->previous_visible && rect_nonempty(w->previous_bounds))
+                mark_bounds(w->previous_bounds);
+            if (w->visible && rect_nonempty(now))
+                mark_bounds(now);
+        }
+        if (vis_changed || min_changed)
+            list_changed = 1;
+        if (z >= 0 && z != w->previous_z && w->visible)
+            mark_window(i);
+        w->previous_bounds = now;
+        w->previous_visible = w->visible;
+        w->previous_minimized = w->minimized;
+        w->previous_maximized = w->maximized;
+        w->previous_z = z;
+    }
+
+    int focus_changed = focus_win != prev_focus_win;
+    if (focus_changed) {
+        if (prev_focus_win >= 0 && prev_focus_win < win_live) {
+            struct window *ow = &wins[prev_focus_win];
+            if (ow->visible)
+                mark_window(prev_focus_win);
+            else if (rect_nonempty(ow->previous_bounds))
+                mark_bounds(ow->previous_bounds);
+        }
+        if (focus_win >= 0 && focus_win < win_live && wins[focus_win].visible)
+            mark_window(focus_win);
+    }
+    if (list_changed || focus_changed || prev_menu_open != menu_open ||
+        prev_list_open != list_open ||
+        (pressed_changed &&
+         (prev_pointer_y >= TASKBAR_Y || pointer_y >= TASKBAR_Y ||
+          is_taskbar_hit(prev_pressed_hit) || is_taskbar_hit(pressed_hit))))
+        mark_taskbar();
+
+    if (prev_menu_open != menu_open) {
+        if (prev_menu_open)
+            mark_menu_area();
+        if (menu_open)
+            mark_menu_area();
+    } else if (menu_open && input_changed) {
+        mark_menu_area();
+    }
+
+    int ly = list_y(), lh = list_height();
+    if (prev_list_open != list_open) {
+        if (prev_list_open)
+            mark_list_area(prev_list_y, prev_list_h);
+        if (list_open)
+            mark_list_area(ly, lh);
+    } else if (list_open) {
+        if (prev_win_live != win_live)
+            mark_list_area(prev_list_y, prev_list_h);
+        if (prev_win_live != win_live || list_changed || focus_changed ||
+            list_sel != prev_list_sel || input_changed)
+            mark_list_area(ly, lh);
+    }
+
+    if (prev_ctx_open != ctx_open) {
+        if (prev_ctx_open)
+            mark_context_area(prev_ctx_x, prev_ctx_y, prev_ctx_count);
+        if (ctx_open)
+            mark_context_area(ctx_x, ctx_y, ctx_count);
+    } else if (ctx_open) {
+        int moved = ctx_x != prev_ctx_x || ctx_y != prev_ctx_y ||
+                    ctx_count != prev_ctx_count;
+        if (moved)
+            mark_context_area(prev_ctx_x, prev_ctx_y, prev_ctx_count);
+        if (moved || input_changed)
+            mark_context_area(ctx_x, ctx_y, ctx_count);
+    }
+
+    if (pressed_changed) {
+        mark_pressed_button(prev_pressed_hit, prev_buttons);
+        mark_pressed_button(pressed_hit, last_buttons);
+    }
+
+    if (icon_sel != prev_icon_sel) {
+        mark_icon_area(prev_icon_sel);
+        mark_icon_area(icon_sel);
+    }
+
+    if (snap_mode != prev_snap_mode) {
+        mark_snap_edges(prev_snap_mode);
+        mark_snap_edges(snap_mode);
+    }
+
+    if (desktop_theme != prev_desktop_theme)
+        mark_rect(0, 0, scr_w, TASKBAR_Y);
+
+    if (WIN_SYS < win_live && wins[WIN_SYS].visible &&
+        (sys_tab != prev_sys_tab || sys_task_sel != prev_sys_sel))
+        mark_window(WIN_SYS);
+    if (WIN_FILES < win_live && wins[WIN_FILES].visible &&
+        (files_sel != prev_files_sel || files_scroll != prev_files_scroll))
+        mark_window(WIN_FILES);
+
+    u32 second = ticks / 100;
+    if (second != prev_panel_tick) {
+        prev_panel_tick = second;
+        if (WIN_SYS < win_live && wins[WIN_SYS].visible)
+            mark_window(WIN_SYS);
+        if (WIN_FILES < win_live && wins[WIN_FILES].visible)
+            mark_window(WIN_FILES);
+    }
+
+    observe_caret();
+
+    prev_pointer_x = pointer_x;
+    prev_pointer_y = pointer_y;
+    prev_cursor_x = pointer_x;
+    prev_cursor_y = pointer_y;
+    prev_cursor_shape = shape;
+    prev_cursor_valid = 1;
+    prev_buttons = last_buttons;
+    prev_pressed_hit = pressed_hit;
+    prev_focus_win = focus_win;
+    prev_icon_sel = icon_sel;
+    prev_menu_open = menu_open;
+    prev_list_open = list_open;
+    prev_list_sel = list_sel;
+    prev_list_y = ly;
+    prev_list_h = lh;
+    prev_win_live = win_live;
+    prev_ctx_open = ctx_open;
+    prev_ctx_x = ctx_x;
+    prev_ctx_y = ctx_y;
+    prev_ctx_count = ctx_count;
+    prev_snap_mode = snap_mode;
+    prev_desktop_theme = desktop_theme;
+    prev_sys_tab = sys_tab;
+    prev_sys_sel = sys_task_sel;
+    prev_files_sel = files_sel;
+    prev_files_scroll = files_scroll;
+}
+
+static void gui_compose_rect(struct rect r) {
+    compose_active = 1;
+    compose_x0 = r.x0;
+    compose_y0 = r.y0;
+    compose_x1 = r.x1;
+    compose_y1 = r.y1;
+    clip_full();
+
     int covered = 0;
-    if (compose_active && win_live > 0) {
+    if (win_live > 0) {
         int top = zorder[win_live - 1];
         struct window *tw = &wins[top];
         covered = tw->visible &&
-                  compose_x0 >= tw->x + 1 && compose_y0 >= tw->y + 1 &&
-                  compose_x1 <= tw->x + tw->w - 1 &&
-                  compose_y1 <= tw->y + tw->h - 1;
+                  r.x0 >= tw->x + 1 && r.y0 >= tw->y + 1 &&
+                  r.x1 <= tw->x + tw->w - 1 &&
+                  r.y1 <= tw->y + tw->h - 1;
     }
     if (!covered)
         draw_desktop();
-    if (!compose_active || compose_y1 > TASKBAR_Y)
+    if (r.y1 > TASKBAR_Y)
         draw_taskbar();
     for (int i = 0; i < win_live; i++) {
         int id = zorder[i];
         struct window *w = &wins[id];
         if (!w->visible)
             continue;
-        if (compose_active &&
-            !rect_intersects(w->x, w->y, w->w + 3, w->h + 3,
-                             compose_x0, compose_y0,
-                             compose_x1 - compose_x0, compose_y1 - compose_y0))
+        if (!rect_intersects(w->x, w->y, w->w + 3, w->h + 3,
+                             r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0))
             continue;
         int ci = console_index_for_window(id);
         if (ci >= 0)
@@ -3943,36 +4380,64 @@ void gui_redraw(void) {
     draw_menu();
     draw_list();
     draw_context();
-    if (cursor_overlap)
-        draw_cursor();
-    if (full)
-        blit();
-    else
-        blit_rect(compose_x0, compose_y0,
-                  compose_x1 - compose_x0, compose_y1 - compose_y0);
+    cursor_draw_art();
+    compose_active = 0;
+}
+
+void gui_redraw(void) {
+    if (!fb || redraw_busy)
+        return;
+
+    u32 flags = damage_lock();
+    if (redraw_busy) {
+        damage_unlock(flags);
+        return;
+    }
+    redraw_busy = 1;
+    damage_unlock(flags);
+
+    gui_observe();
+
+    struct damage work;
+    flags = damage_lock();
+    work = pending_damage;
+    pending_damage.count = 0;
+    damage_unlock(flags);
+
+    if (work.count == 0) {
+        redraw_busy = 0;
+        return;
+    }
+
+    update_clock(0);
+    make_uptime();
+    for (int i = 0; i < work.count; i++) {
+        struct rect r = rect_clip(work.rects[i], scr_w, scr_h);
+        if (r.x0 >= r.x1 || r.y0 >= r.y1)
+            continue;
+        gui_compose_rect(r);
+        blit_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
+    }
     compose_active = 0;
     redraw_busy = 0;
 }
 
 int gui_dirty_pending(void) {
-    return gui_dirty || dirty_rect_active;
+    return pending_damage.count > 0;
 }
 
 void gui_mark_dirty(void) {
-    gui_dirty = 1;
-    dirty_rect_active = 0;
+    mark_rect(0, 0, scr_w, scr_h);
 }
 
 void gui_mark_cursor_dirty(void) {
-    mark_cursor_rect();
+    mark_rect(pointer_x, pointer_y, 12, 18);
 }
 
 void gui_mark_focus_console_dirty(void) {
     int ci = console_index_for_window(focus_win);
     if (ci >= 0)
         mark_console_rect(&consoles[ci]);
-    else
-        gui_dirty = 1;
 }
 
 void gui_mark_clock_dirty(void) {
@@ -3980,8 +4445,7 @@ void gui_mark_clock_dirty(void) {
 }
 
 void gui_flush(void) {
-    if (gui_dirty || dirty_rect_active)
-        gui_redraw();
+    gui_redraw();
 }
 
 /* -----------------------------------------------------------------------------
@@ -4137,7 +4601,6 @@ void gui_toggle_maximize(int id) {
         w->h = canvas_h + TITLE_H + 2;
     }
     focus_window(id);
-    gui_dirty = 1;
 }
 
 static void start_drag(int id, int x, int y) {
@@ -4243,7 +4706,6 @@ static void resize_move(int x, int y) {
         canvas_queue[(u8)((canvas_qhead + 31) & 31)].width = (u32)canvas_w;
         canvas_queue[(u8)((canvas_qhead + 31) & 31)].height = (u32)canvas_h;
     }
-    gui_dirty = 1;
 }
 
 static void sync_console_layout(int id) {
@@ -4292,7 +4754,6 @@ static void snap_window(int id, int mode) {
     }
     sync_console_layout(id);
     focus_window(id);
-    gui_dirty = 1;
 }
 
 static void draw_snap_preview(void) {
@@ -4331,12 +4792,12 @@ static void activate_hit(int hit) {
     if (hit >= HIT_SYS_TAB_BASE && hit < HIT_SYS_TAB_BASE + 3) {
         sys_tab = hit - HIT_SYS_TAB_BASE;
         focus_window(WIN_SYS);
-        gui_dirty = 1;
+        mark_window(WIN_SYS);
         return;
     }
     if (hit >= HIT_SYS_ROW_BASE && hit < HIT_SYS_ROW_BASE + 8) {
         sys_task_sel = hit - HIT_SYS_ROW_BASE;
-        gui_dirty = 1;
+        mark_window(WIN_SYS);
         return;
     }
     if (hit >= HIT_FILES_ROW_BASE && hit < HIT_FILES_ROW_BASE + 32) {
@@ -4353,7 +4814,7 @@ static void activate_hit(int hit) {
             last_file_row = row;
             last_file_tick = ticks;
             files_sel = row;
-            gui_dirty = 1;
+            mark_window(WIN_FILES);
         }
         return;
     }
@@ -4385,7 +4846,7 @@ static void activate_hit(int hit) {
             launch_tool(&consoles[WIN_C0], "-m xxd", name);
         } else if (b == 2) {
             kernel_unlink_gui(name);
-            gui_dirty = 1;
+            mark_window(WIN_FILES);
         } else {
             sync_savefs();
         }
@@ -4399,7 +4860,7 @@ static void activate_hit(int hit) {
         char name[16];
         if (kernel_task_snapshot(sys_task_sel, &pid, &con, &state, &pages, name))
             task_kill_pid(pid);
-        gui_dirty = 1;
+        mark_window(WIN_SYS);
         return;
     }
     if (hit == HIT_TB_SYS) { taskbar_window(WIN_SYS); return; }
@@ -4446,7 +4907,6 @@ static void activate_hit(int hit) {
         static int last_icon = -1;
         int icon = hit - HIT_ICON_BASE;
         icon_sel = icon;
-        gui_dirty = 1;
         if (last_icon == icon && (u32)(ticks - last_icon_tick) < 40) {
             last_icon = -1;
             if (icon == 0 || icon == 1) {
@@ -4503,22 +4963,22 @@ void gui_mouse_wheel(int dz) {
         list_sel -= dz;
         if (list_sel < 0) list_sel = 0;
         if (list_sel >= win_live) list_sel = win_live - 1;
-        gui_dirty = 1;
         return;
     }
     struct console *fcw = console_for_window(focus_win);
     if (fcw) {
         term_scroll_by(fcw, dz * 3);
-        gui_dirty = 1;
     } else if (focus_win == WIN_FILES) {
         files_scroll -= dz;
         if (files_scroll < 0) files_scroll = 0;
         if (files_scroll > 24) files_scroll = 24;
-        gui_dirty = 1;
+        mark_window(WIN_FILES);
     }
 }
 
 void gui_mouse_event(int x, int y, int buttons) {
+    pointer_x = x;
+    pointer_y = y;
     int press = (buttons & 1) && !(last_buttons & 1);
     int release = !(buttons & 1) && (last_buttons & 1);
     int rpress = (buttons & 2) && !(last_buttons & 2);
@@ -4670,6 +5130,7 @@ void gui_mouse_event(int x, int y, int buttons) {
     if ((buttons & 1) && sel_id >= 0) {
         struct console *c = console_for_window(sel_id);
         if (c) {
+            int old_r = sel_r1, old_c = sel_c1;
             int start = c->n > c->rows ? c->n - c->rows - c->scroll : 0;
             int rr = (y - (c->y + TEXT_DY)) / 9;
             int cc = (x - (c->x + 4)) / 8;
@@ -4681,7 +5142,8 @@ void gui_mouse_event(int x, int y, int buttons) {
             sel_c1 = cc;
             if (sel_r1 != sel_r0 || sel_c1 != sel_c0)
                 sel_active = 1;
-            gui_dirty = 1;
+            if (old_r != sel_r1 || old_c != sel_c1)
+                mark_console_rect(c);
         }
     }
     if ((buttons & 1) && resize_win >= 0) {
@@ -4698,7 +5160,8 @@ void gui_mouse_event(int x, int y, int buttons) {
             int shi = sel_r0 < sel_r1 ? sel_r1 : sel_r0;
             int clo = sel_c0 < sel_c1 ? sel_c0 : sel_c1;
             int chi = sel_c0 < sel_c1 ? sel_c1 : sel_c0;
-            struct console *c = &consoles[sel_id];
+            struct console *c = console_for_window(sel_id);
+            mark_console_rect(c);
             clipboard_len = 0;
             for (int r = slo; r <= shi && clipboard_len < 255; r++) {
                 for (int col = clo; col <= chi && clipboard_len < 255; col++) {
@@ -4784,7 +5247,6 @@ void gui_key(char ch) {
         if (ci >= 0) {
             canvas_active = &canvases[ci];
             canvas_push_event(GUI_EV_KEY, 0, 0, 0, (u32)key);
-            gui_dirty = 1;
         }
         return;
     }
@@ -4798,12 +5260,12 @@ void gui_key(char ch) {
             return;
         if (key == GUI_KEY_UP) {
             if (files_sel > 0) files_sel--;
-            gui_dirty = 1;
+            mark_window(WIN_FILES);
         } else if (key == GUI_KEY_DOWN) {
             char n[17]; u32 s, k;
             if (kernel_readdir_gui((u32)(files_scroll + files_sel + 1), n, &s, &k))
                 files_sel++;
-            gui_dirty = 1;
+            mark_window(WIN_FILES);
         } else if (ch == '\n') {
             files_open_selected();
         } else if (ch == 'x' || ch == 'X') {
@@ -4816,7 +5278,7 @@ void gui_key(char ch) {
             char n[17]; u32 s, k;
             if (kernel_readdir_gui((u32)(files_scroll + files_sel), n, &s, &k)) {
                 kernel_unlink_gui(n);
-                gui_dirty = 1;
+                mark_window(WIN_FILES);
             }
         } else if (ch == 's' || ch == 'S') {
             sync_savefs();
@@ -4898,10 +5360,8 @@ void gui_special(int key) {
 
 void gui_sys_write(const char *s, u32 len) {
     struct console *c = active_console();
-    int r0 = c->cur, c0 = c->col, n0 = c->n, sc = c->scroll;
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    mark_console_output(c, r0, c0, n0, sc);
 }
 
 void gui_prompt_console(int cid) {
@@ -4914,34 +5374,33 @@ void gui_prompt_console(int cid) {
 
 void gui_sys_print(const char *s) {
     struct console *c = active_console();
-    int r0 = c->cur, c0 = c->col, n0 = c->n, sc = c->scroll;
     while (*s)
         term_putc(c, *s++);
-    mark_console_output(c, r0, c0, n0, sc);
 }
 
 void gui_sys_write_console(int console, const char *s, u32 len) {
     if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
-    int r0 = c->cur, c0 = c->col, n0 = c->n, sc = c->scroll;
     for (u32 i = 0; i < len; i++)
         term_putc(c, s[i]);
-    mark_console_output(c, r0, c0, n0, sc);
 }
 
 void gui_sys_print_console(int console, const char *s) {
     if (console < 0 || console >= console_count)
         return;
     struct console *c = &consoles[console];
-    int r0 = c->cur, c0 = c->col, n0 = c->n, sc = c->scroll;
     while (*s)
         term_putc(c, *s++);
-    mark_console_output(c, r0, c0, n0, sc);
 }
 
 void gui_init(void) {
     set_palette();
+    observer_ready = 0;
+    caret_on = 0;
+    pointer_x = mouse_x;
+    pointer_y = mouse_y;
+    gui_mark_dirty();
     init_windows();
     for (int i = 0; i < NCONS; i++) {
         consoles[i].x = wins[i].x;
