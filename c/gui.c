@@ -2383,6 +2383,10 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "keydebug")) {
+        extern int kernel_key_debug_toggle(void);
+        int on = kernel_key_debug_toggle();
+        term_puts(c, on ? "keydebug on\n" : "keydebug off\n");
     } else if (streq(line, "perf blit")) {
         u32 t0 = perf_tsc();
         for (int i = 0; i < 4; i++)

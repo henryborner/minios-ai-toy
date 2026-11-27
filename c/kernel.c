@@ -110,8 +110,12 @@ static int console_has_live_task(int cid);
 static void sched_yield(void);
 static void module_wait_key(int cid);
 static u8 shift_down, shift_left_down, shift_right_down;
-static u8 numlock_on = 1, extended, alt_down;
-static volatile u8 ctrl_down, ctrl_seen;
+static u8 ctrl_down, ctrl_left_down, ctrl_right_down;
+static u8 alt_down, alt_left_down, alt_right_down;
+static u8 numlock_on = 1, capslock_on, scrolllock_on;
+static u8 extended;
+static volatile u8 ctrl_seen;
+static u8 key_debug;
 
 static volatile u8 mouse_cycle;
 static volatile u8 mouse_packet[4];
@@ -350,7 +354,23 @@ static const char keymap[128] = {
 
 static void wake_kbd_tasks(int c);
 
+static void key_debug_byte(const char *tag, u8 v) {
+    const char *h = "0123456789ABCDEF";
+    serial_puts(tag);
+    serial_putc(h[v >> 4]);
+    serial_putc(h[v & 15]);
+    serial_puts("\r\n");
+}
+
+int kernel_key_debug_toggle(void) {
+    key_debug = !key_debug;
+    serial_puts(key_debug ? "KEYDEBUG on\r\n" : "KEYDEBUG off\r\n");
+    return key_debug;
+}
+
 static void kbd_push(u8 ch) {
+    if (key_debug)
+        key_debug_byte("KBD CH=", ch);
     int c = gui_focused_console();
     if (ch == 3)
         task_signal_console(c, SIGINT);
@@ -364,15 +384,16 @@ static void kbd_push(u8 ch) {
     wake_kbd_tasks(c);
 }
 
-#define KEY_UP    0xF7
-#define KEY_DOWN  0xF8
-#define KEY_LEFT  0xF9
-#define KEY_RIGHT 0xFA
-#define KEY_HOME  0xFB
-#define KEY_END   0xFC
-#define KEY_DEL   0xFD
-#define KEY_PGUP  0xFE
-#define KEY_PGDN  0xFF
+#define KEY_UP      0xF7
+#define KEY_DOWN    0xF8
+#define KEY_LEFT    0xF9
+#define KEY_RIGHT   0xFA
+#define KEY_HOME    0xFB
+#define KEY_END     0xFC
+#define KEY_DEL     0xFD
+#define KEY_PGUP    0xFE
+#define KEY_PGDN    0xFF
+#define KEY_INSERT  0xF6
 
 static char shift_char(char ch) {
     switch (ch) {
@@ -391,6 +412,8 @@ static char shift_char(char ch) {
 }
 
 static void keyboard_scancode(u8 sc) {
+    if (key_debug)
+        key_debug_byte("KBD SC=", sc);
     if (sc == 0xE0) {
         extended = 1;
         return;
@@ -406,19 +429,33 @@ static void keyboard_scancode(u8 sc) {
             return;
         }
         if (sc == 0x1D) {
+            ctrl_right_down = 1;
             ctrl_down = 1;
             ctrl_seen = 1;
             return;
         }
         if (sc == 0x9D) {
-            ctrl_down = 0;
+            ctrl_right_down = 0;
+            ctrl_down = ctrl_left_down || ctrl_right_down;
             ctrl_seen = 1;
+            return;
+        }
+        if (sc == 0x38) {
+            alt_right_down = 1;
+            alt_down = 1;
+            return;
+        }
+        if (sc == 0xB8) {
+            alt_right_down = 0;
+            alt_down = alt_left_down || alt_right_down;
             return;
         }
         if (sc & 0x80)
             return;
         if (sc == 0x1C)
             kbd_push('\n');
+        else if (sc == 0x35)
+            kbd_push('/');
         else if (sc == 0x48) kbd_push(KEY_UP);
         else if (sc == 0x50) kbd_push(KEY_DOWN);
         else if (sc == 0x4B) kbd_push(KEY_LEFT);
@@ -428,26 +465,38 @@ static void keyboard_scancode(u8 sc) {
         else if (sc == 0x53) kbd_push(KEY_DEL);
         else if (sc == 0x49) kbd_push(KEY_PGUP);
         else if (sc == 0x51) kbd_push(KEY_PGDN);
+        else if (sc == 0x52) kbd_push(KEY_INSERT);
         return;
     }
     if (sc & 0x80) {
         u8 make = sc & 0x7F;
-        if (make == 0x2A)
+        if (make == 0x2A) {
             shift_left_down = 0;
-        else if (make == 0x36)
-            shift_right_down = 0;
-        if (make == 0x2A || make == 0x36)
             shift_down = shift_left_down || shift_right_down;
-        else if (make == 0x38)
-            alt_down = 0;
-        else if (make == 0x1D) {
-            ctrl_down = 0;
+        } else if (make == 0x36) {
+            shift_right_down = 0;
+            shift_down = shift_left_down || shift_right_down;
+        } else if (make == 0x38) {
+            alt_left_down = 0;
+            alt_down = alt_left_down || alt_right_down;
+        } else if (make == 0x1D) {
+            ctrl_left_down = 0;
+            ctrl_down = ctrl_left_down || ctrl_right_down;
             ctrl_seen = 1;
         }
         return;
     }
     if (sc == 0x38) {
+        alt_left_down = 1;
         alt_down = 1;
+        return;
+    }
+    if (sc == 0x3A) {
+        capslock_on = !capslock_on;
+        return;
+    }
+    if (sc == 0x46) {
+        scrolllock_on = !scrolllock_on;
         return;
     }
     if (sc == 0x0F && alt_down) {
@@ -498,11 +547,13 @@ static void keyboard_scancode(u8 sc) {
             else if (sc == 0x4F) kbd_push(KEY_END);
             else if (sc == 0x50) kbd_push(KEY_DOWN);
             else if (sc == 0x51) kbd_push(KEY_PGDN);
+            else if (sc == 0x52) kbd_push(KEY_INSERT);
             else if (sc == 0x53) kbd_push(KEY_DEL);
         }
         return;
     }
     if (sc == 0x1D) {
+        ctrl_left_down = 1;
         ctrl_down = 1;
         ctrl_seen = 1;
         return;
@@ -515,6 +566,10 @@ static void keyboard_scancode(u8 sc) {
     if (sc == 0x40) { gui_special_pending = 6; return; }
     if (sc == 0x41) { gui_special_pending = 9; return; }
     if (sc == 0x42) { gui_special_pending = 10; return; }
+    if (sc == 0x43) { gui_special_pending = 11; return; }
+    if (sc == 0x44) { gui_special_pending = 12; return; }
+    if (sc == 0x57) { gui_special_pending = 13; return; }
+    if (sc == 0x58) { gui_special_pending = 14; return; }
 
     char ch = keymap[sc];
     if (!ch)
@@ -533,8 +588,12 @@ static void keyboard_scancode(u8 sc) {
             return;
         }
     }
-    if (shift_down)
+    if (ch >= 'a' && ch <= 'z') {
+        if (shift_down != capslock_on)
+            ch = (char)(ch - 32);
+    } else if (shift_down) {
         ch = shift_char(ch);
+    }
     kbd_push((u8)ch);
 }
 
