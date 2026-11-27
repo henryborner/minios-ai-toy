@@ -16,6 +16,9 @@ color = 0
 running = True
 drag = None
 base = None
+TILE = 16
+tile_track = None
+last_tiles = set()
 
 TOOLS = [("P", 2, "Pencil"), ("L", 16, "Line"), ("R", 32, "Rect"),
          ("C", 50, "Circle"), ("F", 68, "Fill"), ("S", 86, "Save"), ("Q", 104, "Quit")]
@@ -27,6 +30,8 @@ PW = max(6, W // 16)
 def put(x, y, c):
     if 22 <= x < W and 4 <= y < 182:
         pix[y * W + x] = c
+        if tile_track is not None:
+            tile_track.add((x // TILE, y // TILE))
 
 
 def line(x0, y0, x1, y1, c):
@@ -92,6 +97,42 @@ def fill(x, y, c):
         stack.append((cx - 1, cy))
         stack.append((cx, cy + 1))
         stack.append((cx, cy - 1))
+
+
+def blit_tiles(tiles):
+    for tx, ty in tiles:
+        x0 = tx * TILE
+        y0 = ty * TILE
+        if x0 < 0 or y0 < 0 or x0 >= W or y0 >= H:
+            continue
+        x1 = min(x0 + TILE, W)
+        y1 = min(y0 + TILE, H)
+        tw = x1 - x0
+        th = y1 - y0
+        buf = bytearray(tw * th)
+        for yy in range(th):
+            src = (y0 + yy) * W + x0
+            dst = yy * tw
+            buf[dst:dst + tw] = pix[src:src + tw]
+        c.blit(x0, y0, tw, th, bytes(buf))
+
+
+def preview_shape():
+    global tile_track, last_tiles
+    pix[:] = base
+    tile_track = set()
+    if tool == "L":
+        line(drag[0], drag[1], x, y, color)
+    elif tool == "R":
+        rect(drag[0], drag[1], x, y, color)
+    else:
+        dx = x - drag[0]
+        dy = y - drag[1]
+        circle(drag[0], drag[1], int((dx * dx + dy * dy) ** 0.5), color)
+    tiles = tile_track | last_tiles
+    last_tiles = tile_track
+    tile_track = None
+    blit_tiles(tiles)
 
 
 def draw():
@@ -204,39 +245,24 @@ while running:
             elif tool == "P":
                 drag = (x, y)
                 line(x, y, x, y, color)
+                c.line(x, y, x, y, color)
             else:
                 drag = (x, y)
                 base = bytearray(pix)
+                last_tiles = set()
+                preview_shape()
         elif typ == 3 and (buttons & 1):
             if tool == "P" and drag:
                 line(drag[0], drag[1], x, y, color)
+                c.line(drag[0], drag[1], x, y, color)
                 drag = (x, y)
-                draw()
             elif base and drag:
-                pix[:] = base
-                if tool == "L":
-                    line(drag[0], drag[1], x, y, color)
-                elif tool == "R":
-                    rect(drag[0], drag[1], x, y, color)
-                elif tool == "C":
-                    dx = x - drag[0]
-                    dy = y - drag[1]
-                    r = int((dx * dx + dy * dy) ** 0.5)
-                    circle(drag[0], drag[1], r, color)
-                draw()
+                preview_shape()
         elif typ == 2 and base and drag:
-            if tool == "L":
-                line(drag[0], drag[1], x, y, color)
-            elif tool == "R":
-                rect(drag[0], drag[1], x, y, color)
-            elif tool == "C":
-                dx = x - drag[0]
-                dy = y - drag[1]
-                r = int((dx * dx + dy * dy) ** 0.5)
-                circle(drag[0], drag[1], r, color)
+            preview_shape()
             base = None
             drag = None
-            draw()
+            last_tiles = set()
     time.sleep_ms(20)
 
 c.close()

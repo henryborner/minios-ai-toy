@@ -34,9 +34,14 @@ test suite; its output is 45 named checks per mode. The stale `__divdi3` test
 stub was removed after verifying the production object has no 64-bit division
 reference and links without a compiler runtime.
 
-## Still outstanding
+## Paint incremental path
 
-`Paint` still uploads the full 300x200 canvas and calls `present` on every
-pointer update. Multi-rect damage reduces compositing work but does not remove
-that 60 KB-per-stroke upload. The next step is incremental Paint submission and
-a Canvas dirty bbox that survives `present`.
+- Pencil strokes now call `Canvas.line()` directly; no full-canvas upload.
+- Line/rect/circle previews keep a base bytearray, redraw the shape into `pix`,
+  and publish only the union of old/new 16x16 tiles with `Canvas.blit()`.
+- Static toolbar/palette and initial image still use the full `draw()` path;
+  fill/load remain full-canvas operations.
+- The old 60 KB `bytes(pix)` upload per pencil event is gone.
+
+Normal image and VBE/VGA damage tests still pass. The next remaining hot spot
+is full-canvas fill/load and the remaining Python-side shape synthesis.
