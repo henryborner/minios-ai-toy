@@ -2360,6 +2360,8 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "close")) {
+        hide_window(c->win_id);
     } else if (streq(line, "gctest")) {
         extern int prepare_gc_script(void);
         int self = (int)(c - consoles);
@@ -2841,8 +2843,6 @@ static void draw_desktop(void) {
 }
 
 static int taskbar_show(int id) {
-    if (console_index_for_window(id) >= 0)
-        return 1;
     if (id == WIN_SYS)
         return 0;
     return wins[id].visible || wins[id].minimized;
