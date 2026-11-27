@@ -4601,7 +4601,7 @@ static int hit_test(int x, int y) {
             }
         }
         if (!w->maximized) {
-            int edge = 4;
+            int edge = 2;
             int n = (y >= w->y - edge && y <= w->y + edge);
             int s = (y >= w->y + w->h - edge && y <= w->y + w->h + edge);
             int l = (x >= w->x - edge && x <= w->x + edge);
