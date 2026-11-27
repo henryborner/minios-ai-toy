@@ -109,7 +109,8 @@ static int current_console_id(void);
 static int console_has_live_task(int cid);
 static void sched_yield(void);
 static void module_wait_key(int cid);
-static u8 shift_down, extended, alt_down;
+static u8 shift_down, shift_left_down, shift_right_down;
+static u8 numlock_on = 1, extended, alt_down;
 static volatile u8 ctrl_down, ctrl_seen;
 
 static volatile u8 mouse_cycle;
@@ -404,9 +405,21 @@ static void keyboard_scancode(u8 sc) {
             alt_down = 0;
             return;
         }
+        if (sc == 0x1D) {
+            ctrl_down = 1;
+            ctrl_seen = 1;
+            return;
+        }
+        if (sc == 0x9D) {
+            ctrl_down = 0;
+            ctrl_seen = 1;
+            return;
+        }
         if (sc & 0x80)
             return;
-        if (sc == 0x48) kbd_push(KEY_UP);
+        if (sc == 0x1C)
+            kbd_push('\n');
+        else if (sc == 0x48) kbd_push(KEY_UP);
         else if (sc == 0x50) kbd_push(KEY_DOWN);
         else if (sc == 0x4B) kbd_push(KEY_LEFT);
         else if (sc == 0x4D) kbd_push(KEY_RIGHT);
@@ -419,8 +432,12 @@ static void keyboard_scancode(u8 sc) {
     }
     if (sc & 0x80) {
         u8 make = sc & 0x7F;
+        if (make == 0x2A)
+            shift_left_down = 0;
+        else if (make == 0x36)
+            shift_right_down = 0;
         if (make == 0x2A || make == 0x36)
-            shift_down = 0;
+            shift_down = shift_left_down || shift_right_down;
         else if (make == 0x38)
             alt_down = 0;
         else if (make == 0x1D) {
@@ -437,8 +454,52 @@ static void keyboard_scancode(u8 sc) {
         gui_special_pending = shift_down ? 8 : 7;
         return;
     }
-    if (sc == 0x2A || sc == 0x36) {
+    if (sc == 0x2A) {
+        shift_left_down = 1;
         shift_down = 1;
+        return;
+    }
+    if (sc == 0x36) {
+        shift_right_down = 1;
+        shift_down = 1;
+        return;
+    }
+    if (sc == 0x45) {
+        numlock_on = !numlock_on;
+        return;
+    }
+    if (sc == 0x37) {
+        kbd_push('*');
+        return;
+    }
+    if (sc >= 0x47 && sc <= 0x53) {
+        if (numlock_on) {
+            if (sc == 0x47) kbd_push('7');
+            else if (sc == 0x48) kbd_push('8');
+            else if (sc == 0x49) kbd_push('9');
+            else if (sc == 0x4A) kbd_push('-');
+            else if (sc == 0x4B) kbd_push('4');
+            else if (sc == 0x4C) kbd_push('5');
+            else if (sc == 0x4D) kbd_push('6');
+            else if (sc == 0x4E) kbd_push('+');
+            else if (sc == 0x4F) kbd_push('1');
+            else if (sc == 0x50) kbd_push('2');
+            else if (sc == 0x51) kbd_push('3');
+            else if (sc == 0x52) kbd_push('0');
+            else if (sc == 0x53) kbd_push('.');
+        } else {
+            if (sc == 0x47) kbd_push(KEY_HOME);
+            else if (sc == 0x48) kbd_push(KEY_UP);
+            else if (sc == 0x49) kbd_push(KEY_PGUP);
+            else if (sc == 0x4A) kbd_push('-');
+            else if (sc == 0x4B) kbd_push(KEY_LEFT);
+            else if (sc == 0x4D) kbd_push(KEY_RIGHT);
+            else if (sc == 0x4E) kbd_push('+');
+            else if (sc == 0x4F) kbd_push(KEY_END);
+            else if (sc == 0x50) kbd_push(KEY_DOWN);
+            else if (sc == 0x51) kbd_push(KEY_PGDN);
+            else if (sc == 0x53) kbd_push(KEY_DEL);
+        }
         return;
     }
     if (sc == 0x1D) {
