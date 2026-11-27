@@ -2222,10 +2222,10 @@ static int task_create(const char *name, const u8 *src, const u8 *end) {
     for (u32 i = 0; i < len; i++)
         codev[i] = src[i];
 
-    tasks[slot].stack_va = 0x00402000u;
+    tasks[slot].stack_va = 0x00401000u;
     tasks[slot].stack_pages = 1;
     if (!user_map_page(slot, 0x00400000u, code, 0x007) ||
-        !user_map_page(slot, 0x00402000u, stack, 0x007)) {
+        !user_map_page(slot, 0x00401000u, stack, 0x007)) {
         frame_free_pages(code, 1);
         frame_free_pages(stack, 1);
         task_free_frames(slot);
