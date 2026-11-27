@@ -51,5 +51,11 @@ The `perf` command now reports redraws, full redraws, pixels, damage rectangles,
 mouse events, canvas presents, accumulated TSC cycles, and maximum frame
 cycles. A sample boot reports `cycles=16087 max=661760`.
 
+Rows at least 16 bytes and 4-byte aligned use `rep movsl`; short/unaligned
+tails keep the scalar fallback. `perf blit` measures four full-screen copies:
+`blit4=1768688 avg=442152` cycles in QEMU. The VBE PDE remains PCD/PWT; replacing
+that with MTRR write-combining is left as a hardware-specific follow-up because
+cache coherency with scanout must be proven.
+
 Normal image and VBE/VGA damage tests still pass. The next remaining hot spot
 is clear/load and the remaining Python-side shape synthesis.

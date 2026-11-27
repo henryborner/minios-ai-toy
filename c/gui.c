@@ -518,6 +518,26 @@ static void sunken_box(int x, int y, int w, int h) {
     fill_rect(x + w - 2, y + 1, 1, h - 2, 15);
 }
 
+static inline void copy_span(u8 *dst, const u8 *src, int bytes) {
+    if (bytes >= 16 && (bytes & 3) == 0) {
+        u32 *d = (u32 *)dst;
+        const u32 *s = (const u32 *)src;
+        u32 n = (u32)(bytes >> 2);
+        __asm__ __volatile__("cld; rep movsl"
+                             : "+D"(d), "+S"(s), "+c"(n)
+                             :
+                             : "memory");
+        return;
+    }
+    int i = 0;
+    for (; i + 4 <= bytes; i += 4)
+        *(u32 *)(dst + i) = *(const u32 *)(src + i);
+    while (i < bytes) {
+        dst[i] = src[i];
+        i++;
+    }
+}
+
 static void blit_rect(int x, int y, int w, int h) {
     if (x < 0) { w += x; x = 0; }
     if (y < 0) { h += y; y = 0; }
@@ -527,30 +547,16 @@ static void blit_rect(int x, int y, int w, int h) {
         return;
     if (vbe_active && vbe_lfb) {
         for (int yy = 0; yy < h; yy++) {
-            volatile u8 *dst = vbe_lfb + (u32)(y + yy) * vbe_pitch + (u32)x;
+            u8 *dst = (u8 *)vbe_lfb + (u32)(y + yy) * vbe_pitch + (u32)x;
             const u8 *src = fb + (u32)(y + yy) * (u32)scr_w + (u32)x;
-            int xx = 0;
-            for (; xx + 4 <= w; xx += 4)
-                *(volatile u32 *)(dst + xx) = *(const u32 *)(src + xx);
-            while (xx < w) {
-                dst[xx] = src[xx];
-                xx++;
-            }
+            copy_span(dst, src, w);
         }
         return;
     }
     u8 *dst = (u8 *)0x000A0000;
-    for (int yy = 0; yy < h; yy++) {
-        u8 *d = dst + (y + yy) * scr_w + x;
-        const u8 *s = fb + (y + yy) * scr_w + x;
-        int xx = 0;
-        for (; xx + 4 <= w; xx += 4)
-            *(u32 *)(d + xx) = *(const u32 *)(s + xx);
-        while (xx < w) {
-            d[xx] = s[xx];
-            xx++;
-        }
-    }
+    for (int yy = 0; yy < h; yy++)
+        copy_span(dst + (y + yy) * scr_w + x,
+                  fb + (y + yy) * scr_w + x, w);
 }
 
 /* -----------------------------------------------------------------------------
@@ -2374,6 +2380,16 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "perf blit")) {
+        u32 t0 = perf_tsc();
+        for (int i = 0; i < 4; i++)
+            blit_rect(0, 0, scr_w, scr_h);
+        u32 cycles = perf_tsc() - t0;
+        term_puts(c, "blit4=");
+        term_u32(c, cycles);
+        term_puts(c, " avg=");
+        term_u32(c, cycles / 4);
+        term_puts(c, "\n");
     } else if (streq(line, "perf")) {
         term_puts(c, "redraws=");
         term_u32(c, perf_redraws);
