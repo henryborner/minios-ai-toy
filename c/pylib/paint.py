@@ -139,13 +139,13 @@ def draw():
     c.clear(0)
     c.blit(0, 0, W, H, bytes(pix))
     for label, y, _ in TOOLS:
-        c.text(3, y, label, 15)
+        c.text(3, y, label, 0)
     for i, col in enumerate(COLORS):
         x = i * PW + 2
         c.rect(x, PALY, PW - 2, 14, col)
-    c.text(22, PALY - 12, "tool", 15)
-    c.text(58, PALY - 12, tool, 14)
-    c.text(80, PALY - 12, "color", 15)
+    c.text(22, PALY - 12, "tool", 0)
+    c.text(58, PALY - 12, tool, 0)
+    c.text(80, PALY - 12, "color", 0)
     c.rect(120, PALY - 12, 12, 8, color)
     c.present()
 
@@ -240,8 +240,14 @@ while running:
                         break
                 continue
             if tool == "F":
+                tile_track = set()
                 fill(x, y, color)
-                draw()
+                filled = tile_track
+                tile_track = None
+                if len(filled) > 80:
+                    draw()
+                else:
+                    blit_tiles(filled)
             elif tool == "P":
                 drag = (x, y)
                 line(x, y, x, y, color)

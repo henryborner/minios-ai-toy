@@ -39,9 +39,14 @@ reference and links without a compiler runtime.
 - Pencil strokes now call `Canvas.line()` directly; no full-canvas upload.
 - Line/rect/circle previews keep a base bytearray, redraw the shape into `pix`,
   and publish only the union of old/new 16x16 tiles with `Canvas.blit()`.
-- Static toolbar/palette and initial image still use the full `draw()` path;
-  fill/load remain full-canvas operations.
+- Fill publishes changed tiles unless more than 80 tiles changed, then falls
+  back to a full redraw.
+- Static toolbar/palette, clear and load remain full-canvas operations.
+- Paint labels now use a readable dark color on the white canvas.
 - The old 60 KB `bytes(pix)` upload per pencil event is gone.
 
+The `perf` command now reports redraws, full redraws, pixels, damage rectangles,
+mouse events, and canvas presents.
+
 Normal image and VBE/VGA damage tests still pass. The next remaining hot spot
-is full-canvas fill/load and the remaining Python-side shape synthesis.
+is clear/load and the remaining Python-side shape synthesis.

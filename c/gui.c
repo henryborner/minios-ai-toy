@@ -223,6 +223,14 @@ static struct damage pending_damage;
 static u8 redraw_busy;
 static int pointer_x, pointer_y, caret_on, memory_bar;
 
+static u32 perf_redraws, perf_full_redraws, perf_pixels, perf_damage_rects;
+static u32 perf_mouse_events, perf_canvas_presents;
+
+static void perf_reset(void) {
+    perf_redraws = perf_full_redraws = perf_pixels = 0;
+    perf_damage_rects = perf_mouse_events = perf_canvas_presents = 0;
+}
+
 /* Last composed GUI state, used by the independent observer. */
 static int observer_ready;
 static int prev_pointer_x, prev_pointer_y;
@@ -2358,6 +2366,23 @@ static void run_command(struct console *c, char *line) {
         extern int serial_download_file(const char *name);
         if (!serial_download_file(line + 9))
             term_puts(c, "Download failed.\n");
+    } else if (streq(line, "perf")) {
+        term_puts(c, "redraws=");
+        term_u32(c, perf_redraws);
+        term_puts(c, " full=");
+        term_u32(c, perf_full_redraws);
+        term_puts(c, " pixels=");
+        term_u32(c, perf_pixels);
+        term_puts(c, " rects=");
+        term_u32(c, perf_damage_rects);
+        term_puts(c, " mouse=");
+        term_u32(c, perf_mouse_events);
+        term_puts(c, " presents=");
+        term_u32(c, perf_canvas_presents);
+        term_puts(c, "\n");
+    } else if (streq(line, "perf reset")) {
+        perf_reset();
+        term_puts(c, "perf reset\n");
     } else if (streq(line, "close")) {
         hide_window(c->win_id);
     } else if (streq(line, "gctest")) {
@@ -3802,6 +3827,7 @@ void gui_canvas_batch(int on) {
 }
 
 void gui_canvas_present(void) {
+    perf_canvas_presents++;
     if (canvas_current_slot() < 0)
         return;
     struct canvas_state *cs = canvas_active;
@@ -4411,13 +4437,20 @@ void gui_redraw(void) {
 
     update_clock(0);
     make_uptime();
+    u32 frame_pixels = 0;
+    perf_redraws++;
+    perf_damage_rects += (u32)work.count;
     for (int i = 0; i < work.count; i++) {
         struct rect r = rect_clip(work.rects[i], scr_w, scr_h);
         if (r.x0 >= r.x1 || r.y0 >= r.y1)
             continue;
+        frame_pixels += (u32)(r.x1 - r.x0) * (u32)(r.y1 - r.y0);
         gui_compose_rect(r);
         blit_rect(r.x0, r.y0, r.x1 - r.x0, r.y1 - r.y0);
     }
+    perf_pixels += frame_pixels;
+    if (frame_pixels >= (u32)scr_w * (u32)scr_h)
+        perf_full_redraws++;
     compose_active = 0;
     redraw_busy = 0;
 }
@@ -4977,6 +5010,7 @@ void gui_mouse_wheel(int dz) {
 }
 
 void gui_mouse_event(int x, int y, int buttons) {
+    perf_mouse_events++;
     pointer_x = x;
     pointer_y = y;
     int press = (buttons & 1) && !(last_buttons & 1);
