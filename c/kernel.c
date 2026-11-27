@@ -6098,7 +6098,7 @@ void kmain(void) {
         int cid = gui_focused_console();
         if (cid < 0 || cid >= kbd_console_count)
             cid = 0;
-        if (!console_has_live_task(cid)) {
+        if (gui_runtime_keyboard_wanted() || !console_has_live_task(cid)) {
             while (kbd_tail[cid] != kbd_head[cid]) {
                 u8 ch = kbd_buf[cid][kbd_tail[cid]];
                 kbd_tail[cid] = (u8)((kbd_tail[cid] + 1) & 63);
