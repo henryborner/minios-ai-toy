@@ -3175,7 +3175,11 @@ static void draw_system(void) {
         text(x + 6, y + 81, "Uptime:", 0);
         text(x + 70, y + 81, uptime_str, 0);
     } else if (sys_tab == 1) {
-        text(x + 6, y + 35, "PID CON ST PGS NAME", 8);
+        text(x + 6, y + 35, "PID", 8);
+        text(x + 34, y + 35, "CON", 8);
+        text(x + 64, y + 35, "ST", 8);
+        text(x + 84, y + 35, "PGS", 8);
+        text(x + 136, y + 35, "NAME", 8);
         extern int kernel_task_snapshot(int, u32 *, int *, u32 *, u32 *, char *);
         for (int i = 0; i < 8; i++) {
             u32 pid, state, pages;
@@ -3186,11 +3190,11 @@ static void draw_system(void) {
             int ry = y + 45 + i * 9;
             if (i == sys_task_sel) fill_rect(x + 2, ry - 1, w->w - 4, 9, 11);
             num_text(x + 6, ry, pid, 0);
-            num_text(x + 40, ry, (u32)con, 0);
-            text(x + 58, ry, state == 2 ? "R" : (state == 4 ? "B" :
+            num_text(x + 34, ry, (u32)con, 0);
+            text(x + 64, ry, state == 2 ? "R" : (state == 4 ? "B" :
                               (state == 5 ? "T" : "S")), 0);
-            num_text(x + 76, ry, pages, 0);
-            text(x + 100, ry, name, 0);
+            num_text(x + 84, ry, pages, 0);
+            text(x + 136, ry, name, 0);
         }
         fill_rect(x + w->w - 90, y + w->h - 18, 84, 12, 7);
         text(x + w->w - 84, y + w->h - 16, "Kill Task", 0);
