@@ -4086,17 +4086,23 @@ static void mark_pressed_button(int hit, int buttons) {
     }
 }
 
+static int resize_cursor_shape(int d) {
+    if (d == 1 || d == 2) return 1;
+    if (d == 3 || d == 4) return 2;
+    if (d == 5 || d == 6) return 3;
+    if (d == 7 || d == 8) return 4;
+    return 0;
+}
+
 static int cursor_shape_at(int x, int y) {
-    int shape = 0;
+    if (resize_win >= 0)
+        return resize_cursor_shape(resize_dir);
+    if (drag_win >= 0)
+        return 0;
     int hit = hit_test(x, y);
-    if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + win_live * 9) {
-        int d = (hit - HIT_RESIZE_BASE) % 9;
-        if (d == 1 || d == 2) shape = 1;
-        else if (d == 3 || d == 4) shape = 2;
-        else if (d == 5 || d == 6) shape = 3;
-        else if (d == 7 || d == 8) shape = 4;
-    }
-    return shape;
+    if (hit >= HIT_RESIZE_BASE && hit < HIT_RESIZE_BASE + win_live * 9)
+        return resize_cursor_shape((hit - HIT_RESIZE_BASE) % 9);
+    return 0;
 }
 
 static void mark_snap_edges(int mode) {

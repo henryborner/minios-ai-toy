@@ -55,7 +55,8 @@ Cursor rendering now uses per-shape hotspots: the arrow keeps its tip at the
 pointer, while resize cursors are centered on the pointer. The left/right
 shape is drawn as a horizontal double arrow; the old mapping drew it vertically.
 Window resize hit borders were reduced to 2 px so the title bar remains mostly
-draggable.
+draggable. While `resize_win` is active the cursor shape is latched from
+`resize_dir`, so it no longer falls back to the arrow as the window moves.
 
 Rows at least 16 bytes and 4-byte aligned use `rep movsl`; short/unaligned
 tails keep the scalar fallback. `perf blit` measures four full-screen copies:
