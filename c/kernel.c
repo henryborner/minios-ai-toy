@@ -113,9 +113,10 @@ static u8 shift_down, shift_left_down, shift_right_down;
 static u8 ctrl_down, ctrl_left_down, ctrl_right_down;
 static u8 alt_down, alt_left_down, alt_right_down;
 static u8 numlock_on = 1, capslock_on, scrolllock_on;
-static u8 extended;
+static u8 extended, pause_seq;
 static volatile u8 ctrl_seen;
 static u8 key_debug;
+static volatile u8 kbd_led_state = 2, kbd_led_dirty = 1;
 
 static volatile u8 mouse_cycle;
 static volatile u8 mouse_packet[4];
@@ -368,6 +369,27 @@ int kernel_key_debug_toggle(void) {
     return key_debug;
 }
 
+static void keyboard_led_sync(void) {
+    kbd_led_state = (u8)((scrolllock_on ? 1u : 0u) |
+                         (numlock_on ? 2u : 0u) |
+                         (capslock_on ? 4u : 0u));
+    kbd_led_dirty = 1;
+    if (key_debug)
+        key_debug_byte("KBD LED=", kbd_led_state);
+}
+
+void kernel_keyboard_led_poll(void) {
+    if (!kbd_led_dirty)
+        return;
+    u32 flags;
+    __asm__ __volatile__("pushf; pop %0; cli" : "=r"(flags));
+    u8 state = kbd_led_state;
+    kbd_led_dirty = 0;
+    kbc_cmd(0xED);
+    kbc_data(state);
+    __asm__ __volatile__("pushl %0; popfl" : : "r"(flags) : "memory", "cc");
+}
+
 static void kbd_push(u8 ch) {
     if (key_debug)
         key_debug_byte("KBD CH=", ch);
@@ -394,6 +416,8 @@ static void kbd_push(u8 ch) {
 #define KEY_PGUP    0xFE
 #define KEY_PGDN    0xFF
 #define KEY_INSERT  0xF6
+#define KEY_PAUSE   0xF4
+#define KEY_PRINT   0xF5
 
 static char shift_char(char ch) {
     switch (ch) {
@@ -414,6 +438,17 @@ static char shift_char(char ch) {
 static void keyboard_scancode(u8 sc) {
     if (key_debug)
         key_debug_byte("KBD SC=", sc);
+    if (pause_seq) {
+        if (sc == 0xC5) {
+            pause_seq = 0;
+            kbd_push(KEY_PAUSE);
+        }
+        return;
+    }
+    if (sc == 0xE1) {
+        pause_seq = 1;
+        return;
+    }
     if (sc == 0xE0) {
         extended = 1;
         return;
@@ -456,6 +491,8 @@ static void keyboard_scancode(u8 sc) {
             kbd_push('\n');
         else if (sc == 0x35)
             kbd_push('/');
+        else if (sc == 0x37)
+            kbd_push(KEY_PRINT);
         else if (sc == 0x48) kbd_push(KEY_UP);
         else if (sc == 0x50) kbd_push(KEY_DOWN);
         else if (sc == 0x4B) kbd_push(KEY_LEFT);
@@ -493,10 +530,12 @@ static void keyboard_scancode(u8 sc) {
     }
     if (sc == 0x3A) {
         capslock_on = !capslock_on;
+        keyboard_led_sync();
         return;
     }
     if (sc == 0x46) {
         scrolllock_on = !scrolllock_on;
+        keyboard_led_sync();
         return;
     }
     if (sc == 0x0F && alt_down) {
@@ -515,6 +554,7 @@ static void keyboard_scancode(u8 sc) {
     }
     if (sc == 0x45) {
         numlock_on = !numlock_on;
+        keyboard_led_sync();
         return;
     }
     if (sc == 0x37) {
@@ -6244,6 +6284,7 @@ void kmain(void) {
     for (;;) {
         int event = 0;
         task_reap_done();
+        kernel_keyboard_led_poll();
         if (autoexec_pending && (int)(ticks - autoexec_at) >= 0) {
             autoexec_pending = 0;
             if (ctrl_seen || ctrl_down)

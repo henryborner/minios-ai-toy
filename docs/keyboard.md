@@ -1,20 +1,28 @@
 # Keyboard mapping
 
-- Left Shift `0x2A`, right Shift `0x36` keep independent pressed states;
-  `shift_down` is their OR, so releasing one no longer clears the other.
+- Left/right Shift, Ctrl and Alt have independent pressed states and an OR
+  state, so releasing one does not clear the other.
+- Caps Lock toggles letter case with `Shift XOR CapsLock`.
 - Num Lock `0x45` toggles `numlock_on`; it starts enabled.
+- Scroll Lock `0x46` is tracked.
 - Keypad `0x47..0x53` maps to digits/operators when Num Lock is on, and to
-  Home/arrows/PgUp/PgDn/End/Delete when off.
-- Keypad `*` uses scan code `0x37`.
+  Home/arrows/PgUp/PgDn/End/Insert/Delete when off.
+- Keypad `*` uses scan code `0x37`; keypad `/` uses extended `E0 35`.
 - Keypad Enter (`E0 1C`) emits newline.
-- Extended right Ctrl is decoded (`E0 1D/9D`).
+- PrintScreen (`E0 2A E0 37`) emits `KEY_PRINT` (`F5`).
+- Pause (`E1 1D 45 ... C5`) is consumed as a sequence and emits `KEY_PAUSE`
+  (`F4`), without toggling Num Lock.
+- Caps/Num/Scroll LEDs are queued and sent with KBC `0xED` from the main loop.
+- F1–F12 scan codes are decoded.
 
-Verified in QEMU:
+Headless regression:
 
 ```text
-sendkey shift_r-a  -> A
-sendkey kp_789     -> 789
-sendkey kp_123     -> 123
+python tools/keyboard_test.py
 ```
 
-No keyboard LED update is implemented. Caps Lock is still not implemented.
+It starts hidden QEMU, enables the serial `keydebug` probe, verifies Shift,
+Caps, NumLock/LEDs, ScrollLock/LEDs, keypad digits/operators/Enter, navigation
+keys, F1/F12, PrintScreen, Pause, and that Pause does not change Num Lock.
+
+No international layout/AltGr mapping is implemented; the layout is US.
