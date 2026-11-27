@@ -225,10 +225,18 @@ static int pointer_x, pointer_y, caret_on, memory_bar;
 
 static u32 perf_redraws, perf_full_redraws, perf_pixels, perf_damage_rects;
 static u32 perf_mouse_events, perf_canvas_presents;
+static u32 perf_redraw_cycles, perf_max_cycles;
+
+static u32 perf_tsc(void) {
+    u32 lo, hi;
+    __asm__ __volatile__("rdtsc" : "=a"(lo), "=d"(hi));
+    return lo;
+}
 
 static void perf_reset(void) {
     perf_redraws = perf_full_redraws = perf_pixels = 0;
     perf_damage_rects = perf_mouse_events = perf_canvas_presents = 0;
+    perf_redraw_cycles = perf_max_cycles = 0;
 }
 
 /* Last composed GUI state, used by the independent observer. */
@@ -2379,6 +2387,10 @@ static void run_command(struct console *c, char *line) {
         term_u32(c, perf_mouse_events);
         term_puts(c, " presents=");
         term_u32(c, perf_canvas_presents);
+        term_puts(c, " cycles=");
+        term_u32(c, perf_redraw_cycles);
+        term_puts(c, " max=");
+        term_u32(c, perf_max_cycles);
         term_puts(c, "\n");
     } else if (streq(line, "perf reset")) {
         perf_reset();
@@ -4435,6 +4447,7 @@ void gui_redraw(void) {
         return;
     }
 
+    u32 t0 = perf_tsc();
     update_clock(0);
     make_uptime();
     u32 frame_pixels = 0;
@@ -4451,6 +4464,10 @@ void gui_redraw(void) {
     perf_pixels += frame_pixels;
     if (frame_pixels >= (u32)scr_w * (u32)scr_h)
         perf_full_redraws++;
+    u32 cycles = perf_tsc() - t0;
+    perf_redraw_cycles += cycles;
+    if (cycles > perf_max_cycles)
+        perf_max_cycles = cycles;
     compose_active = 0;
     redraw_busy = 0;
 }

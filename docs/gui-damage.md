@@ -48,7 +48,8 @@ reference and links without a compiler runtime.
 - The old 60 KB `bytes(pix)` upload per pencil event is gone.
 
 The `perf` command now reports redraws, full redraws, pixels, damage rectangles,
-mouse events, and canvas presents.
+mouse events, canvas presents, accumulated TSC cycles, and maximum frame
+cycles. A sample boot reports `cycles=16087 max=661760`.
 
 Normal image and VBE/VGA damage tests still pass. The next remaining hot spot
 is clear/load and the remaining Python-side shape synthesis.
